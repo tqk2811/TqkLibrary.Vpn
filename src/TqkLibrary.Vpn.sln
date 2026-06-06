@@ -47,6 +47,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.Vpn.Crypto.Tests
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.Vpn.Ppp.Tests", "..\tests\TqkLibrary.Vpn.Ppp.Tests\TqkLibrary.Vpn.Ppp.Tests.csproj", "{4605FB99-A5F1-4C47-A5E9-4E05F61E40EF}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.Vpn.Ppp.Auth.Tests", "..\tests\TqkLibrary.Vpn.Ppp.Auth.Tests\TqkLibrary.Vpn.Ppp.Auth.Tests.csproj", "{282ABF65-D737-468E-9F52-EA40D770C961}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -321,6 +323,18 @@ Global
 		{4605FB99-A5F1-4C47-A5E9-4E05F61E40EF}.Release|x64.Build.0 = Release|Any CPU
 		{4605FB99-A5F1-4C47-A5E9-4E05F61E40EF}.Release|x86.ActiveCfg = Release|Any CPU
 		{4605FB99-A5F1-4C47-A5E9-4E05F61E40EF}.Release|x86.Build.0 = Release|Any CPU
+		{282ABF65-D737-468E-9F52-EA40D770C961}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{282ABF65-D737-468E-9F52-EA40D770C961}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{282ABF65-D737-468E-9F52-EA40D770C961}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{282ABF65-D737-468E-9F52-EA40D770C961}.Debug|x64.Build.0 = Debug|Any CPU
+		{282ABF65-D737-468E-9F52-EA40D770C961}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{282ABF65-D737-468E-9F52-EA40D770C961}.Debug|x86.Build.0 = Debug|Any CPU
+		{282ABF65-D737-468E-9F52-EA40D770C961}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{282ABF65-D737-468E-9F52-EA40D770C961}.Release|Any CPU.Build.0 = Release|Any CPU
+		{282ABF65-D737-468E-9F52-EA40D770C961}.Release|x64.ActiveCfg = Release|Any CPU
+		{282ABF65-D737-468E-9F52-EA40D770C961}.Release|x64.Build.0 = Release|Any CPU
+		{282ABF65-D737-468E-9F52-EA40D770C961}.Release|x86.ActiveCfg = Release|Any CPU
+		{282ABF65-D737-468E-9F52-EA40D770C961}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

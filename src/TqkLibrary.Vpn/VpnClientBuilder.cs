@@ -1,4 +1,5 @@
 using TqkLibrary.Vpn.Abstractions.Drivers.Interfaces;
+using TqkLibrary.Vpn.Drivers.L2tpIpsec;
 using TqkLibrary.Vpn.Drivers.Sstp;
 
 namespace TqkLibrary.Vpn
@@ -17,6 +18,9 @@ namespace TqkLibrary.Vpn
 
         /// <summary>Registers the MS-SSTP driver.</summary>
         public VpnClientBuilder UseSstp() => AddDriver(new SstpDriver());
+
+        /// <summary>Registers the L2TP/IPsec driver (IKEv1 PSK + NAT-T).</summary>
+        public VpnClientBuilder UseL2tpIpsec() => AddDriver(new L2tpIpsecDriver());
 
         /// <summary>Builds the client.</summary>
         public VpnClient Build() => new VpnClient(_drivers);

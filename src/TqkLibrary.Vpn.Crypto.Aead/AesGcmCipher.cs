@@ -2,9 +2,11 @@ using TqkLibrary.Vpn.Crypto.Abstractions.Interfaces;
 #if NET8_0_OR_GREATER
 using System.Security.Cryptography;
 #else
-using Org.BouncyCastle.Crypto.Engines;
-using Org.BouncyCastle.Crypto.Modes;
-using Org.BouncyCastle.Crypto.Parameters;
+// Alias specific types (not the whole namespace) so BouncyCastle's own IAeadCipher does not clash with ours.
+using AesEngine = Org.BouncyCastle.Crypto.Engines.AesEngine;
+using GcmBlockCipher = Org.BouncyCastle.Crypto.Modes.GcmBlockCipher;
+using AeadParameters = Org.BouncyCastle.Crypto.Parameters.AeadParameters;
+using KeyParameter = Org.BouncyCastle.Crypto.Parameters.KeyParameter;
 #endif
 
 namespace TqkLibrary.Vpn.Crypto.Aead

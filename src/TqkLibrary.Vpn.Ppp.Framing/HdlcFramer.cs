@@ -1,5 +1,3 @@
-using System.Buffers;
-
 namespace TqkLibrary.Vpn.Ppp.Framing
 {
     /// <summary>
@@ -23,34 +21,26 @@ namespace TqkLibrary.Vpn.Ppp.Framing
         public static byte[] Encode(ReadOnlySpan<byte> frame)
         {
             ushort fcs = Fcs16.Compute(frame);
-            var writer = new ArrayBufferWriter<byte>(frame.Length + 8);
-            Append(writer, Flag);
-            foreach (byte b in frame) EmitStuffed(writer, b);
-            EmitStuffed(writer, (byte)(fcs & 0xff));
-            EmitStuffed(writer, (byte)(fcs >> 8));
-            Append(writer, Flag);
-            return writer.WrittenSpan.ToArray();
+            var output = new List<byte>(frame.Length + 8) { Flag };
+            foreach (byte b in frame) EmitStuffed(output, b);
+            EmitStuffed(output, (byte)(fcs & 0xff));
+            EmitStuffed(output, (byte)(fcs >> 8));
+            output.Add(Flag);
+            return output.ToArray();
         }
 
-        static void EmitStuffed(IBufferWriter<byte> writer, byte b)
+        static void EmitStuffed(List<byte> output, byte b)
         {
             // Escape the two control bytes and all C0 control characters (default ACCM).
             if (b == Flag || b == ControlEscape || b < 0x20)
             {
-                Append(writer, ControlEscape);
-                Append(writer, (byte)(b ^ TransparencyXor));
+                output.Add(ControlEscape);
+                output.Add((byte)(b ^ TransparencyXor));
             }
             else
             {
-                Append(writer, b);
+                output.Add(b);
             }
-        }
-
-        static void Append(IBufferWriter<byte> writer, byte b)
-        {
-            Span<byte> span = writer.GetSpan(1);
-            span[0] = b;
-            writer.Advance(1);
         }
     }
 }

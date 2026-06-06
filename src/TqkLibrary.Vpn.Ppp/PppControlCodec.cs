@@ -1,4 +1,3 @@
-using System.Buffers;
 using TqkLibrary.Vpn.Ppp.Models;
 
 namespace TqkLibrary.Vpn.Ppp
@@ -43,18 +42,16 @@ namespace TqkLibrary.Vpn.Ppp
         /// <summary>Encodes a sequence of options into TLV bytes.</summary>
         public static byte[] EncodeOptions(IEnumerable<PppOption> options)
         {
-            var writer = new ArrayBufferWriter<byte>();
+            var output = new List<byte>();
             foreach (PppOption option in options)
             {
                 int len = 2 + option.Data.Length;
                 if (len > 255) throw new ArgumentException("PPP option too long.");
-                Span<byte> span = writer.GetSpan(len);
-                span[0] = option.Type;
-                span[1] = (byte)len;
-                option.Data.CopyTo(span.Slice(2));
-                writer.Advance(len);
+                output.Add(option.Type);
+                output.Add((byte)len);
+                output.AddRange(option.Data);
             }
-            return writer.WrittenSpan.ToArray();
+            return output.ToArray();
         }
 
         /// <summary>Parses TLV option bytes (e.g. the payload of a Configure-Request).</summary>

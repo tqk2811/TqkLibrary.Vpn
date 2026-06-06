@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>PPP framing: HDLC byte-stuffing (SSTP) + packet-mode (L2TP), protocol-field demux.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TqkLibrary.Vpn.Abstractions\TqkLibrary.Vpn.Abstractions.csproj" />
+  </ItemGroup>
+
+</Project>

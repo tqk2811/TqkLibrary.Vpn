@@ -1,8 +1,8 @@
 using System.Security.Cryptography;
 using TqkLibrary.Vpn.Crypto;
-using TqkLibrary.Vpn.Ipsec.Ike;
-using TqkLibrary.Vpn.Ipsec.Ike.Enums;
-using TqkLibrary.Vpn.Ipsec.Ike.Payloads;
+using TqkLibrary.Vpn.Ipsec.Ike.V2;
+using TqkLibrary.Vpn.Ipsec.Ike.V2.Enums;
+using TqkLibrary.Vpn.Ipsec.Ike.V2.Payloads;
 using Xunit;
 
 namespace TqkLibrary.Vpn.Ipsec.Ike.Tests

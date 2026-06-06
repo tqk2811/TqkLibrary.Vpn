@@ -43,18 +43,7 @@ namespace TqkLibrary.Vpn.Ipsec.Ike
         public byte[] Encode()
         {
             var body = new List<byte>();
-            for (int i = 0; i < Payloads.Count; i++)
-            {
-                IkePayloadType next = i + 1 < Payloads.Count ? Payloads[i + 1].Type : IkePayloadType.None;
-                int start = body.Count;
-                body.Add((byte)next);
-                body.Add(0); // critical(0) + reserved
-                IkeBuffer.WriteUInt16(body, 0); // length placeholder
-                Payloads[i].WriteBody(body);
-                int length = body.Count - start;
-                body[start + 2] = (byte)(length >> 8);
-                body[start + 3] = (byte)length;
-            }
+            EncodePayloadChain(body, Payloads);
 
             var message = new List<byte>(HeaderSize + body.Count);
             message.AddRange(InitiatorSpi);
@@ -87,19 +76,41 @@ namespace TqkLibrary.Vpn.Ipsec.Ike
                 MessageId = IkeBuffer.ReadUInt32(data, 20),
             };
 
-            var current = (IkePayloadType)data[16];
-            int offset = HeaderSize;
-            while (current != IkePayloadType.None && offset + 4 <= data.Length)
+            ParsePayloadChain(data.Slice(HeaderSize), (IkePayloadType)data[16], message.Payloads);
+            return message;
+        }
+
+        /// <summary>Appends the chained generic-header + body bytes for <paramref name="payloads"/> to <paramref name="output"/>.</summary>
+        internal static void EncodePayloadChain(List<byte> output, List<IkePayload> payloads)
+        {
+            for (int i = 0; i < payloads.Count; i++)
             {
-                var next = (IkePayloadType)data[offset];
-                int payloadLength = IkeBuffer.ReadUInt16(data, offset + 2);
-                if (payloadLength < 4 || offset + payloadLength > data.Length) break;
-                ReadOnlySpan<byte> payloadBody = data.Slice(offset + 4, payloadLength - 4);
-                message.Payloads.Add(ParsePayload(current, payloadBody));
+                IkePayloadType next = i + 1 < payloads.Count ? payloads[i + 1].Type : IkePayloadType.None;
+                int start = output.Count;
+                output.Add((byte)next);
+                output.Add(0); // critical(0) + reserved
+                IkeBuffer.WriteUInt16(output, 0); // length placeholder
+                payloads[i].WriteBody(output);
+                int length = output.Count - start;
+                output[start + 2] = (byte)(length >> 8);
+                output[start + 3] = (byte)length;
+            }
+        }
+
+        /// <summary>Parses a Next-Payload-linked chain starting at <paramref name="firstType"/> into <paramref name="into"/>.</summary>
+        internal static void ParsePayloadChain(ReadOnlySpan<byte> body, IkePayloadType firstType, List<IkePayload> into)
+        {
+            var current = firstType;
+            int offset = 0;
+            while (current != IkePayloadType.None && offset + 4 <= body.Length)
+            {
+                var next = (IkePayloadType)body[offset];
+                int payloadLength = IkeBuffer.ReadUInt16(body, offset + 2);
+                if (payloadLength < 4 || offset + payloadLength > body.Length) break;
+                into.Add(ParsePayload(current, body.Slice(offset + 4, payloadLength - 4)));
                 offset += payloadLength;
                 current = next;
             }
-            return message;
         }
 
         static IkePayload ParsePayload(IkePayloadType type, ReadOnlySpan<byte> body) => type switch
@@ -108,6 +119,11 @@ namespace TqkLibrary.Vpn.Ipsec.Ike
             IkePayloadType.KeyExchange => KeyExchangePayload.Parse(body),
             IkePayloadType.Nonce => NoncePayload.Parse(body),
             IkePayloadType.Notify => NotifyPayload.Parse(body),
+            IkePayloadType.IdInitiator => IdentificationPayload.Parse(body, isInitiator: true),
+            IkePayloadType.IdResponder => IdentificationPayload.Parse(body, isInitiator: false),
+            IkePayloadType.Authentication => AuthenticationPayload.Parse(body),
+            IkePayloadType.TrafficSelectorInitiator => TrafficSelectorPayload.Parse(body, isInitiator: true),
+            IkePayloadType.TrafficSelectorResponder => TrafficSelectorPayload.Parse(body, isInitiator: false),
             _ => new RawPayload(type, body.ToArray()),
         };
     }

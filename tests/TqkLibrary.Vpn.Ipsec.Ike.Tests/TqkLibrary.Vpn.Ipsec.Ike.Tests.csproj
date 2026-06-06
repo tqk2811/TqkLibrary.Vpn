@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\TqkLibrary.Vpn.Ipsec.Ike\TqkLibrary.Vpn.Ipsec.Ike.csproj" />
+    <ProjectReference Include="..\..\src\TqkLibrary.Vpn.Ipsec.Esp\TqkLibrary.Vpn.Ipsec.Esp.csproj" />
     <ProjectReference Include="..\..\src\TqkLibrary.Vpn.Crypto\TqkLibrary.Vpn.Crypto.csproj" />
   </ItemGroup>
 

@@ -16,13 +16,19 @@ namespace TqkLibrary.Vpn.Ipsec.Esp
         readonly byte[] _encryptionKey;
         readonly byte[] _integrityKey;
         readonly IBlockCipher _cipher = new AesCbcCipher();
-        readonly IIntegrityAlgo _integrity = HmacIntegrity.HmacSha256_128();
+        readonly IIntegrityAlgo _integrity;
 
-        /// <summary>Creates the suite with a 32-byte AES-256 key and a 32-byte HMAC-SHA-256 key.</summary>
-        public EspCbcHmacSuite(byte[] encryptionKey, byte[] integrityKey)
+        /// <summary>
+        /// Creates the suite with an AES key (16/24/32 bytes) and an integrity algorithm + key.
+        /// Defaults to HMAC-SHA-256-128 (IKEv2); pass <see cref="HmacIntegrity.HmacSha1_96"/> for IKEv1 ESP SAs.
+        /// </summary>
+        public EspCbcHmacSuite(byte[] encryptionKey, byte[] integrityKey, IIntegrityAlgo? integrity = null)
         {
-            if (encryptionKey.Length != 32) throw new ArgumentException("AES-256 key must be 32 bytes.", nameof(encryptionKey));
-            if (integrityKey.Length != _integrity.KeySizeInBytes) throw new ArgumentException("HMAC-SHA-256 key must be 32 bytes.", nameof(integrityKey));
+            _integrity = integrity ?? HmacIntegrity.HmacSha256_128();
+            if (encryptionKey.Length != 16 && encryptionKey.Length != 24 && encryptionKey.Length != 32)
+                throw new ArgumentException("AES key must be 16, 24 or 32 bytes.", nameof(encryptionKey));
+            if (integrityKey.Length != _integrity.KeySizeInBytes)
+                throw new ArgumentException($"Integrity key must be {_integrity.KeySizeInBytes} bytes.", nameof(integrityKey));
             _encryptionKey = encryptionKey;
             _integrityKey = integrityKey;
         }

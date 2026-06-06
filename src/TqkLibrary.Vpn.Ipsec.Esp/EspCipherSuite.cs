@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using TqkLibrary.Vpn.Crypto;
 
 namespace TqkLibrary.Vpn.Ipsec.Esp
 {
@@ -19,6 +20,10 @@ namespace TqkLibrary.Vpn.Ipsec.Esp
         /// <summary>AES-CBC-256 encryption with HMAC-SHA-256-128 integrity (RFC 3602 + RFC 4868).</summary>
         public static EspCipherSuite AesCbcHmacSha256(byte[] encryptionKey, byte[] integrityKey)
             => new EspCbcHmacSuite(encryptionKey, integrityKey);
+
+        /// <summary>AES-CBC encryption with HMAC-SHA-1-96 integrity (RFC 3602 + RFC 2404) — the common IKEv1 ESP SA.</summary>
+        public static EspCipherSuite AesCbcHmacSha1(byte[] encryptionKey, byte[] integrityKey)
+            => new EspCbcHmacSuite(encryptionKey, integrityKey, HmacIntegrity.HmacSha1_96());
 
         /// <summary>AES-GCM-128 AEAD with a 4-byte salt and 8-byte explicit IV (RFC 4106).</summary>
         public static EspCipherSuite AesGcm(byte[] key, byte[] salt)

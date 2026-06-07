@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <Description>IKEv2 state machine (IKE_SA_INIT/IKE_AUTH/CREATE_CHILD_SA), DH, PSK, CFG payload, NAT-T detect.</Description>
+    <Description>IPsec: ESP transform (RFC 4303) under Esp/, and IKE under Ike/ — IKEv1 Main+Quick Mode (Ike/V1) and IKEv2 (Ike/V2).</Description>
   </PropertyGroup>
 
   <ItemGroup>

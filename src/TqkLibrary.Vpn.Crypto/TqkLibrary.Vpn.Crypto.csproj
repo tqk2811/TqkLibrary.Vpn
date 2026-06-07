@@ -1,11 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <Description>Managed crypto primitives: MD4, DES, SHA-0, DH-MODP, AES-CBC/CTR, HMAC, RNG.</Description>
+    <Description>Managed crypto: primitive contracts (Interfaces/), MD4/DES/SHA-0/DH-MODP/AES-CBC/CTR/HMAC/RNG, and AEAD (AES-GCM: native on net8.0, BouncyCastle on netstandard2.0).</Description>
   </PropertyGroup>
 
-  <ItemGroup>
-    <ProjectReference Include="..\TqkLibrary.Vpn.Crypto.Abstractions\TqkLibrary.Vpn.Crypto.Abstractions.csproj" />
+  <!-- AES-GCM is absent from the netstandard2.0 BCL -> BouncyCastle fallback (used only by Aead/AesGcmCipher). -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
+    <PackageReference Include="BouncyCastle.Cryptography" Version="2.4.0" />
   </ItemGroup>
 
 </Project>

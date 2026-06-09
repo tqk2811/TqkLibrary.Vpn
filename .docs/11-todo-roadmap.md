@@ -14,7 +14,7 @@
 - **Robustness SSTP** (mirror L2TP/IPsec): active keepalive (Echo-Request 30s, chết sau 3 lần thiếu Echo-Response), teardown sạch (Call-Disconnect) + `IAsyncDisposable`, **auto-reconnect** (backoff, stable channel) + event `StateChanged`/`Reconnected`. **Không** rekey (TLS sống dài).
 - **Typed exception** `VpnConnectionException` + 3 lớp con (auth/server-reject/network-timeout) wire ở cả 2 driver.
 - 11 project `src/` + 11 project `tests/`, build xanh `netstandard2.0`+`net8.0`, **122 test offline pass** (`net8.0`) — gồm IKEv1 capstone, TCP loopback, fuzz parser, L2TP control-channel retransmit-cap, ESP sequence-exhaustion rekey watermark; thêm ~12 live integration `[Trait("Category","Integration")]` (chạy offline bằng `--filter "Category!=Integration"`).
-- **Demo tích hợp proxy** `demo/Vpn2ProxyDemo`: adapter `IProxySource` (inline trong demo) cho `TqkLibrary.Proxy` 1.0.35 → HTTP/SOCKS proxy local định tuyến qua tunnel; MS-SSTP + L2TP/IPsec → `checkip`.
+- **Demo tích hợp proxy** `demo/Vpn2ProxyDemo` — chi tiết as-built tách riêng ở [`12-demo-vpn2proxy.md`](12-demo-vpn2proxy.md): adapter `IProxySource` (inline) → HTTP/SOCKS proxy local qua tunnel, giữ tới khi nhấn Enter; MS-SSTP + L2TP/IPsec.
 
 ---
 
@@ -68,7 +68,7 @@
 - [ ] **Logging/diagnostics** xuyên suốt (trace handshake, drop reason).
 - [ ] **Review** cancellation/timeout & thread-safety toàn cục (các receive-loop, channel).
 - [ ] **CI đa OS** (plan M0) — chưa có cấu hình CI.
-- [ ] **Adapter proxy** (hiện **inline** trong [`demo/Vpn2ProxyDemo`](../demo/Vpn2ProxyDemo), chưa tách thành project `src/`): mới có `IConnectSource` (HTTP/SOCKS CONNECT). Còn thiếu **UDP-ASSOCIATE** (có sẵn `VpnUdpClient`, cần SOCKS5 UDP framing), **BIND** (cần listen userspace — chưa có), **DNS-over-tunnel** (đang resolve bằng host DNS), **IPv6**. Nếu cần tái dùng → cân nhắc tách lại thành `TqkLibrary.Vpn.Proxy`.
+- [ ] **Adapter proxy** (hiện **inline** trong [`demo/Vpn2ProxyDemo`](../demo/Vpn2ProxyDemo), chi tiết ở [`12-demo-vpn2proxy.md`](12-demo-vpn2proxy.md); chưa tách thành project `src/`): mới có `IConnectSource` (HTTP/SOCKS CONNECT). Còn thiếu **UDP-ASSOCIATE** (có sẵn `VpnUdpClient`, cần SOCKS5 UDP framing), **BIND** (cần listen userspace — chưa có), **DNS-over-tunnel** (đang resolve bằng host DNS), **IPv6**. Nếu cần tái dùng → cân nhắc tách lại thành `TqkLibrary.Vpn.Proxy`.
 - [ ] **NuGet packaging** nếu phát hành: version (GitVersion), `GenerateDocumentationFile`, symbols/snupkg.
 
 ---

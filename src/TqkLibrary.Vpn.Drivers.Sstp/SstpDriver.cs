@@ -7,6 +7,14 @@ namespace TqkLibrary.Vpn.Drivers.Sstp
     /// <summary>The MS-SSTP protocol driver (TLS over 443, PPP, MS-CHAPv2).</summary>
     public sealed class SstpDriver : IVpnProtocolDriver
     {
+        readonly SstpReconnectOptions? _reconnectOptions;
+
+        /// <summary>Creates the driver; <paramref name="reconnectOptions"/> tunes (or disables) auto-reconnect.</summary>
+        public SstpDriver(SstpReconnectOptions? reconnectOptions = null)
+        {
+            _reconnectOptions = reconnectOptions;
+        }
+
         /// <inheritdoc/>
         public string Name => "sstp";
 
@@ -25,7 +33,7 @@ namespace TqkLibrary.Vpn.Drivers.Sstp
         /// <inheritdoc/>
         public async Task<IVpnConnection> ConnectAsync(VpnEndpoint endpoint, VpnCredentials credentials, CancellationToken cancellationToken = default)
         {
-            var connection = new SstpConnection(endpoint.Host, endpoint.Port);
+            var connection = new SstpConnection(endpoint.Host, endpoint.Port, reconnectOptions: _reconnectOptions);
             try
             {
                 await connection.ConnectAsync(credentials.Username ?? string.Empty, credentials.Password ?? string.Empty, cancellationToken)
@@ -35,6 +43,7 @@ namespace TqkLibrary.Vpn.Drivers.Sstp
                 if (connection.AssignedDns != null) config.DnsServers.Add(connection.AssignedDns);
 
                 var session = new SstpVpnSession(connection.PacketChannel, config);
+                connection.Reconnected += info => session.ApplyReconnect(info, connection.AssignedDns);
                 return new SstpVpnConnection(connection, session);
             }
             catch

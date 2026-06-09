@@ -15,7 +15,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\TqkLibrary.Vpn.Drivers\TqkLibrary.Vpn.Drivers.csproj" />
+    <ProjectReference Include="..\..\src\TqkLibrary.Vpn.Drivers.L2tpIpsec\TqkLibrary.Vpn.Drivers.L2tpIpsec.csproj" />
     <ProjectReference Include="..\..\src\TqkLibrary.Vpn.Ipsec\TqkLibrary.Vpn.Ipsec.csproj" />
   </ItemGroup>
 

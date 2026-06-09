@@ -202,7 +202,7 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.V1
             return EncryptMessage(IsakmpExchangeType.QuickMode, _quickModeId, inner, useQuickModeIv: true);
         }
 
-        /// <summary>QM2: decrypt, verify HASH(2), and capture the responder's ESP SPI + nonce.</summary>
+        /// <summary>QM2: decrypt and capture the responder's ESP SPI + nonce. (HASH(2) is not verified — broad gateway interop.)</summary>
         public bool ProcessQuickMode2(byte[] wire)
         {
             List<IsakmpPayload> payloads = DecryptMessage(wire, out _);

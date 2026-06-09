@@ -23,10 +23,6 @@ namespace TqkLibrary.Vpn.Drivers.Sstp
             => throw new NotSupportedException("MS-SSTP carries exactly one PPP session per HTTPS connection.");
 
         /// <inheritdoc/>
-        public ValueTask DisposeAsync()
-        {
-            _inner.Dispose();
-            return default;
-        }
+        public ValueTask DisposeAsync() => _inner.DisposeAsync();
     }
 }

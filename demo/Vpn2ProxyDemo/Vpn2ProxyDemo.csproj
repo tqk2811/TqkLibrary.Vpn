@@ -10,7 +10,8 @@
 
   <ItemGroup>
     <!-- Driver façades: SstpConnection (MS-SSTP) + L2tpIpsecConnection (L2TP/IPsec). -->
-    <ProjectReference Include="..\..\src\TqkLibrary.Vpn.Drivers\TqkLibrary.Vpn.Drivers.csproj" />
+    <ProjectReference Include="..\..\src\TqkLibrary.Vpn.Drivers.L2tpIpsec\TqkLibrary.Vpn.Drivers.L2tpIpsec.csproj" />
+    <ProjectReference Include="..\..\src\TqkLibrary.Vpn.Drivers.Sstp\TqkLibrary.Vpn.Drivers.Sstp.csproj" />
     <!-- Socket API trên tunnel: VpnTcpClient + TcpIpStack (dùng bởi VpnProxySource cục bộ). -->
     <ProjectReference Include="..\..\src\TqkLibrary.Vpn.Sockets\TqkLibrary.Vpn.Sockets.csproj" />
   </ItemGroup>

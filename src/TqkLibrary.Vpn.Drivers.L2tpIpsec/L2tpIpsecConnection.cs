@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Sockets;
 using TqkLibrary.Vpn.Abstractions.Channels;
 using TqkLibrary.Vpn.Abstractions.Channels.Interfaces;
+using TqkLibrary.Vpn.Abstractions.Drivers;
 using TqkLibrary.Vpn.Drivers.L2tpIpsec.Enums;
 using TqkLibrary.Vpn.Drivers.L2tpIpsec.Models;
 using TqkLibrary.Vpn.Ipsec.Esp;
@@ -137,11 +138,11 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
             // NAT-T detected → move to UDP/4500 for the encrypted MM5/MM6 and all of Quick Mode + ESP.
             natt.SwitchToNatTPort();
             if (!ike.ProcessMainMode6(await ExchangeIkeAsync(natt, ike.BuildMainMode5(), cancellationToken).ConfigureAwait(false)))
-                throw new IOException("IKEv1 Phase 1 authentication failed (PSK / HASH_R mismatch).");
+                throw new VpnAuthenticationException("IKEv1 Phase 1 authentication failed (PSK / HASH_R mismatch).");
 
             // Phase 2 — Quick Mode.
             if (!ike.ProcessQuickMode2(await ExchangeIkeAsync(natt, ike.BuildQuickMode1(), cancellationToken).ConfigureAwait(false)))
-                throw new IOException("IKEv1 Quick Mode failed (no ESP SA).");
+                throw new VpnServerRejectedException("IKEv1 Quick Mode failed (no ESP SA).");
             await natt.SendIkeAsync(ike.BuildQuickMode3()).ConfigureAwait(false); // QM3 has no reply
 
             // ESP data plane + L2TP + PPP.
@@ -161,7 +162,7 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
 
             var linkUp = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             ppp.LinkUp += () => linkUp.TrySetResult(true);
-            ppp.AuthFailed += () => linkUp.TrySetException(new IOException("PPP MS-CHAPv2 authentication failed."));
+            ppp.AuthFailed += () => linkUp.TrySetException(new VpnAuthenticationException("PPP MS-CHAPv2 authentication failed."));
             ppp.Start();
 
             await WaitAsync(linkUp.Task, cancellationToken).ConfigureAwait(false);
@@ -213,7 +214,7 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
                 if (completed == waiter.Task) return await waiter.Task.ConfigureAwait(false);
                 cancellationToken.ThrowIfCancellationRequested();
             }
-            throw new TimeoutException("No IKE response from the gateway.");
+            throw new VpnNetworkTimeoutException("No IKE response from the gateway.");
         }
 
         // The receive loop binds to ITS attempt's NAT-T channel so a stale loop never reads the next attempt's socket.
@@ -359,7 +360,7 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
                 _rekeyWaiter = null;
                 if (completed == waiter.Task) return await waiter.Task.ConfigureAwait(false);
             }
-            throw new TimeoutException("No Quick Mode rekey response from the gateway.");
+            throw new VpnNetworkTimeoutException("No Quick Mode rekey response from the gateway.");
         }
 
         void ScheduleDropPreviousInbound()

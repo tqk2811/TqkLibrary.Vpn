@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <Description>VPN protocol drivers: MS-SSTP (Sstp/) and L2TP/IPsec (L2tpIpsec/).</Description>
+    <Description>L2TP/IPsec VPN protocol driver: IKEv1 PSK (Main + Quick Mode) over NAT-T, ESP transport mode, L2TPv2, PPP/MS-CHAPv2; keepalive, rekey, teardown, auto-reconnect.</Description>
   </PropertyGroup>
 
   <ItemGroup>

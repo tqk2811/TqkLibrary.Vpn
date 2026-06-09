@@ -42,7 +42,7 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.V1.Enums
         /// <summary>Phase 1 transform id (the only one): KEY_IKE.</summary>
         public const byte TransformKeyIke = 1;
 
-        /// <summary>Phase 2 ESP transform ids (RFC 2407 §4.4.4).</summary>
+        /// <summary>Phase 2 ESP transform ids (RFC 2407 §4.4.4, IANA "IPSEC ESP Transform Identifiers").</summary>
         public static class EspTransform
         {
             /// <summary>ESP_3DES.</summary>
@@ -50,6 +50,9 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.V1.Enums
 
             /// <summary>ESP_AES (CBC; key length carried as an attribute).</summary>
             public const byte Aes = 12;
+
+            /// <summary>ESP_AES_GCM with a 16-octet ICV (combined-mode AEAD; no separate authentication algorithm).</summary>
+            public const byte AesGcm16 = 20;
         }
 
         /// <summary>Phase 1 (ISAKMP) SA attribute classes (RFC 2409 Appendix A).</summary>

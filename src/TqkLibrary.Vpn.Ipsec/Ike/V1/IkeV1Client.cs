@@ -2,6 +2,7 @@ using System.Net;
 using System.Security.Cryptography;
 using TqkLibrary.Vpn.Crypto;
 using TqkLibrary.Vpn.Crypto.Abstractions.Interfaces;
+using TqkLibrary.Vpn.Ipsec.Esp;
 using TqkLibrary.Vpn.Ipsec.Ike.V1.Enums;
 using TqkLibrary.Vpn.Ipsec.Ike.V1.Models;
 using TqkLibrary.Vpn.Ipsec.Ike.V1.Payloads;
@@ -72,6 +73,12 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.V1
 
         /// <summary>The ESP SPI the responder chose (we send to it on it).</summary>
         public byte[] ChildOutboundSpi { get; private set; } = Array.Empty<byte>();
+
+        /// <summary>The ESP suite the responder selected in Quick Mode (defaults to AES-CBC + HMAC-SHA1 until QM2).</summary>
+        public EspSuiteSelection NegotiatedEsp { get; private set; } = EspSuiteSelection.AesCbcHmacSha1();
+
+        /// <summary>The ESP suite the responder selected for the rekeyed CHILD SA (defaults to AES-CBC + HMAC-SHA1).</summary>
+        public EspSuiteSelection RekeyNegotiatedEsp { get; private set; } = EspSuiteSelection.AesCbcHmacSha1();
 
         /// <summary>The NAT-D payload type to use (RFC 3947 = 20, or the draft = 130), set from the responder's VID.</summary>
         public IsakmpPayloadType NatDiscoveryType { get; private set; } = IsakmpPayloadType.NatDiscovery;
@@ -202,17 +209,43 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.V1
             return EncryptMessage(IsakmpExchangeType.QuickMode, _quickModeId, inner, useQuickModeIv: true);
         }
 
-        /// <summary>QM2: decrypt and capture the responder's ESP SPI + nonce. (HASH(2) is not verified — broad gateway interop.)</summary>
+        /// <summary>
+        /// QM2: decrypt and capture the responder's ESP SPI, nonce, and selected transform (which sets
+        /// <see cref="NegotiatedEsp"/>). HASH(2) is not verified — broad gateway interop.
+        /// </summary>
         public bool ProcessQuickMode2(byte[] wire)
         {
             List<IsakmpPayload> payloads = DecryptMessage(wire, out _);
             IsakmpSaPayload? sa = payloads.OfType<IsakmpSaPayload>().FirstOrDefault();
             IsakmpRawPayload? nr = payloads.OfType<IsakmpRawPayload>().FirstOrDefault(p => p.Type == IsakmpPayloadType.Nonce);
-            if (sa is null || nr is null || sa.Proposals.Count == 0) return false;
+            if (sa is null || nr is null || sa.Proposals.Count == 0 || sa.Proposals[0].Transforms.Count == 0) return false;
+
+            EspSuiteSelection? selection = ParseEspSelection(sa.Proposals[0].Transforms[0]);
+            if (selection is null) return false;
 
             ChildOutboundSpi = sa.Proposals[0].Spi;
             _nonceResponder = nr.Body;
+            NegotiatedEsp = selection;
             return ChildOutboundSpi.Length == 4;
+        }
+
+        /// <summary>
+        /// Maps the responder's selected ESP transform to the suite we will build. AES-GCM only when the transform
+        /// id says so; everything else falls back to AES-CBC with the key length / authentication read from the
+        /// attributes (defaulting to 256-bit / HMAC-SHA1-96, the live path's behaviour). Returns null if unusable.
+        /// </summary>
+        static EspSuiteSelection? ParseEspSelection(IsakmpTransform transform)
+        {
+            int keyBytes = (int)AttributeOr(transform, IkeV1Constants.Phase2Attribute.KeyLength, 256) / 8;
+            if (keyBytes != 16 && keyBytes != 24 && keyBytes != 32) return null;
+
+            if (transform.TransformId == IkeV1Constants.EspTransform.AesGcm16)
+                return EspSuiteSelection.AesGcm16(keyBytes);
+
+            uint auth = AttributeOr(transform, IkeV1Constants.Phase2Attribute.AuthAlgorithm, IkeV1Constants.AuthAlgorithm.HmacSha1);
+            return auth == IkeV1Constants.AuthAlgorithm.HmacSha2_256
+                ? EspSuiteSelection.AesCbcHmacSha256(keyBytes)
+                : EspSuiteSelection.AesCbcHmacSha1(keyBytes);
         }
 
         /// <summary>QM3: encrypted HASH(3).</summary>
@@ -223,10 +256,14 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.V1
             return EncryptMessage(IsakmpExchangeType.QuickMode, _quickModeId, inner, useQuickModeIv: false);
         }
 
-        /// <summary>Derives the ESP CHILD SA keys (AES-256 + HMAC-SHA1) once Quick Mode completes.</summary>
+        /// <summary>
+        /// Derives the ESP CHILD SA keying material once Quick Mode completes, sized to the negotiated suite
+        /// (<see cref="NegotiatedEsp"/>): the encryption key followed by the integrity key (CBC) or salt (GCM).
+        /// </summary>
         public IkeV1Phase2Keys CreatePhase2Keys()
             => IkeV1Phase2Keys.Derive(_prf, _keys!.SkeyidD, IkeV1Constants.Protocol.Esp,
-                ChildInboundSpi, ChildOutboundSpi, _quickModeNonce, _nonceResponder, encryptionKeyLength: 32, integrityKeyLength: 20);
+                ChildInboundSpi, ChildOutboundSpi, _quickModeNonce, _nonceResponder,
+                NegotiatedEsp.EncryptionKeyLengthBytes, NegotiatedEsp.SecondSliceLengthBytes);
 
         // ---- Quick Mode rekey (Phase 2 / CHILD SA refresh on the live IKE SA) ----
 
@@ -260,16 +297,20 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.V1
             return EncodeEncrypted(_rekeyCipher, IsakmpExchangeType.QuickMode, _rekeyMessageId, inner);
         }
 
-        /// <summary>Rekey QM2: capture the responder's replacement ESP SPI and nonce.</summary>
+        /// <summary>Rekey QM2: capture the responder's replacement ESP SPI, nonce, and selected transform.</summary>
         public bool ProcessRekeyQuickMode2(byte[] wire)
         {
             List<IsakmpPayload> payloads = DecryptWith(_rekeyCipher!, wire);
             IsakmpSaPayload? sa = payloads.OfType<IsakmpSaPayload>().FirstOrDefault();
             IsakmpRawPayload? nr = payloads.OfType<IsakmpRawPayload>().FirstOrDefault(p => p.Type == IsakmpPayloadType.Nonce);
-            if (sa is null || nr is null || sa.Proposals.Count == 0) return false;
+            if (sa is null || nr is null || sa.Proposals.Count == 0 || sa.Proposals[0].Transforms.Count == 0) return false;
+
+            EspSuiteSelection? selection = ParseEspSelection(sa.Proposals[0].Transforms[0]);
+            if (selection is null) return false;
 
             _rekeyChildOutboundSpi = sa.Proposals[0].Spi;
             _rekeyNonceResponder = nr.Body;
+            RekeyNegotiatedEsp = selection;
             return _rekeyChildOutboundSpi.Length == 4;
         }
 
@@ -281,10 +322,11 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.V1
             return EncodeEncrypted(_rekeyCipher!, IsakmpExchangeType.QuickMode, _rekeyMessageId, inner);
         }
 
-        /// <summary>Derives the rekeyed ESP CHILD SA keys.</summary>
+        /// <summary>Derives the rekeyed ESP CHILD SA keying material, sized to <see cref="RekeyNegotiatedEsp"/>.</summary>
         public IkeV1Phase2Keys CreateRekeyPhase2Keys()
             => IkeV1Phase2Keys.Derive(_prf, _keys!.SkeyidD, IkeV1Constants.Protocol.Esp,
-                _rekeyChildInboundSpi, _rekeyChildOutboundSpi, _rekeyNonceInitiator, _rekeyNonceResponder, encryptionKeyLength: 32, integrityKeyLength: 20);
+                _rekeyChildInboundSpi, _rekeyChildOutboundSpi, _rekeyNonceInitiator, _rekeyNonceResponder,
+                RekeyNegotiatedEsp.EncryptionKeyLengthBytes, RekeyNegotiatedEsp.SecondSliceLengthBytes);
 
         /// <summary>True if <paramref name="wire"/> is the Quick Mode reply for the rekey exchange currently in flight.</summary>
         public bool IsRekeyReply(byte[] wire)

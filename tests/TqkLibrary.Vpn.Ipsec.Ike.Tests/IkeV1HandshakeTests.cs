@@ -2,6 +2,7 @@ using System.Net;
 using System.Security.Cryptography;
 using TqkLibrary.Vpn.Crypto;
 using TqkLibrary.Vpn.Ipsec.Esp;
+using TqkLibrary.Vpn.Ipsec.Esp.Enums;
 using TqkLibrary.Vpn.Ipsec.Ike.V1;
 using TqkLibrary.Vpn.Ipsec.Ike.V1.Enums;
 using TqkLibrary.Vpn.Ipsec.Ike.V1.Models;
@@ -88,6 +89,43 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.Tests
         }
 
         [Fact]
+        public void FullHandshake_WhenGatewaySelectsGcm_NegotiatesGcmAndEspExchangeSucceeds()
+        {
+            var client = new IkeV1Client(Psk, IPAddress.Loopback, IPAddress.Loopback);
+            var responder = new SimulatedResponderV1(Psk, client.InitiatorCookie, EspSuiteSelection.AesGcm16());
+
+            DriveToQuickModeComplete(client, responder);
+
+            // The client must build the AES-GCM suite the gateway selected, not the default AES-CBC.
+            Assert.Equal(EspEncryptionAlgorithm.AesGcm16, client.NegotiatedEsp.Algorithm);
+            Assert.Equal(36, client.NegotiatedEsp.KeyMaterialLengthPerDirection); // 32-byte key + 4-byte salt
+
+            IkeV1Phase2Keys clientKeys = client.CreatePhase2Keys();
+            IkeV1Phase2Keys responderKeys = responder.CreatePhase2Keys();
+            Assert.Equal(4, clientKeys.OutboundIntegrity.Length); // the GCM salt occupies the second slice
+            Assert.Equal(clientKeys.OutboundEncryption, responderKeys.InboundEncryption);
+
+            EspSession clientEsp = new(
+                ToSpi(client.ChildOutboundSpi),
+                client.NegotiatedEsp.BuildSuite(clientKeys.OutboundEncryption, clientKeys.OutboundIntegrity),
+                ToSpi(client.ChildInboundSpi),
+                client.NegotiatedEsp.BuildSuite(clientKeys.InboundEncryption, clientKeys.InboundIntegrity));
+            EspSession responderEsp = new(
+                ToSpi(client.ChildInboundSpi),
+                client.NegotiatedEsp.BuildSuite(responderKeys.OutboundEncryption, responderKeys.OutboundIntegrity),
+                ToSpi(responder.ChildInboundSpi),
+                client.NegotiatedEsp.BuildSuite(responderKeys.InboundEncryption, responderKeys.InboundIntegrity));
+
+            byte[] toServer = clientEsp.Protect(System.Text.Encoding.ASCII.GetBytes("ping via gcm"));
+            Assert.True(responderEsp.TryUnprotect(toServer, out byte[] gotByServer, out _));
+            Assert.Equal("ping via gcm", System.Text.Encoding.ASCII.GetString(gotByServer));
+
+            byte[] toClient = responderEsp.Protect(System.Text.Encoding.ASCII.GetBytes("pong via gcm"));
+            Assert.True(clientEsp.TryUnprotect(toClient, out byte[] gotByClient, out _));
+            Assert.Equal("pong via gcm", System.Text.Encoding.ASCII.GetString(gotByClient));
+        }
+
+        [Fact]
         public void Dpd_AndDelete_RoundTripThroughDerivedIvInformationalCipher()
         {
             var client = new IkeV1Client(Psk, IPAddress.Loopback, IPAddress.Loopback);
@@ -139,6 +177,7 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.Tests
             const byte IdTypeIpv4 = 1;
 
             readonly byte[] _psk;
+            readonly EspSuiteSelection _esp; // the ESP transform this responder selects in Quick Mode
             readonly HashAlgorithmName _hash = HashAlgorithmName.SHA1;
             readonly HmacPrf _prf = new(HashAlgorithmName.SHA1);
             readonly ModpDhGroup _dh = ModpDhGroup.Group14(); // MM2 echoes MODP-2048 → the client uses group 14
@@ -159,9 +198,10 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.Tests
             IkeV1Cipher? _quickModeCipher;
             byte[] _quickModeNonceInitiator = Array.Empty<byte>();
 
-            public SimulatedResponderV1(byte[] psk, byte[] initiatorCookie)
+            public SimulatedResponderV1(byte[] psk, byte[] initiatorCookie, EspSuiteSelection? esp = null)
             {
                 _psk = psk;
+                _esp = esp ?? EspSuiteSelection.AesCbcHmacSha1();
                 _cookieI = initiatorCookie;
                 _privateKey = _dh.GeneratePrivateKey();
                 _keResponder = _dh.DerivePublicValue(_privateKey);
@@ -271,10 +311,10 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.Tests
                 ChildOutboundSpi = sa.Proposals[0].Spi; // the client's inbound ESP SPI; our outbound
                 _quickModeNonceInitiator = Raw(payloads, IsakmpPayloadType.Nonce);
 
-                // The payloads after HASH(2) on the wire, in order: SA(ESP, our SPI) then Nr.
+                // The payloads after HASH(2) on the wire, in order: SA(ESP, our SPI, single selected transform) then Nr.
                 var afterHash = new List<IsakmpPayload>
                 {
-                    IkeV1Proposals.Phase2(ChildInboundSpi),
+                    BuildSelectedEspSa(),
                     new IsakmpRawPayload(IsakmpPayloadType.Nonce, _nonceResponder),
                 };
                 byte[] afterHashBytes = EncodeChain(afterHash);
@@ -296,11 +336,39 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.Tests
                 Assert.Equal(expected, hash3);
             }
 
-            /// <summary>Derives the ESP CHILD SA keys (AES-256 + HMAC-SHA1), mirroring the client's SPI orientation.</summary>
+            /// <summary>Derives the ESP CHILD SA keys for the selected suite, mirroring the client's SPI orientation.</summary>
             public IkeV1Phase2Keys CreatePhase2Keys()
                 => IkeV1Phase2Keys.Derive(_prf, _keys!.SkeyidD, IkeV1Constants.Protocol.Esp,
                     ChildInboundSpi, ChildOutboundSpi, _quickModeNonceInitiator, _nonceResponder,
-                    encryptionKeyLength: 32, integrityKeyLength: 20);
+                    _esp.EncryptionKeyLengthBytes, _esp.SecondSliceLengthBytes);
+
+            // Builds the QM2 SA carrying exactly one ESP transform — the suite this responder selected (_esp).
+            IsakmpSaPayload BuildSelectedEspSa()
+            {
+                ushort keyBits = (ushort)(_esp.EncryptionKeyLengthBytes * 8);
+                IsakmpTransform transform;
+                if (_esp.Algorithm == EspEncryptionAlgorithm.AesGcm16)
+                {
+                    transform = new IsakmpTransform(1, IkeV1Constants.EspTransform.AesGcm16)
+                        .With(IsakmpAttribute.Tv(IkeV1Constants.Phase2Attribute.KeyLength, keyBits))
+                        .With(IsakmpAttribute.Tv(IkeV1Constants.Phase2Attribute.EncapsulationMode, IkeV1Constants.EncapsulationMode.UdpTransport));
+                }
+                else
+                {
+                    ushort auth = _esp.SecondSliceLengthBytes == 32
+                        ? IkeV1Constants.AuthAlgorithm.HmacSha2_256
+                        : IkeV1Constants.AuthAlgorithm.HmacSha1;
+                    transform = new IsakmpTransform(1, IkeV1Constants.EspTransform.Aes)
+                        .With(IsakmpAttribute.Tv(IkeV1Constants.Phase2Attribute.KeyLength, keyBits))
+                        .With(IsakmpAttribute.Tv(IkeV1Constants.Phase2Attribute.AuthAlgorithm, auth))
+                        .With(IsakmpAttribute.Tv(IkeV1Constants.Phase2Attribute.EncapsulationMode, IkeV1Constants.EncapsulationMode.UdpTransport));
+                }
+                var proposal = new IsakmpProposal { Number = 1, ProtocolId = IkeV1Constants.Protocol.Esp, Spi = ChildInboundSpi };
+                proposal.Transforms.Add(transform);
+                var sa = new IsakmpSaPayload();
+                sa.Proposals.Add(proposal);
+                return sa;
+            }
 
             // ---- Informational (DPD / Delete) ----
 

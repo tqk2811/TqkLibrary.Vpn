@@ -1,6 +1,7 @@
 using System.Net;
 using TqkLibrary.Vpn.Crypto;
 using TqkLibrary.Vpn.Ipsec.Esp;
+using TqkLibrary.Vpn.Ipsec.Esp.Enums;
 using TqkLibrary.Vpn.Ipsec.Ike.V2;
 using TqkLibrary.Vpn.Ipsec.Ike.V2.Enums;
 using TqkLibrary.Vpn.Ipsec.Ike.V2.Models;
@@ -85,11 +86,40 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.Tests
             Assert.Equal("pong from server", System.Text.Encoding.ASCII.GetString(gotByClient));
         }
 
+        [Fact]
+        public void FullHandshake_WhenGatewaySelectsGcm_NegotiatesGcmAndEspExchangeSucceeds()
+        {
+            var idInitiator = new IdentificationPayload { IsInitiator = true, IdType = IkeIdType.Ipv4Address, Data = new byte[] { 0, 0, 0, 0 } };
+            var client = new IkeClient(Psk, idInitiator);
+            var responder = new SimulatedResponder(Psk, EspSuiteSelection.AesGcm16());
+
+            byte[] initResponseWire = responder.HandleInit(client.BuildInitRequest(IPAddress.Loopback, 4500, IPAddress.Loopback, 4500).Encode());
+            client.ProcessInitResponse(IkeMessage.Decode(initResponseWire));
+            Assert.True(client.ProcessAuthResponse(responder.HandleAuth(client.BuildAuthRequest())));
+
+            // The client must build the AES-GCM CHILD_SA the gateway selected from our two proposals.
+            Assert.NotNull(client.NegotiatedEsp);
+            Assert.Equal(EspEncryptionAlgorithm.AesGcm16, client.NegotiatedEsp!.Algorithm);
+            Assert.Equal(4, client.ChildKeys!.IntegrityInitiator.Length); // the GCM salt occupies the integrity slice
+
+            EspSession clientEsp = BuildInitiatorEsp(client);
+            EspSession responderEsp = responder.BuildEsp();
+
+            byte[] toServer = clientEsp.Protect(System.Text.Encoding.ASCII.GetBytes("ping via gcm"));
+            Assert.True(responderEsp.TryUnprotect(toServer, out byte[] gotByServer, out _));
+            Assert.Equal("ping via gcm", System.Text.Encoding.ASCII.GetString(gotByServer));
+
+            byte[] toClient = responderEsp.Protect(System.Text.Encoding.ASCII.GetBytes("pong via gcm"));
+            Assert.True(clientEsp.TryUnprotect(toClient, out byte[] gotByClient, out _));
+            Assert.Equal("pong via gcm", System.Text.Encoding.ASCII.GetString(gotByClient));
+        }
+
         static EspSession BuildInitiatorEsp(IkeClient client)
         {
             ChildSaKeys k = client.ChildKeys!;
-            EspCipherSuite send = EspCipherSuite.AesCbcHmacSha256(k.EncryptionInitiator, k.IntegrityInitiator);
-            EspCipherSuite receive = EspCipherSuite.AesCbcHmacSha256(k.EncryptionResponder, k.IntegrityResponder);
+            EspSuiteSelection esp = client.NegotiatedEsp!;
+            EspCipherSuite send = esp.BuildSuite(k.EncryptionInitiator, k.IntegrityInitiator);
+            EspCipherSuite receive = esp.BuildSuite(k.EncryptionResponder, k.IntegrityResponder);
             return new EspSession(ToSpi(client.ChildOutboundSpi), send, ToSpi(client.ChildInboundSpi), receive);
         }
 
@@ -108,6 +138,7 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.Tests
             readonly HmacPrf _prf = HmacPrf.Sha256();
             readonly ModpDhGroup _dh = ModpDhGroup.Group14();
             readonly byte[] _psk;
+            readonly EspSuiteSelection _esp; // the ESP CHILD_SA suite this responder selects in IKE_AUTH
             readonly byte[] _privateKey;
             readonly byte[] _publicKey;
             readonly byte[] _spi = new byte[8];
@@ -120,9 +151,10 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.Tests
             IkeKeyMaterial? _keys;
             IkeCipher? _cipher;
 
-            public SimulatedResponder(byte[] psk)
+            public SimulatedResponder(byte[] psk, EspSuiteSelection? esp = null)
             {
                 _psk = psk;
+                _esp = esp ?? EspSuiteSelection.AesCbcHmacSha256();
                 _privateKey = _dh.GeneratePrivateKey();
                 _publicKey = _dh.DerivePublicValue(_privateKey);
                 for (int i = 0; i < 8; i++) _spi[i] = (byte)(0x90 + i);
@@ -176,7 +208,8 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.Tests
                     _prf, _psk, _initRequestWire, _nonce, _keys!.SkPi, idI.BodyBytes());
                 Assert.Equal(expected, auth.Data); // the client authenticated correctly
 
-                ChildOutboundSpi = request.Find<SecurityAssociationPayload>()!.Proposals.Single().Spi;
+                // The client now offers two ESP proposals (AES-CBC then AES-GCM); both carry the same SPI.
+                ChildOutboundSpi = request.Find<SecurityAssociationPayload>()!.Proposals.First().Spi;
 
                 var idR = new IdentificationPayload { IsInitiator = false, IdType = IkeIdType.Ipv4Address, Data = new byte[] { 10, 0, 0, 1 } };
                 byte[] responderAuth = IkePskAuth.ComputeResponderAuth(
@@ -193,7 +226,9 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.Tests
                 response.Payloads.Add(idR);
                 response.Payloads.Add(new AuthenticationPayload { Method = IkeAuthMethod.SharedKey, Data = responderAuth });
                 var sa = new SecurityAssociationPayload();
-                sa.Proposals.Add(IkeProposals.DefaultEsp(ChildInboundSpi));
+                sa.Proposals.Add(_esp.Algorithm == EspEncryptionAlgorithm.AesGcm16
+                    ? IkeProposals.GcmEsp(ChildInboundSpi)
+                    : IkeProposals.DefaultEsp(ChildInboundSpi));
                 response.Payloads.Add(sa);
                 response.Payloads.Add(TrafficSelectorPayload.AnyIpv4(isInitiator: true));
                 response.Payloads.Add(TrafficSelectorPayload.AnyIpv4(isInitiator: false));
@@ -203,10 +238,11 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.Tests
 
             public EspSession BuildEsp()
             {
-                ChildSaKeys k = ChildSaKeys.DeriveDefault(_keys!.SkD, _initiatorNonce, _nonce);
+                ChildSaKeys k = ChildSaKeys.Derive(_prf, _keys!.SkD, _initiatorNonce, _nonce,
+                    _esp.EncryptionKeyLengthBytes, _esp.SecondSliceLengthBytes);
                 // Responder sends with the responder→initiator keys, receives with initiator→responder keys.
-                EspCipherSuite send = EspCipherSuite.AesCbcHmacSha256(k.EncryptionResponder, k.IntegrityResponder);
-                EspCipherSuite receive = EspCipherSuite.AesCbcHmacSha256(k.EncryptionInitiator, k.IntegrityInitiator);
+                EspCipherSuite send = _esp.BuildSuite(k.EncryptionResponder, k.IntegrityResponder);
+                EspCipherSuite receive = _esp.BuildSuite(k.EncryptionInitiator, k.IntegrityInitiator);
                 return new EspSession(ToSpi(ChildOutboundSpi), send, ToSpi(ChildInboundSpi), receive);
             }
         }

@@ -1,6 +1,7 @@
 using System.Net;
 using System.Security.Cryptography;
 using TqkLibrary.Vpn.Crypto;
+using TqkLibrary.Vpn.Ipsec.Esp;
 using TqkLibrary.Vpn.Ipsec.Ike.V2.Enums;
 using TqkLibrary.Vpn.Ipsec.Ike.V2.Models;
 using TqkLibrary.Vpn.Ipsec.Ike.V2.Payloads;
@@ -41,6 +42,9 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.V2
         /// <summary>The CHILD_SA keys, valid after a successful <see cref="ProcessAuthResponse"/>.</summary>
         public ChildSaKeys? ChildKeys { get; private set; }
 
+        /// <summary>The ESP suite the responder selected in IKE_AUTH, valid after a successful <see cref="ProcessAuthResponse"/>.</summary>
+        public EspSuiteSelection? NegotiatedEsp { get; private set; }
+
         /// <summary>The IKE SA key material (after IKE_SA_INIT).</summary>
         public IkeKeyMaterial? IkeKeys => _initiator.Keys;
 
@@ -77,7 +81,8 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.V2
             message.Payloads.Add(new AuthenticationPayload { Method = IkeAuthMethod.SharedKey, Data = auth });
 
             var sa = new SecurityAssociationPayload();
-            sa.Proposals.Add(IkeProposals.DefaultEsp(ChildInboundSpi));
+            foreach (IkeProposal proposal in IkeProposals.EspProposals(ChildInboundSpi))
+                sa.Proposals.Add(proposal);
             message.Payloads.Add(sa);
             message.Payloads.Add(TrafficSelectorPayload.AnyIpv4(isInitiator: true));
             message.Payloads.Add(TrafficSelectorPayload.AnyIpv4(isInitiator: false));
@@ -110,10 +115,44 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.V2
 
             IkeProposal? proposal = sa.Proposals.FirstOrDefault();
             if (proposal is null || proposal.Spi.Length == 0) return false;
-            ChildOutboundSpi = proposal.Spi;
 
-            ChildKeys = ChildSaKeys.DeriveDefault(_initiator.Keys.SkD, _initiator.Nonce, _initiator.PeerNonce);
+            EspSuiteSelection? selection = ParseEspSelection(proposal);
+            if (selection is null) return false;
+
+            ChildOutboundSpi = proposal.Spi;
+            NegotiatedEsp = selection;
+            ChildKeys = ChildSaKeys.Derive(_prf, _initiator.Keys.SkD, _initiator.Nonce, _initiator.PeerNonce,
+                selection.EncryptionKeyLengthBytes, selection.SecondSliceLengthBytes);
             return true;
+        }
+
+        /// <summary>
+        /// Maps the responder's selected CHILD_SA proposal to the suite we will build. AES-GCM when the ENCR
+        /// transform says so; otherwise AES-CBC with the key length / integrity read from the transforms
+        /// (defaulting to 256-bit / HMAC-SHA-256-128). Returns null if the proposal is unusable.
+        /// </summary>
+        static EspSuiteSelection? ParseEspSelection(IkeProposal proposal)
+        {
+            IkeTransform? encryption = proposal.Transforms.FirstOrDefault(t => t.Type == IkeTransformType.Encryption);
+            if (encryption is null) return null;
+
+            int keyBytes = KeyLengthOr(encryption, 256) / 8;
+            if (keyBytes != 16 && keyBytes != 24 && keyBytes != 32) return null;
+
+            if (encryption.Id == IkeTransformId.Encryption.AesGcm16)
+                return EspSuiteSelection.AesGcm16(keyBytes);
+
+            IkeTransform? integrity = proposal.Transforms.FirstOrDefault(t => t.Type == IkeTransformType.Integrity);
+            return integrity != null && integrity.Id == IkeTransformId.Integrity.HmacSha1_96
+                ? EspSuiteSelection.AesCbcHmacSha1(keyBytes)
+                : EspSuiteSelection.AesCbcHmacSha256(keyBytes);
+        }
+
+        static int KeyLengthOr(IkeTransform transform, int fallback)
+        {
+            foreach (IkeTransformAttribute attribute in transform.Attributes)
+                if (attribute.Type == IkeTransformId.KeyLengthAttribute) return attribute.Value;
+            return fallback;
         }
 
         static byte[] RandomSpi()

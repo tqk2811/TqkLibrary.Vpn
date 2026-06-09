@@ -150,8 +150,8 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
                 throw new VpnServerRejectedException("IKEv1 Quick Mode failed (no ESP SA).");
             await natt.SendIkeAsync(ike.BuildQuickMode3()).ConfigureAwait(false); // QM3 has no reply
 
-            // ESP data plane + L2TP + PPP.
-            EspSession esp = BuildEspSession(ike.CreatePhase2Keys(), ike.ChildOutboundSpi, ike.ChildInboundSpi);
+            // ESP data plane + L2TP + PPP. The suite (AES-CBC or AES-GCM) follows what the gateway selected in QM2.
+            EspSession esp = BuildEspSession(ike.NegotiatedEsp, ike.CreatePhase2Keys(), ike.ChildOutboundSpi, ike.ChildInboundSpi);
             _dataTransport = new IpsecL2tpTransport(esp, datagram => natt.SendEspAsync(datagram));
             _dataTransport.RekeyNeeded += OnRekeyNeeded; // outbound ESP sequence nearing 2^32 → rekey before it wraps
             _espActive = true;
@@ -202,10 +202,12 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
             _espActive = false;
         }
 
-        static EspSession BuildEspSession(IkeV1Phase2Keys keys, byte[] outboundSpi, byte[] inboundSpi)
+        // Builds the bidirectional ESP session from the negotiated suite. For AES-CBC the per-direction key material
+        // is encryption-key ‖ integrity-key; for AES-GCM it is encryption-key ‖ 4-byte salt (EspSuiteSelection maps it).
+        static EspSession BuildEspSession(EspSuiteSelection selection, IkeV1Phase2Keys keys, byte[] outboundSpi, byte[] inboundSpi)
         {
-            EspCipherSuite outbound = EspCipherSuite.AesCbcHmacSha1(keys.OutboundEncryption, keys.OutboundIntegrity);
-            EspCipherSuite inbound = EspCipherSuite.AesCbcHmacSha1(keys.InboundEncryption, keys.InboundIntegrity);
+            EspCipherSuite outbound = selection.BuildSuite(keys.OutboundEncryption, keys.OutboundIntegrity);
+            EspCipherSuite inbound = selection.BuildSuite(keys.InboundEncryption, keys.InboundIntegrity);
             return new EspSession(ToSpi(outboundSpi), outbound, ToSpi(inboundSpi), inbound);
         }
 
@@ -354,7 +356,7 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
                 if (!ike.ProcessRekeyQuickMode2(reply)) return; // keep the current SA; retry at the next interval / signal
                 await _natt!.SendIkeAsync(ike.BuildRekeyQuickMode3()).ConfigureAwait(false);
 
-                EspSession next = BuildEspSession(ike.CreateRekeyPhase2Keys(), ike.RekeyChildOutboundSpi, ike.RekeyChildInboundSpi);
+                EspSession next = BuildEspSession(ike.RekeyNegotiatedEsp, ike.CreateRekeyPhase2Keys(), ike.RekeyChildOutboundSpi, ike.RekeyChildInboundSpi);
                 _dataTransport!.SwapSession(next);
                 ScheduleDropPreviousInbound();
             }

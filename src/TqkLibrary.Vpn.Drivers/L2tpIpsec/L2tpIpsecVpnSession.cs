@@ -1,13 +1,15 @@
+using System.Net;
 using TqkLibrary.Vpn.Abstractions.Channels.Interfaces;
 using TqkLibrary.Vpn.Abstractions.Drivers.Interfaces;
 using TqkLibrary.Vpn.Abstractions.Drivers.Models;
+using TqkLibrary.Vpn.Drivers.L2tpIpsec.Models;
 
 namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
 {
-    /// <summary>The single PPP/L3 session of an L2TP/IPsec connection.</summary>
+    /// <summary>The single PPP/L3 session of an L2TP/IPsec connection. <see cref="PacketChannel"/> is the stable facade.</summary>
     public sealed class L2tpIpsecVpnSession : IVpnSession
     {
-        /// <summary>Creates a session over the given channel and config.</summary>
+        /// <summary>Creates a session over the given (stable) channel and config.</summary>
         public L2tpIpsecVpnSession(IPacketChannel packetChannel, TunnelConfig config)
         {
             PacketChannel = packetChannel;
@@ -19,6 +21,21 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
 
         /// <inheritdoc/>
         public IPacketChannel PacketChannel { get; }
+
+        /// <summary>
+        /// Raised after an auto-reconnect updates <see cref="Config"/>. When <see cref="L2tpIpsecReconnectInfo.AddressChanged"/>
+        /// is true the consumer should rebuild its IP stack; otherwise existing in-tunnel sockets keep working.
+        /// </summary>
+        public event Action<L2tpIpsecReconnectInfo>? Reconfigured;
+
+        /// <summary>Applies a reconnect's new address/DNS to <see cref="Config"/> and raises <see cref="Reconfigured"/>.</summary>
+        internal void ApplyReconnect(L2tpIpsecReconnectInfo info, IPAddress? dns)
+        {
+            Config.AssignedAddress = info.AssignedAddress;
+            Config.DnsServers.Clear();
+            if (dns != null) Config.DnsServers.Add(dns);
+            Reconfigured?.Invoke(info);
+        }
 
         /// <inheritdoc/>
         public ValueTask DisposeAsync() => default;

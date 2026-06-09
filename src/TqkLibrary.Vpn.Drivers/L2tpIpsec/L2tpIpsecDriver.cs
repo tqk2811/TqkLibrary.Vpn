@@ -11,6 +11,14 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
         /// <summary>The pre-shared key used when credentials do not carry one (VPN Gate's group PSK).</summary>
         public const string DefaultPreSharedKey = "vpn";
 
+        readonly L2tpIpsecReconnectOptions? _reconnectOptions;
+
+        /// <summary>Creates the driver; <paramref name="reconnectOptions"/> tunes (or disables) auto-reconnect.</summary>
+        public L2tpIpsecDriver(L2tpIpsecReconnectOptions? reconnectOptions = null)
+        {
+            _reconnectOptions = reconnectOptions;
+        }
+
         /// <inheritdoc/>
         public string Name => "l2tp-ipsec";
 
@@ -30,7 +38,7 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
         public async Task<IVpnConnection> ConnectAsync(VpnEndpoint endpoint, VpnCredentials credentials, CancellationToken cancellationToken = default)
         {
             byte[] psk = credentials.PreSharedKey ?? Encoding.ASCII.GetBytes(DefaultPreSharedKey);
-            var connection = new L2tpIpsecConnection(endpoint.Host, psk);
+            var connection = new L2tpIpsecConnection(endpoint.Host, psk, reconnectOptions: _reconnectOptions);
             try
             {
                 await connection.ConnectAsync(credentials.Username ?? string.Empty, credentials.Password ?? string.Empty, cancellationToken)
@@ -40,6 +48,7 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
                 if (connection.AssignedDns != null) config.DnsServers.Add(connection.AssignedDns);
 
                 var session = new L2tpIpsecVpnSession(connection.PacketChannel, config);
+                connection.Reconnected += info => session.ApplyReconnect(info, connection.AssignedDns);
                 return new L2tpIpsecVpnConnection(connection, session);
             }
             catch

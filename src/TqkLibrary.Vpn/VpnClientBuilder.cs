@@ -19,8 +19,11 @@ namespace TqkLibrary.Vpn
         /// <summary>Registers the MS-SSTP driver.</summary>
         public VpnClientBuilder UseSstp() => AddDriver(new SstpDriver());
 
-        /// <summary>Registers the L2TP/IPsec driver (IKEv1 PSK + NAT-T).</summary>
+        /// <summary>Registers the L2TP/IPsec driver (IKEv1 PSK + NAT-T) with auto-reconnect enabled by default.</summary>
         public VpnClientBuilder UseL2tpIpsec() => AddDriver(new L2tpIpsecDriver());
+
+        /// <summary>Registers the L2TP/IPsec driver with explicit auto-reconnect options (e.g. to disable it).</summary>
+        public VpnClientBuilder UseL2tpIpsec(L2tpIpsecReconnectOptions reconnectOptions) => AddDriver(new L2tpIpsecDriver(reconnectOptions));
 
         /// <summary>Builds the client.</summary>
         public VpnClient Build() => new VpnClient(_drivers);

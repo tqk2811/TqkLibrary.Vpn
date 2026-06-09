@@ -16,6 +16,14 @@
       "commandName": "Project",
       "commandLineArgs": "l2tp --host public-vpn-226.opengw.net"
     },
+    "sstp (proxy cố định)": {
+      "commandName": "Project",
+      "commandLineArgs": "sstp --proxy-host 127.0.0.1 --proxy-port 18080"
+    },
+    "l2tp (proxy LAN)": {
+      "commandName": "Project",
+      "commandLineArgs": "l2tp --proxy-host 0.0.0.0 --proxy-port 18080"
+    },
     "help": {
       "commandName": "Project",
       "commandLineArgs": "--help"

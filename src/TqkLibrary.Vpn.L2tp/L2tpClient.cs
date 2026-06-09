@@ -17,15 +17,19 @@ namespace TqkLibrary.Vpn.L2tp
         readonly TaskCompletionSource<bool> _tunnelUp = new(TaskCreationOptions.RunContinuationsAsynchronously);
         readonly TaskCompletionSource<bool> _sessionUp = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        /// <summary>Creates a client over <paramref name="transport"/>; <paramref name="hostName"/> is sent as the Host Name AVP.</summary>
-        public L2tpClient(IL2tpTransport transport, string hostName = "anonymous", TimeSpan? retransmitInterval = null)
+        /// <summary>
+        /// Creates a client over <paramref name="transport"/>; <paramref name="hostName"/> is sent as the Host Name AVP.
+        /// <paramref name="maxRetransmits"/> caps control-channel retransmits before the link is declared dead (0 = unbounded).
+        /// </summary>
+        public L2tpClient(IL2tpTransport transport, string hostName = "anonymous", TimeSpan? retransmitInterval = null, int maxRetransmits = 0)
         {
             _transport = transport;
             _hostName = hostName;
             LocalTunnelId = RandomId();
             LocalSessionId = RandomId();
-            _control = new L2tpControlChannel(transport.SendAsync, retransmitInterval);
+            _control = new L2tpControlChannel(transport.SendAsync, retransmitInterval, maxRetransmits);
             _control.ControlReceived += OnControl;
+            _control.Failed += OnControlFailed;
             _transport.DatagramReceived += OnDatagram;
         }
 
@@ -164,6 +168,14 @@ namespace TqkLibrary.Vpn.L2tp
         {
             _tunnelUp.TrySetException(new IOException(reason));
             _sessionUp.TrySetException(new IOException(reason));
+        }
+
+        // The reliable control channel exhausted its retransmit budget: surface it both as a handshake failure
+        // (unblocks an in-progress ConnectAsync) and as a Disconnected drop (triggers the driver's reconnect).
+        void OnControlFailed(string reason)
+        {
+            Fail(reason);
+            Disconnected?.Invoke(reason);
         }
 
         static async Task WaitAsync(Task task, CancellationToken cancellationToken)

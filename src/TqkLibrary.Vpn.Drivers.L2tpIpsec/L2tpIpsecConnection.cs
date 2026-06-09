@@ -37,6 +37,7 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
         readonly byte[] _preSharedKey;
         readonly uint _magic;
         readonly L2tpIpsecReconnectOptions _opts;
+        readonly L2tpIpsecTimeoutOptions _timeouts;
         readonly SwappablePacketChannel _facade = new();
         readonly CancellationTokenSource _lifetimeCts = new();
         readonly Random _random = new();
@@ -71,12 +72,14 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
         L2tpIpsecConnectionState _state = L2tpIpsecConnectionState.Disconnected;
 
         /// <summary>Creates a connection to the given L2TP/IPsec gateway with the IPsec pre-shared key.</summary>
-        public L2tpIpsecConnection(string host, byte[] preSharedKey, uint magic = 0x4D2A3B1C, L2tpIpsecReconnectOptions? reconnectOptions = null)
+        public L2tpIpsecConnection(string host, byte[] preSharedKey, uint magic = 0x4D2A3B1C,
+            L2tpIpsecReconnectOptions? reconnectOptions = null, L2tpIpsecTimeoutOptions? timeoutOptions = null)
         {
             _host = host;
             _preSharedKey = preSharedKey;
             _magic = magic;
             _opts = reconnectOptions ?? new L2tpIpsecReconnectOptions();
+            _timeouts = timeoutOptions ?? new L2tpIpsecTimeoutOptions();
         }
 
         /// <summary>The stable L3 packet channel (valid after a successful connect; survives reconnect).</summary>
@@ -150,7 +153,8 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
             _dataTransport = new IpsecL2tpTransport(esp, datagram => natt.SendEspAsync(datagram));
             _espActive = true;
 
-            var l2tp = new L2tpClient(_dataTransport);
+            var l2tp = new L2tpClient(_dataTransport,
+                retransmitInterval: _timeouts.L2tpRetransmitInterval, maxRetransmits: _timeouts.L2tpMaxRetransmits);
             _l2tp = l2tp;
             l2tp.Disconnected += OnLinkLost;
             await l2tp.ConnectAsync(cancellationToken).ConfigureAwait(false);
@@ -204,13 +208,13 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
 
         async Task<byte[]> ExchangeIkeAsync(NatTraversalChannel natt, byte[] request, CancellationToken cancellationToken)
         {
-            for (int attempt = 0; attempt < 5; attempt++)
+            for (int attempt = 0; attempt < _timeouts.IkeMaxAttempts; attempt++)
             {
                 var waiter = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
                 _ikeWaiter = waiter;
                 await natt.SendIkeAsync(request).ConfigureAwait(false);
 
-                Task completed = await Task.WhenAny(waiter.Task, Task.Delay(2500, cancellationToken)).ConfigureAwait(false);
+                Task completed = await Task.WhenAny(waiter.Task, Task.Delay(_timeouts.IkeRetransmitInterval, cancellationToken)).ConfigureAwait(false);
                 if (completed == waiter.Task) return await waiter.Task.ConfigureAwait(false);
                 cancellationToken.ThrowIfCancellationRequested();
             }
@@ -350,13 +354,13 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
 
         async Task<byte[]> ExchangeRekeyAsync(byte[] request)
         {
-            for (int attempt = 0; attempt < 5 && _keepaliveRunning; attempt++)
+            for (int attempt = 0; attempt < _timeouts.IkeMaxAttempts && _keepaliveRunning; attempt++)
             {
                 var waiter = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
                 _rekeyWaiter = waiter;
                 await _natt!.SendIkeAsync(request).ConfigureAwait(false);
 
-                Task completed = await Task.WhenAny(waiter.Task, Task.Delay(2500)).ConfigureAwait(false);
+                Task completed = await Task.WhenAny(waiter.Task, Task.Delay(_timeouts.IkeRetransmitInterval)).ConfigureAwait(false);
                 _rekeyWaiter = null;
                 if (completed == waiter.Task) return await waiter.Task.ConfigureAwait(false);
             }

@@ -37,6 +37,7 @@ TqkLibrary.Vpn.Drivers.L2tpIpsec/
 ├── UdpEncapsulation.cs          Build/parse UDP header (port 1701, checksum 0) cho ESP transport mode
 ├── L2tpPppFrameChannel.cs       Cầu nối L2TP data ↔ PPP engine (IPppFrameChannel)
 ├── L2tpIpsecReconnectOptions.cs Chính sách auto-reconnect (backoff/jitter/max attempts)
+├── L2tpIpsecTimeoutOptions.cs   Timeout/retransmit cap cho IKE + L2TP control channel
 ├── L2tpIpsecVpnConnection.cs    Adapter sang IVpnConnection (một session)
 ├── L2tpIpsecVpnSession.cs       IVpnSession: facade ổn định + áp dụng reconnect vào TunnelConfig
 ├── Enums/                       L2tpIpsecConnectionState (Disconnected/Connecting/Connected/Reconnecting)
@@ -53,6 +54,7 @@ TqkLibrary.Vpn.Drivers.L2tpIpsec/
 | `UdpEncapsulation` | Build/parse UDP header (1701, checksum 0) mà ESP transport mode bảo vệ | [UdpEncapsulation.cs:8](UdpEncapsulation.cs#L8) |
 | `L2tpPppFrameChannel` | `IPppFrameChannel`: PPP frame đi trong L2TP data message | [L2tpPppFrameChannel.cs:7](L2tpPppFrameChannel.cs#L7) |
 | `L2tpIpsecReconnectOptions` | Chính sách auto-reconnect: backoff/jitter/max attempts | [L2tpIpsecReconnectOptions.cs:8](L2tpIpsecReconnectOptions.cs#L8) |
+| `L2tpIpsecTimeoutOptions` | Timeout cấu hình được: IKE retransmit interval/số lần (`ExchangeIkeAsync`/`ExchangeRekeyAsync`) + L2TP control-channel retransmit interval/cap | [L2tpIpsecTimeoutOptions.cs:9](L2tpIpsecTimeoutOptions.cs#L9) |
 | `L2tpIpsecVpnConnection` | Adapter `IVpnConnection` (một PPP session/tunnel) | [L2tpIpsecVpnConnection.cs:6](L2tpIpsecVpnConnection.cs#L6) |
 | `L2tpIpsecVpnSession` | `IVpnSession`: facade ổn định + `ApplyReconnect` cập nhật `TunnelConfig` | [L2tpIpsecVpnSession.cs:10](L2tpIpsecVpnSession.cs#L10) |
 | `L2tpIpsecConnectionState` | Enum trạng thái vòng đời | [Enums/L2tpIpsecConnectionState.cs:4](Enums/L2tpIpsecConnectionState.cs#L4) |
@@ -90,6 +92,8 @@ await conn.DisposeAsync();                          // teardown sạch: IKE Dele
 ```
 
 Class hạ tầng `L2tpIpsecConnection` cũng public nếu cần điều khiển chi tiết (sự kiện `StateChanged`/`Reconnected`, `DisconnectAsync`...). Lỗi kết nối ném typed exception (`VpnAuthenticationException` / `VpnServerRejectedException` / `VpnNetworkTimeoutException` — đều kế thừa `VpnConnectionException`).
+
+**Timeout cấu hình được:** truyền `L2tpIpsecTimeoutOptions` (ctor driver/connection hoặc `VpnClientBuilder.UseL2tpIpsec(reconnect, timeout)`) để chỉnh số lần/khoảng retransmit IKE (`IkeMaxAttempts`/`IkeRetransmitInterval`, mặc định 5×2.5s) và L2TP control channel (`L2tpMaxRetransmits`/`L2tpRetransmitInterval`, mặc định 8×1s). IKE hết số lần ⇒ `VpnNetworkTimeoutException`; L2TP hết cap ⇒ link-loss → reconnect.
 
 ## Luồng nội bộ
 

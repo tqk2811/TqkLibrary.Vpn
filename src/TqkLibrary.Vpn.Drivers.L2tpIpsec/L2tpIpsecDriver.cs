@@ -12,11 +12,16 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
         public const string DefaultPreSharedKey = "vpn";
 
         readonly L2tpIpsecReconnectOptions? _reconnectOptions;
+        readonly L2tpIpsecTimeoutOptions? _timeoutOptions;
 
-        /// <summary>Creates the driver; <paramref name="reconnectOptions"/> tunes (or disables) auto-reconnect.</summary>
-        public L2tpIpsecDriver(L2tpIpsecReconnectOptions? reconnectOptions = null)
+        /// <summary>
+        /// Creates the driver; <paramref name="reconnectOptions"/> tunes (or disables) auto-reconnect and
+        /// <paramref name="timeoutOptions"/> tunes the IKE/L2TP handshake timeouts and retransmit caps.
+        /// </summary>
+        public L2tpIpsecDriver(L2tpIpsecReconnectOptions? reconnectOptions = null, L2tpIpsecTimeoutOptions? timeoutOptions = null)
         {
             _reconnectOptions = reconnectOptions;
+            _timeoutOptions = timeoutOptions;
         }
 
         /// <inheritdoc/>
@@ -38,7 +43,7 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
         public async Task<IVpnConnection> ConnectAsync(VpnEndpoint endpoint, VpnCredentials credentials, CancellationToken cancellationToken = default)
         {
             byte[] psk = credentials.PreSharedKey ?? Encoding.ASCII.GetBytes(DefaultPreSharedKey);
-            var connection = new L2tpIpsecConnection(endpoint.Host, psk, reconnectOptions: _reconnectOptions);
+            var connection = new L2tpIpsecConnection(endpoint.Host, psk, reconnectOptions: _reconnectOptions, timeoutOptions: _timeoutOptions);
             try
             {
                 await connection.ConnectAsync(credentials.Username ?? string.Empty, credentials.Password ?? string.Empty, cancellationToken)

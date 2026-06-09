@@ -28,6 +28,10 @@ namespace TqkLibrary.Vpn
         /// <summary>Registers the L2TP/IPsec driver with explicit auto-reconnect options (e.g. to disable it).</summary>
         public VpnClientBuilder UseL2tpIpsec(L2tpIpsecReconnectOptions reconnectOptions) => AddDriver(new L2tpIpsecDriver(reconnectOptions));
 
+        /// <summary>Registers the L2TP/IPsec driver with explicit auto-reconnect and IKE/L2TP timeout options.</summary>
+        public VpnClientBuilder UseL2tpIpsec(L2tpIpsecReconnectOptions reconnectOptions, L2tpIpsecTimeoutOptions timeoutOptions)
+            => AddDriver(new L2tpIpsecDriver(reconnectOptions, timeoutOptions));
+
         /// <summary>Builds the client.</summary>
         public VpnClient Build() => new VpnClient(_drivers);
     }

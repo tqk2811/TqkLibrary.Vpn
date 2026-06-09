@@ -40,7 +40,7 @@ Project chỉ gồm 2 type — toàn bộ "logic" thực sự nằm ở các pro
 | `VpnClientBuilder` | Builder fluent: đăng ký driver theo `Name`, có shortcut `UseSstp()`/`UseL2tpIpsec()`, kết thúc bằng `Build()` | [VpnClientBuilder.cs:8](VpnClientBuilder.cs#L8) |
 | `VpnClientBuilder.AddDriver` | Đăng ký một `IVpnProtocolDriver` bất kỳ (keyed theo `driver.Name`) | [VpnClientBuilder.cs:13](VpnClientBuilder.cs#L13) |
 | `VpnClientBuilder.UseSstp` | Đăng ký `SstpDriver` (key `"sstp"`) | [VpnClientBuilder.cs:20](VpnClientBuilder.cs#L20) |
-| `VpnClientBuilder.UseL2tpIpsec` | Đăng ký `L2tpIpsecDriver` (key `"l2tp-ipsec"`), auto-reconnect bật mặc định; có overload nhận `L2tpIpsecReconnectOptions` | [VpnClientBuilder.cs:23-26](VpnClientBuilder.cs#L23-L26) |
+| `VpnClientBuilder.UseL2tpIpsec` | Đăng ký `L2tpIpsecDriver` (key `"l2tp-ipsec"`), auto-reconnect bật mặc định; overload nhận `L2tpIpsecReconnectOptions` và `(reconnect, L2tpIpsecTimeoutOptions)` | [VpnClientBuilder.cs:26-34](VpnClientBuilder.cs#L26-L34) |
 | `VpnClient` | Client đã build: giữ `IReadOnlyDictionary<string, IVpnProtocolDriver>` các driver | [VpnClient.cs:8](VpnClient.cs#L8) |
 | `VpnClient.ConnectAsync` | Tra driver theo tên giao thức rồi ủy thác `driver.ConnectAsync(endpoint, credentials, ct)`; ném `NotSupportedException` nếu chưa đăng ký | [VpnClient.cs:18](VpnClient.cs#L18) |
 | `VpnClient.Protocols` | Liệt kê tên các giao thức đã đăng ký | [VpnClient.cs:15](VpnClient.cs#L15) |
@@ -79,7 +79,7 @@ Bản thân project façade **không hiện thực chuẩn mạng nào** — nó
 
 Điểm vào public:
 
-- `VpnClientBuilder` → `UseSstp()`, `UseL2tpIpsec()`, `UseL2tpIpsec(L2tpIpsecReconnectOptions)`, `AddDriver(IVpnProtocolDriver)`, `Build()`.
+- `VpnClientBuilder` → `UseSstp()`, `UseL2tpIpsec()`, `UseL2tpIpsec(L2tpIpsecReconnectOptions)`, `UseL2tpIpsec(L2tpIpsecReconnectOptions, L2tpIpsecTimeoutOptions)`, `AddDriver(IVpnProtocolDriver)`, `Build()`.
 - `VpnClient` → `ConnectAsync(protocol, endpoint, credentials, ct)`, `Protocols`, `GetCapabilities(protocol)`.
 
 Ví dụ tối thiểu:

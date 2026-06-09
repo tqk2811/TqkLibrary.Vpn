@@ -34,7 +34,7 @@ Lưu ý: đây là **L2TP thuần** — bản thân nó không làm IPsec/ESP. V
 ```
 TqkLibrary.Vpn.L2tp/
 ├── L2tpClient.cs            # Client LAC: dựng tunnel + session, vào/ra PPP frame (điểm vào chính)
-├── L2tpControlChannel.cs    # Kênh điều khiển tin cậy: Ns/Nr, ack tích lũy, ZLB, retransmit
+├── L2tpControlChannel.cs    # Kênh điều khiển tin cậy: Ns/Nr, ack tích lũy, ZLB, retransmit (có cap → event Failed)
 ├── L2tpCodec.cs             # Encode/decode header L2TP (control & data) + danh sách AVP
 ├── IL2tpTransport.cs        # Ranh giới transport: gửi/nhận một L2TP datagram (UDP/1701 payload)
 ├── Enums/
@@ -50,7 +50,7 @@ TqkLibrary.Vpn.L2tp/
 | Type | Vai trò | Vị trí |
 |------|---------|--------|
 | `L2tpClient` | Client LAC: `ConnectAsync` dựng tunnel+session, `SendDataAsync`/`DataReceived` cho PPP, HELLO + CDN/StopCCN teardown. Điểm vào chính. | [L2tpClient.cs:12](L2tpClient.cs#L12) |
-| `L2tpControlChannel` | Kênh điều khiển tin cậy: gán Ns/Nr, ack tích lũy, ZLB ack, retransmit qua `Timer`, giao message in-order qua `ControlReceived`. | [L2tpControlChannel.cs:10](L2tpControlChannel.cs#L10) |
+| `L2tpControlChannel` | Kênh điều khiển tin cậy: gán Ns/Nr, ack tích lũy, ZLB ack, retransmit qua `Timer` (cap `maxRetransmits` → raise `Failed` khi peer im lặng), giao message in-order qua `ControlReceived`. | [L2tpControlChannel.cs:12](L2tpControlChannel.cs#L12) |
 | `L2tpCodec` | Static codec: `EncodeControl`/`DecodeControl`, `EncodeData`/`TryDecodeData`, `IsControl`. | [L2tpCodec.cs:11](L2tpCodec.cs#L11) |
 | `IL2tpTransport` | Ranh giới transport (`SendAsync` + `DatagramReceived`); driver hiện thực qua ESP-over-UDP, test dùng cặp in-process. | [IL2tpTransport.cs:7](IL2tpTransport.cs#L7) |
 | `L2tpAvp` | Model AVP + factory `Create`/`UInt16`/`UInt32`/`Text` và `AsUInt16`/`AsUInt32`; `Write`/`Parse` nội bộ. | [L2tpAvp.cs:10](Models/L2tpAvp.cs#L10) |
@@ -76,11 +76,11 @@ TqkLibrary.Vpn.L2tp/
 
 Các kiểu/điểm vào public chính:
 
-- `L2tpClient(IL2tpTransport transport, string hostName = "anonymous", TimeSpan? retransmitInterval = null)` — [L2tpClient.cs:21](L2tpClient.cs#L21)
+- `L2tpClient(IL2tpTransport transport, string hostName = "anonymous", TimeSpan? retransmitInterval = null, int maxRetransmits = 0)` — `maxRetransmits` > 0 ⇒ link chết sau N lần retransmit không ack; 0 = vô hạn (mặc định) — [L2tpClient.cs:24](L2tpClient.cs#L24)
 - `Task ConnectAsync(CancellationToken)` — dựng tunnel rồi session, hoàn tất khi session up — [L2tpClient.cs:51](L2tpClient.cs#L51)
 - `Task SendDataAsync(ReadOnlyMemory<byte> pppFrame)` — gửi PPP frame trong data message — [L2tpClient.cs:61](L2tpClient.cs#L61)
 - `event Action<ReadOnlyMemory<byte>> DataReceived` — nhận PPP frame của session — [L2tpClient.cs:45](L2tpClient.cs#L45)
-- `event Action<string> Disconnected` — server tear down (StopCCN/CDN) sau khi đã established — [L2tpClient.cs:48](L2tpClient.cs#L48)
+- `event Action<string> Disconnected` — server tear down (StopCCN/CDN) **hoặc** control channel hết hạn retransmit — [L2tpClient.cs:48](L2tpClient.cs#L48)
 - `Task SendHelloAsync()` / `Task SendCallDisconnectAsync(...)` / `Task SendStopControlConnectionAsync(...)` — keepalive & teardown — [L2tpClient.cs:65](L2tpClient.cs#L65)
 - `LocalTunnelId` / `LocalSessionId` / `PeerTunnelId` / `PeerSessionId` — id hai phía — [L2tpClient.cs:33-42](L2tpClient.cs#L33-L42)
 
@@ -123,8 +123,8 @@ Nếu server gửi **StopCCN/CDN**: [`OnControl`](L2tpClient.cs#L138-L146) gọi
   - **ZLB** (`IsZeroLengthBody`) — chỉ là ack, return ngay ([dòng 64-65](L2tpControlChannel.cs#L64-L65)).
   - **In-order** (`Ns == _nr`) — tăng `_nr`, đánh dấu deliver; sau đó raise `ControlReceived` và gửi standalone ZLB ack ([dòng 67-83](L2tpControlChannel.cs#L67-L83)).
   - **Trùng** (`Ns < _nr`) — peer retransmit vì lỡ ack của ta → re-ack ([dòng 72-76](L2tpControlChannel.cs#L72-L76)).
-- **Retransmit:** [`Timer`](L2tpControlChannel.cs#L26) định kỳ gọi [`Retransmit`](L2tpControlChannel.cs#L98) gửi lại message đầu hàng `_unacked` (mặc định 1s).
-- So sánh seq wrap-around 16-bit: [`SeqLess`](L2tpControlChannel.cs#L108).
+- **Retransmit:** [`Timer`](L2tpControlChannel.cs#L35) định kỳ gọi [`Retransmit`](L2tpControlChannel.cs#L111) gửi lại message đầu hàng `_unacked` (mặc định 1s). Mỗi message giữ bộ đếm `Attempts`; khi vượt `maxRetransmits` (nếu > 0) → dừng timer + raise [`Failed`](L2tpControlChannel.cs#L46) (peer im lặng), `L2tpClient` chuyển thành `Disconnected`.
+- So sánh seq wrap-around 16-bit: [`SeqLess`](L2tpControlChannel.cs#L139).
 
 ### 3. Encode/decode header (`L2tpCodec`)
 
@@ -144,7 +144,7 @@ Nếu server gửi **StopCCN/CDN**: [`OnControl`](L2tpClient.cs#L138-L146) gọi
   - **AVP Hidden** parse được nhưng **không giải mã** ([L2tpAvp.cs:8](Models/L2tpAvp.cs#L8), [L2tpAvp.cs:16](Models/L2tpAvp.cs#L16)).
   - **Tunnel CHAP** (Challenge/ChallengeResponse) có trong enum [`L2tpAvpType`](Enums/L2tpAvpType.cs#L36-L40) nhưng client chưa dùng để xác thực tunnel.
   - **SetLinkInfo** có trong enum nhưng `OnControl` chưa xử lý loại message này.
-  - Retransmit gửi lại **message đầu hàng** mỗi tick, không có giới hạn số lần thử (no max-retry/abort) ở [`Retransmit`](L2tpControlChannel.cs#L98).
+  - Retransmit gửi lại **message đầu hàng** mỗi tick; có **cap số lần thử** tùy chọn (`maxRetransmits`, mặc định 0 = vô hạn) ở [`Retransmit`](L2tpControlChannel.cs#L111) — vượt cap raise `Failed`. Driver L2TP/IPsec đặt cap mặc định 8 qua `L2tpIpsecTimeoutOptions`. Vẫn chưa có **exponential backoff** cho khoảng retransmit (cố định mỗi tick).
   - Cửa sổ truyền/nhận hiệu dụng là **1** (gửi message tiếp theo không chặn theo `ReceiveWindowSize` đã quảng cáo).
   - Là vai trò **LAC**; không hiện thực vai trò **LNS/server**.
 - **Khác biệt netstandard2.0 vs net8.0:** không có khác biệt hành vi trong project này; tránh `record`/`init` theo quy ước thư viện (netstandard2.0 thiếu `IsExternalInit`).

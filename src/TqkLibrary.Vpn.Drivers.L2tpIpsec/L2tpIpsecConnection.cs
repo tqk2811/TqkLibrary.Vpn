@@ -64,6 +64,7 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
         TaskCompletionSource<byte[]>? _rekeyWaiter;
         int _dpdSequence;
         int _dpdMissed;
+        int _rekeyInProgress; // 0/1 guard so the timer rekey and the sequence-exhaustion rekey never overlap
         int _teardownStarted;
         bool _supervisorActive; // guarded by _stateLock
         volatile bool _keepaliveRunning;
@@ -121,6 +122,7 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
             _espActive = false;
             Interlocked.Exchange(ref _dpdSequence, 0);
             Interlocked.Exchange(ref _dpdMissed, 0);
+            Interlocked.Exchange(ref _rekeyInProgress, 0);
             _ikeWaiter = null;
             _rekeyWaiter = null;
 
@@ -151,6 +153,7 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
             // ESP data plane + L2TP + PPP.
             EspSession esp = BuildEspSession(ike.CreatePhase2Keys(), ike.ChildOutboundSpi, ike.ChildInboundSpi);
             _dataTransport = new IpsecL2tpTransport(esp, datagram => natt.SendEspAsync(datagram));
+            _dataTransport.RekeyNeeded += OnRekeyNeeded; // outbound ESP sequence nearing 2^32 → rekey before it wraps
             _espActive = true;
 
             var l2tp = new L2tpClient(_dataTransport,
@@ -335,14 +338,20 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
 
         // ---- rekey: refresh the ESP CHILD SA on the live IKE SA (make-before-break) ----
 
+        // The data plane reports the outbound ESP sequence is nearing 2^32 — rekey now, before it wraps.
+        void OnRekeyNeeded() => _ = RekeyPhase2Async();
+
         async Task RekeyPhase2Async()
         {
             if (!_keepaliveRunning) return;
-            IkeV1Client ike = _ike!;
+            // Either the lifetime timer or the sequence-exhaustion signal can land here; one rekey at a time so they
+            // don't clobber the shared _rekeyWaiter or run two Quick Mode exchanges at once.
+            if (Interlocked.CompareExchange(ref _rekeyInProgress, 1, 0) != 0) return;
             try
             {
+                IkeV1Client ike = _ike!;
                 byte[] reply = await ExchangeRekeyAsync(ike.BuildRekeyQuickMode1()).ConfigureAwait(false);
-                if (!ike.ProcessRekeyQuickMode2(reply)) return; // keep the current SA; retry at the next interval
+                if (!ike.ProcessRekeyQuickMode2(reply)) return; // keep the current SA; retry at the next interval / signal
                 await _natt!.SendIkeAsync(ike.BuildRekeyQuickMode3()).ConfigureAwait(false);
 
                 EspSession next = BuildEspSession(ike.CreateRekeyPhase2Keys(), ike.RekeyChildOutboundSpi, ike.RekeyChildInboundSpi);
@@ -350,6 +359,7 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
                 ScheduleDropPreviousInbound();
             }
             catch { /* rekey failed; the current SA stays active — DPD declares the peer dead if it is truly gone */ }
+            finally { Interlocked.Exchange(ref _rekeyInProgress, 0); }
         }
 
         async Task<byte[]> ExchangeRekeyAsync(byte[] request)

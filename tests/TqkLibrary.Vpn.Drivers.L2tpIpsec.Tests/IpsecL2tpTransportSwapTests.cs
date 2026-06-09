@@ -38,6 +38,41 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec.Tests
             Assert.Equal(4, received);
         }
 
+        [Fact]
+        public async Task SendAsync_RaisesRekeyNeeded_AtWatermark_RetriesUntilSwap_AndReArmsAfterSwap()
+        {
+            (EspSession clientV1, _) = Pair(0x11111111, 0x22222222, seed: 10);
+            // Tiny watermark + step so the 2^32 exhaustion path is exercised offline in a handful of sends.
+            var transport = new IpsecL2tpTransport(clientV1, _ => Task.CompletedTask, rekeyAtSequence: 3, rekeyRetryStep: 3);
+
+            int signals = 0;
+            transport.RekeyNeeded += () => signals++;
+
+            await transport.SendAsync(L2tpDatagram); // seq 1
+            await transport.SendAsync(L2tpDatagram); // seq 2 — still below the watermark
+            Assert.Equal(0, signals);
+
+            await transport.SendAsync(L2tpDatagram); // seq 3 — crosses the watermark, fires once
+            Assert.Equal(1, signals);
+
+            await transport.SendAsync(L2tpDatagram); // seq 4 — between watermark and next step, no extra signal
+            await transport.SendAsync(L2tpDatagram); // seq 5
+            Assert.Equal(1, signals);
+
+            await transport.SendAsync(L2tpDatagram); // seq 6 — rekey hasn't installed a fresh SA, so re-signal (retry)
+            Assert.Equal(2, signals);
+
+            // Installing a fresh SA restarts its sequence at 0 and re-arms the watermark.
+            (EspSession clientV2, _) = Pair(0x33333333, 0x44444444, seed: 50);
+            transport.SwapSession(clientV2);
+
+            await transport.SendAsync(L2tpDatagram); // seq 1 (new SA)
+            await transport.SendAsync(L2tpDatagram); // seq 2
+            Assert.Equal(2, signals);
+            await transport.SendAsync(L2tpDatagram); // seq 3 — watermark on the new SA fires again
+            Assert.Equal(3, signals);
+        }
+
         static (EspSession client, EspSession server) Pair(uint spiClientToServer, uint spiServerToClient, byte seed)
         {
             byte[] encCs = Fill(32, seed), intCs = Fill(32, (byte)(seed + 1));

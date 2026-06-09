@@ -28,6 +28,13 @@ namespace TqkLibrary.Vpn.Ipsec.Esp
         /// <summary>The SPI we expect on packets the peer sends us.</summary>
         public uint InboundSpi => _inboundSpi;
 
+        /// <summary>
+        /// The last sequence number assigned outbound (0 before the first packet). Exposed so the data plane can
+        /// rekey before it reaches 2^32 — past that <see cref="Protect"/> would overflow rather than wrap, which
+        /// RFC 4303 §3.3.3 forbids without a fresh SA.
+        /// </summary>
+        public uint OutboundSequence => _sequence;
+
         /// <summary>Encrypts <paramref name="payload"/> into a new ESP packet, assigning the next sequence number.</summary>
         public byte[] Protect(ReadOnlySpan<byte> payload, byte nextHeader = EspConstants.NextHeaderUdp)
         {

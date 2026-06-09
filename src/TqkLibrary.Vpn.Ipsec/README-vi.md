@@ -185,14 +185,14 @@ if (ike.ProcessAuthResponse(Recv())) { ChildSaKeys child = ike.ChildKeys!; }
 
 ### ESP `Protect` / `TryUnprotect`
 
-- **Protect** — tăng sequence (checked), gọi suite encode `SPI\|Seq\|IV\|ct\|ICV` (hoặc GCM). [EspSession.cs:32](Esp/EspSession.cs#L32), [EspCbcHmacSuite.cs:37](Esp/EspCbcHmacSuite.cs#L37)
-- **TryUnprotect** — check độ dài → SPI → `AntiReplayWindow.Check` → integrity → giải mã → strip trailer → `Commit`. Replay window **chỉ advance sau khi gói qua integrity**. [EspSession.cs:43](Esp/EspSession.cs#L43), [AntiReplayWindow.cs:20](Esp/AntiReplayWindow.cs#L20)
+- **Protect** — tăng sequence (checked), gọi suite encode `SPI\|Seq\|IV\|ct\|ICV` (hoặc GCM). Property [`OutboundSequence`](Esp/EspSession.cs#L36) lộ sequence hiện tại để driver rekey **trước khi** chạm 2³² (xem note ESP suite bên dưới). [EspSession.cs:39](Esp/EspSession.cs#L39), [EspCbcHmacSuite.cs:37](Esp/EspCbcHmacSuite.cs#L37)
+- **TryUnprotect** — check độ dài → SPI → `AntiReplayWindow.Check` → integrity → giải mã → strip trailer → `Commit`. Replay window **chỉ advance sau khi gói qua integrity**. [EspSession.cs:50](Esp/EspSession.cs#L50), [AntiReplayWindow.cs:20](Esp/AntiReplayWindow.cs#L20)
 
 ## Trạng thái & ghi chú
 
 - **Đang chạy thực tế:** `Ike/V1` + `Esp/` — driver `L2tpIpsec` dùng `IkeV1Client` ([L2tpIpsecConnection.cs:131](../TqkLibrary.Vpn.Drivers.L2tpIpsec/L2tpIpsecConnection.cs#L131)) và `EspSession`/`EspCipherSuite` cho data plane. Đã verify live trên VPN Gate (PSK + AES-256 + HMAC-SHA1, MODP group 2/14).
 - **Đầy đủ nhưng chưa wire:** `Ike/V2` (IKEv2) — `IkeClient` có đủ IKE_SA_INIT + IKE_AUTH (PSK) và unit test, nhưng **không driver nào tham chiếu** (grep `IkeClient` trong `Drivers` không có kết quả). Đây là khung sẵn cho IKEv2 transport mode/ESP tương lai.
-- **ESP suite:** ba bộ — AES-CBC+HMAC-SHA256-128 (mặc định IKEv2), AES-CBC+HMAC-SHA1-96 (ESP SA của IKEv1, đang dùng), AES-GCM (RFC 4106, AEAD). Anti-replay cố định cửa sổ 64, **không hỗ trợ Extended Sequence Number** (ESN): GCM IV để 4 byte cao = 0 ([EspGcmSuite.cs:87](Esp/EspGcmSuite.cs#L87)); sequence là 32-bit, `Protect` dùng `checked` nên sẽ ném nếu vượt `uint.MaxValue`.
+- **ESP suite:** ba bộ — AES-CBC+HMAC-SHA256-128 (mặc định IKEv2), AES-CBC+HMAC-SHA1-96 (ESP SA của IKEv1, đang dùng), AES-GCM (RFC 4106, AEAD). Anti-replay cố định cửa sổ 64, **không hỗ trợ Extended Sequence Number** (ESN): GCM IV để 4 byte cao = 0 ([EspGcmSuite.cs:87](Esp/EspGcmSuite.cs#L87)); sequence là 32-bit, `Protect` dùng `checked` nên sẽ ném nếu vượt `uint.MaxValue` — đây là **backstop**: driver `L2tpIpsec` theo dõi `OutboundSequence` và chủ động rekey Phase 2 ở high-watermark ~75%×2³² (RFC 4303 §3.3.3) **trước khi** chạm giới hạn này.
 - **IKEv1 PFS:** Quick Mode rekey **không có PFS** (KEYMAT chỉ từ SKEYID_d + nonce mới, không trao đổi KE mới) — phù hợp interop L2TP/IPsec phổ biến.
 - **netstandard2.0 vs net8.0:** cùng codebase; tránh `record`/`init` (netstandard2.0 thiếu `IsExternalInit`). Primitive crypto khác biệt nằm ở `TqkLibrary.Vpn.Crypto` (BouncyCastle trên netstandard2.0), không phải project này.
 - **Phạm vi:** chỉ logic giao thức (build/process/encode/decode/derive). Transport UDP, chuyển port 500→4500 khi NAT-T, retransmit, vòng đời SA do driver bên ngoài sở hữu.

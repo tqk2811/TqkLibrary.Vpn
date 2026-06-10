@@ -118,7 +118,7 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
         /// </summary>
         async Task EstablishAsync(CancellationToken cancellationToken)
         {
-            CleanupAttemptResources();
+            await CleanupAttemptResourcesAsync().ConfigureAwait(false);
             _espActive = false;
             Interlocked.Exchange(ref _dpdSequence, 0);
             Interlocked.Exchange(ref _dpdMissed, 0);
@@ -181,7 +181,7 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
         }
 
         // Tears down the resources of the previous attempt before a fresh one (no-op on the very first attempt).
-        void CleanupAttemptResources()
+        async Task CleanupAttemptResourcesAsync()
         {
             StopKeepalive();
 
@@ -193,9 +193,16 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
             loop?.Dispose();
 
             _l2tp?.Dispose();
-            _ = _natt?.DisposeAsync();
 
+            // Null the channel before disposing it so the stale receive loop's identity guard trips immediately,
+            // and await the dispose so the old socket is fully closed before the next attempt opens a new one.
+            NatTraversalChannel? natt = _natt;
             _natt = null;
+            if (natt != null)
+            {
+                try { await natt.DisposeAsync().ConfigureAwait(false); } catch { }
+            }
+
             _l2tp = null;
             _ike = null;
             _dataTransport = null;
@@ -234,6 +241,9 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
                 while (!cancellationToken.IsCancellationRequested)
                 {
                     (NatTPacketKind kind, byte[] payload) = await natt.ReceiveAsync(cancellationToken).ConfigureAwait(false);
+                    // A datagram already in flight when this attempt was torn down must not be processed: by now a new
+                    // attempt may own the shared waiters, and a stale IKE reply (old cookies/SPI) would fail it spuriously.
+                    if (cancellationToken.IsCancellationRequested || !ReferenceEquals(_natt, natt)) break;
                     if (kind == NatTPacketKind.Ike)
                     {
                         TaskCompletionSource<byte[]>? waiter = _ikeWaiter;
@@ -288,7 +298,9 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
         async Task SendHelloTickAsync()
         {
             if (!_keepaliveRunning) return;
-            try { await _l2tp!.SendHelloAsync().ConfigureAwait(false); }
+            L2tpClient? l2tp = _l2tp; // snapshot: a concurrent teardown nulls the field
+            if (l2tp == null) return;
+            try { await l2tp.SendHelloAsync().ConfigureAwait(false); }
             catch { /* a dead tunnel surfaces via DPD or the L2TP Disconnected event */ }
         }
 
@@ -302,7 +314,10 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
             }
             Interlocked.Increment(ref _dpdMissed);
             uint sequence = (uint)Interlocked.Increment(ref _dpdSequence);
-            try { await _natt!.SendIkeAsync(_ike!.BuildDpdRUThere(sequence)).ConfigureAwait(false); }
+            NatTraversalChannel? natt = _natt; // snapshot: a concurrent teardown nulls the fields
+            IkeV1Client? ike = _ike;
+            if (natt == null || ike == null) return;
+            try { await natt.SendIkeAsync(ike.BuildDpdRUThere(sequence)).ConfigureAwait(false); }
             catch { }
         }
 
@@ -334,7 +349,9 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
 
         async Task SendDpdAckAsync(IkeV1Client ike, uint sequence)
         {
-            try { await _natt!.SendIkeAsync(ike.BuildDpdAck(sequence)).ConfigureAwait(false); }
+            NatTraversalChannel? natt = _natt; // snapshot: a concurrent teardown nulls the field
+            if (natt == null) return;
+            try { await natt.SendIkeAsync(ike.BuildDpdAck(sequence)).ConfigureAwait(false); }
             catch { }
         }
 
@@ -351,13 +368,17 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
             if (Interlocked.CompareExchange(ref _rekeyInProgress, 1, 0) != 0) return;
             try
             {
-                IkeV1Client ike = _ike!;
+                IkeV1Client? ike = _ike; // snapshot: a concurrent teardown nulls the fields
+                NatTraversalChannel? natt = _natt;
+                if (ike == null || natt == null) return;
                 byte[] reply = await ExchangeRekeyAsync(ike.BuildRekeyQuickMode1()).ConfigureAwait(false);
                 if (!ike.ProcessRekeyQuickMode2(reply)) return; // keep the current SA; retry at the next interval / signal
-                await _natt!.SendIkeAsync(ike.BuildRekeyQuickMode3()).ConfigureAwait(false);
+                await natt.SendIkeAsync(ike.BuildRekeyQuickMode3()).ConfigureAwait(false);
 
+                IpsecL2tpTransport? transport = _dataTransport;
+                if (transport == null) return;
                 EspSession next = BuildEspSession(ike.RekeyNegotiatedEsp, ike.CreateRekeyPhase2Keys(), ike.RekeyChildOutboundSpi, ike.RekeyChildInboundSpi);
-                _dataTransport!.SwapSession(next);
+                transport.SwapSession(next);
                 ScheduleDropPreviousInbound();
             }
             catch { /* rekey failed; the current SA stays active — DPD declares the peer dead if it is truly gone */ }
@@ -368,9 +389,11 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
         {
             for (int attempt = 0; attempt < _timeouts.IkeMaxAttempts && _keepaliveRunning; attempt++)
             {
+                NatTraversalChannel? natt = _natt; // snapshot: a concurrent teardown nulls the field
+                if (natt == null) break;
                 var waiter = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
                 _rekeyWaiter = waiter;
-                await _natt!.SendIkeAsync(request).ConfigureAwait(false);
+                await natt.SendIkeAsync(request).ConfigureAwait(false);
 
                 Task completed = await Task.WhenAny(waiter.Task, Task.Delay(_timeouts.IkeRetransmitInterval)).ConfigureAwait(false);
                 _rekeyWaiter = null;

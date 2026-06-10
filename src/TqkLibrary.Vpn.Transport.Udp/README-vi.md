@@ -83,7 +83,7 @@ if (k == NatTPacketKind.Ike) { /* DPD / Delete / rekey reply */ }
 else if (k == NatTPacketKind.Esp) { /* đẩy vào EspSession */ }
 ```
 
-Tham khảo cách dùng thật trong driver L2TP/IPsec: [L2tpIpsecConnection.cs:124-151](../TqkLibrary.Vpn.Drivers.L2tpIpsec/L2tpIpsecConnection.cs#L124-L151).
+Tham khảo cách dùng thật trong driver L2TP/IPsec: [L2tpIpsecConnection.cs:129-151](../TqkLibrary.Vpn.Drivers.L2tpIpsec/L2tpIpsecConnection.cs#L129-L151).
 
 ## Luồng nội bộ
 
@@ -97,7 +97,7 @@ Tham khảo cách dùng thật trong driver L2TP/IPsec: [L2tpIpsecConnection.cs:
 - Trên **cổng 500**: payload luôn là IKE; chỉ kiểm tra độ dài tối thiểu 28 byte (header ISAKMP) → `Ike`/`Invalid`, không bóc marker ([NatTraversalChannel.cs:64-65](NatTraversalChannel.cs#L64-L65)).
 - Trên **cổng 4500**: `Classify` đọc 4 byte đầu — toàn 0 ⇒ `Ike` (sau đó `UnwrapIke` bóc marker), khác 0 ⇒ `Esp` (SPI không bao giờ bằng 0) ([NatTraversalChannel.cs:67-69](NatTraversalChannel.cs#L67-L69), [NatTraversal.cs:40-47](NatTraversal.cs#L40-L47)).
 
-**5. Demux phía consumer:** driver có một `ReceiveLoopAsync` đọc liên tục từ kênh và rẽ nhánh theo `Kind`: IKE → waiter handshake / rekey / DPD-Delete; ESP → `EspSession` ([L2tpIpsecConnection.cs:228-249](../TqkLibrary.Vpn.Drivers.L2tpIpsec/L2tpIpsecConnection.cs#L228-L249)).
+**5. Demux phía consumer:** driver có một `ReceiveLoopAsync` đọc liên tục từ kênh và rẽ nhánh theo `Kind`: IKE → waiter handshake / rekey / DPD-Delete; ESP → `EspSession` ([L2tpIpsecConnection.cs:236-259](../TqkLibrary.Vpn.Drivers.L2tpIpsec/L2tpIpsecConnection.cs#L236-L259)).
 
 **6. Dispose:** `DisposeAsync` chỉ dispose `UdpClient` ([NatTraversalChannel.cs:73-77](NatTraversalChannel.cs#L73-L77)).
 

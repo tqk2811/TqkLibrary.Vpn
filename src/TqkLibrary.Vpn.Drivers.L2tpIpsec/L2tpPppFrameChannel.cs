@@ -20,6 +20,9 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
 
         /// <inheritdoc/>
         public ValueTask SendAsync(ReadOnlyMemory<byte> frame, CancellationToken cancellationToken = default)
-            => new ValueTask(_l2tp.SendDataAsync(frame));
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return new ValueTask(_l2tp.SendDataAsync(frame));
+        }
     }
 }

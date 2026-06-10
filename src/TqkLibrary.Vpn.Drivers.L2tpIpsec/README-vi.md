@@ -64,12 +64,12 @@ TqkLibrary.Vpn.Drivers.L2tpIpsec/
 
 | Chuẩn | Class/Namespace áp dụng | Vị trí (link code) | Ghi chú |
 |-------|-------------------------|--------------------|---------|
-| RFC 3706 (IKE DPD — Dead Peer Detection) | `L2tpIpsecConnection` (keepalive: L2TP HELLO + IKE DPD) | [L2tpIpsecConnection.cs:262](L2tpIpsecConnection.cs#L262) | Comment dẫn rõ `RFC 3706` |
+| RFC 3706 (IKE DPD — Dead Peer Detection) | `L2tpIpsecConnection` (keepalive: L2TP HELLO + IKE DPD) | [L2tpIpsecConnection.cs:272](L2tpIpsecConnection.cs#L272) | Comment dẫn rõ `RFC 3706` |
 | RFC 2759 (MS-CHAPv2) | `MsChapV2Authenticator` (dùng từ `Ppp`) | [L2tpIpsecConnection.cs:166](L2tpIpsecConnection.cs#L166) | (suy luận) — hiện thực nằm ở project `Ppp` |
 | RFC 2409 (IKEv1 Main/Quick Mode, PSK) | `IkeV1Client` (từ `Ipsec`), điều phối tại đây | [L2tpIpsecConnection.cs:136](L2tpIpsecConnection.cs#L136) | (suy luận) — hiện thực nằm ở `Ipsec/Ike/V1` |
 | RFC 3947 / 3948 (IPsec NAT-T, UDP 500↔4500) | `NatTraversalChannel` (từ `Transport.Udp`), `natt.SwitchToNatTPort()` | [L2tpIpsecConnection.cs:144](L2tpIpsecConnection.cs#L144) | (suy luận) — hiện thực ở `Transport.Udp` |
-| RFC 4303 (ESP), AES-CBC + HMAC-SHA1 / AES-GCM | `IpsecL2tpTransport`, `EspSession`; `BuildEspSession` dựng suite theo `ike.NegotiatedEsp` (CBC hoặc GCM) qua `EspSuiteSelection.BuildSuite` | [L2tpIpsecConnection.cs:205-211](L2tpIpsecConnection.cs#L205-L211) | (suy luận) — cipher suite hiện thực ở `Ipsec/Esp` |
-| RFC 4106 (AES-GCM trong ESP) | `EspGcmSuite` (từ `Ipsec`), chọn khi gateway negotiate AES-GCM ở Quick Mode | [L2tpIpsecConnection.cs:205-211](L2tpIpsecConnection.cs#L205-L211) | (suy luận) — VPN Gate/SoftEther vẫn chọn CBC |
+| RFC 4303 (ESP), AES-CBC + HMAC-SHA1 / AES-GCM | `IpsecL2tpTransport`, `EspSession`; `BuildEspSession` dựng suite theo `ike.NegotiatedEsp` (CBC hoặc GCM) qua `EspSuiteSelection.BuildSuite` | [L2tpIpsecConnection.cs:212-218](L2tpIpsecConnection.cs#L212-L218) | (suy luận) — cipher suite hiện thực ở `Ipsec/Esp` |
+| RFC 4106 (AES-GCM trong ESP) | `EspGcmSuite` (từ `Ipsec`), chọn khi gateway negotiate AES-GCM ở Quick Mode | [L2tpIpsecConnection.cs:212-218](L2tpIpsecConnection.cs#L212-L218) | (suy luận) — VPN Gate/SoftEther vẫn chọn CBC |
 | RFC 2661 (L2TPv2 control/data) | `L2tpClient` (từ `L2tp`), điều phối qua `IpsecL2tpTransport` | [L2tpIpsecConnection.cs:159](L2tpIpsecConnection.cs#L159) | (suy luận) — hiện thực ở `L2tp` |
 | RFC 1661 / 1332 (PPP LCP + IPCP) | `PppEngine` (từ `Ppp`) | [L2tpIpsecConnection.cs:167](L2tpIpsecConnection.cs#L167) | (suy luận) — hiện thực ở `Ppp` |
 
@@ -100,7 +100,7 @@ Class hạ tầng `L2tpIpsecConnection` cũng public nếu cần điều khiển
 
 ### Handshake (trong `EstablishAsync` — clean-slate, dùng chung cho connect đầu và mọi reconnect)
 
-1. Resolve host → tạo `NatTraversalChannel` (UDP/500), chạy `ReceiveLoopAsync` ghép kênh IKE/ESP — [L2tpIpsecConnection.cs:129-134](L2tpIpsecConnection.cs#L129-L134).
+1. Resolve host → tạo `NatTraversalChannel` (UDP/500), chạy `ReceiveLoopAsync` ghép kênh IKE/ESP — [L2tpIpsecConnection.cs:129-134](L2tpIpsecConnection.cs#L129-L134). Trước đó `CleanupAttemptResourcesAsync` dọn attempt cũ: cancel vòng đọc, null `_natt` rồi **await** `DisposeAsync` (socket cũ đóng hẳn trước khi mở socket mới) — [L2tpIpsecConnection.cs:184-211](L2tpIpsecConnection.cs#L184-L211); vòng đọc còn **guard sau mỗi `ReceiveAsync`** (re-check token + identity channel) để gói stale đang in-flight không lọt vào waiter của attempt mới — [L2tpIpsecConnection.cs:244-246](L2tpIpsecConnection.cs#L244-L246).
 2. **IKEv1 Phase 1 (Main Mode)** MM1–MM4 trên UDP/500 — [L2tpIpsecConnection.cs:140-141](L2tpIpsecConnection.cs#L140-L141).
 3. Phát hiện NAT-T → `SwitchToNatTPort()` (sang UDP/4500), MM5/MM6 đã mã hoá; sai PSK ⇒ `VpnAuthenticationException` — [L2tpIpsecConnection.cs:144-146](L2tpIpsecConnection.cs#L144-L146).
 4. **Phase 2 (Quick Mode)** QM1–QM3 → khoá ESP CHILD SA + `NegotiatedEsp` (suite server chọn: AES-CBC mặc định, hoặc AES-GCM nếu gateway hỗ trợ); không có SA ⇒ `VpnServerRejectedException`; IKE no-response ⇒ `VpnNetworkTimeoutException` — [L2tpIpsecConnection.cs:149-151](L2tpIpsecConnection.cs#L149-L151).
@@ -109,10 +109,10 @@ Class hạ tầng `L2tpIpsecConnection` cũng public nếu cần điều khiển
 
 ### Keepalive · rekey · teardown · reconnect
 
-- **Keepalive:** L2TP HELLO (60s) + IKE DPD R-U-THERE (20s, miss ≥3 ⇒ link lost) — [L2tpIpsecConnection.cs:262-339](L2tpIpsecConnection.cs#L262-L339).
-- **Rekey (make-before-break) — 2 trigger:** (a) timer ~90% lifetime (3600s); (b) **sequence-exhaustion** — sequence ESP outbound chạm high-watermark ~75%×2³² thì `RekeyNeeded` kích rekey **trước khi** wrap (RFC 4303 §3.3.3, tránh `OverflowException`). Cả hai vào `RekeyPhase2Async` (guard `_rekeyInProgress`) → Quick Mode mới → `SwapSession` (gửi trên SA mới ngay + re-arm watermark, giữ SA cũ để nhận trong grace 10s rồi `DropPreviousInbound`) — [L2tpIpsecConnection.cs:344-388](L2tpIpsecConnection.cs#L344-L388) · [IpsecL2tpTransport.cs:54-91](IpsecL2tpTransport.cs#L54-L91).
-- **Link-loss + supervisor:** mọi nguồn (DPD chết, server Delete, L2TP teardown, Phase 1 hết hạn) gọi `OnLinkLost` → khởi động `ReconnectLoopAsync` với exponential backoff + jitter; thành công thì raise `Reconnected` (cập nhật `TunnelConfig` qua `L2tpIpsecVpnSession.ApplyReconnect`) — [L2tpIpsecConnection.cs:393-459](L2tpIpsecConnection.cs#L393-L459).
-- **Teardown:** `DisconnectAsync` hủy reconnect, gửi L2TP CDN + StopCCN và IKE Delete (ESP + ISAKMP), rồi đóng transport — [L2tpIpsecConnection.cs:508-556](L2tpIpsecConnection.cs#L508-L556).
+- **Keepalive:** L2TP HELLO (60s) + IKE DPD R-U-THERE (20s, miss ≥3 ⇒ link lost) — [L2tpIpsecConnection.cs:272-356](L2tpIpsecConnection.cs#L272-L356).
+- **Rekey (make-before-break) — 2 trigger:** (a) timer ~90% lifetime (3600s); (b) **sequence-exhaustion** — sequence ESP outbound chạm high-watermark ~75%×2³² thì `RekeyNeeded` kích rekey **trước khi** wrap (RFC 4303 §3.3.3, tránh `OverflowException`). Cả hai vào `RekeyPhase2Async` (guard `_rekeyInProgress`) → Quick Mode mới → `SwapSession` (gửi trên SA mới ngay + re-arm watermark, giữ SA cũ để nhận trong grace 10s rồi `DropPreviousInbound`) — [L2tpIpsecConnection.cs:361-411](L2tpIpsecConnection.cs#L361-L411) · [IpsecL2tpTransport.cs:54-91](IpsecL2tpTransport.cs#L54-L91).
+- **Link-loss + supervisor:** mọi nguồn (DPD chết, server Delete, L2TP teardown, Phase 1 hết hạn) gọi `OnLinkLost` → khởi động `ReconnectLoopAsync` với exponential backoff + jitter; thành công thì raise `Reconnected` (cập nhật `TunnelConfig` qua `L2tpIpsecVpnSession.ApplyReconnect`) — [L2tpIpsecConnection.cs:416-482](L2tpIpsecConnection.cs#L416-L482).
+- **Teardown:** `DisconnectAsync` hủy reconnect, gửi L2TP CDN + StopCCN và IKE Delete (ESP + ISAKMP), rồi đóng transport — [L2tpIpsecConnection.cs:531-579](L2tpIpsecConnection.cs#L531-L579).
 - **Facade ổn định:** `SwappablePacketChannel` ([từ Abstractions](../TqkLibrary.Vpn.Abstractions)) cho phép tráo kênh PPP bên dưới khi reconnect mà socket trong tunnel ở tầng trên không bị đứt (nếu địa chỉ giữ nguyên).
 
 ## Trạng thái & ghi chú

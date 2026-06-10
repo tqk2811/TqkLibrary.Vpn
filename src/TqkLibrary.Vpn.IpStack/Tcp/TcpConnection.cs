@@ -24,7 +24,9 @@ namespace TqkLibrary.Vpn.IpStack.Tcp
     /// </remarks>
     public sealed class TcpConnection : IDisposable
     {
-        const ushort Mss = 1360;
+        const ushort DefaultLinkMtu = 1400;  // tunnel default → MSS 1360 (unchanged from the old hard-coded value)
+        const ushort MinMss = 88;            // defensive floor so a tiny/bogus MTU can't produce a useless segment size
+        const ushort AssumedPeerMss = 536;   // RFC 1122: assume a 536-byte send MSS if the peer advertises none
         const ushort ReceiveWindow = 65535;
 
         // RFC 6298 estimator constants.
@@ -63,6 +65,12 @@ namespace TqkLibrary.Vpn.IpStack.Tcp
         uint _sndWnd;
         uint _sndWl1;
         uint _sndWl2;
+
+        // MSS negotiation: _localMss (advertised, derived from the link MTU) caps what the peer may send us; _sendMss
+        // (= min(_localMss, peer's advertised MSS)) caps what we send. Both keep TCP segments within the link MTU so
+        // SendIp never has to fragment them.
+        readonly ushort _localMss;
+        ushort _sendMss;
 
         // Unsent application bytes waiting for window space (a queue of arrays + an offset into the head array).
         readonly Queue<byte[]> _sndChunks = new();
@@ -107,7 +115,7 @@ namespace TqkLibrary.Vpn.IpStack.Tcp
         /// <summary>Creates a connection from the local endpoint to the remote endpoint.</summary>
         public TcpConnection(
             IPAddress localIp, ushort localPort, IPAddress remoteIp, ushort remotePort, Action<byte[]> sendIp,
-            TcpRetransmitOptions? options = null)
+            TcpRetransmitOptions? options = null, int linkMtu = DefaultLinkMtu)
         {
             _localIp = localIp;
             _localPort = localPort;
@@ -115,6 +123,11 @@ namespace TqkLibrary.Vpn.IpStack.Tcp
             _remotePort = remotePort;
             _sendIp = sendIp;
             _opts = options ?? TcpRetransmitOptions.Default;
+            // MSS = link MTU − IPv4(20) − TCP(20); floored so a tiny MTU can't yield a useless segment size, and
+            // capped so an absurd MTU stays within the 16-bit option field. Until the peer's SYN-ACK is seen we send
+            // at our own MSS.
+            _localMss = (ushort)Math.Min(65495, Math.Max(MinMss, linkMtu - 40));
+            _sendMss = _localMss;
             _rtoMs = _opts.InitialRto.TotalMilliseconds;
             _persistMs = _opts.PersistMin.TotalMilliseconds;
             _rtoTimer = new Timer(_ => OnRtoTimer(), null, Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
@@ -141,7 +154,7 @@ namespace TqkLibrary.Vpn.IpStack.Tcp
                 uint iss = ((uint)r[0] << 24) | ((uint)r[1] << 16) | ((uint)r[2] << 8) | r[3];
                 _sndUna = iss;
                 _sndNxt = iss;
-                EmitSegment(iss, TcpFlags.Syn, ReadOnlySpan<byte>.Empty, mss: Mss);
+                EmitSegment(iss, TcpFlags.Syn, ReadOnlySpan<byte>.Empty, mss: _localMss);
                 EnqueueRetx(iss, TcpFlags.Syn, Array.Empty<byte>(), seqLen: 1);
                 _sndNxt = iss + 1;
                 _state = TcpState.SynSent;
@@ -232,6 +245,9 @@ namespace TqkLibrary.Vpn.IpStack.Tcp
                 if ((flags & TcpFlags.Syn) != 0 && (flags & TcpFlags.Ack) != 0)
                 {
                     _rcvNxt = seq + 1;
+                    // Clamp our outbound segment size to the peer's advertised MSS (RFC 1122: assume 536 if absent).
+                    ushort peerMss = TcpSegment.MaxSegmentSize(span);
+                    _sendMss = (ushort)Math.Max(MinMss, Math.Min(_localMss, peerMss > 0 ? peerMss : AssumedPeerMss));
                     ProcessAck(ack, seq, wnd);                 // acks our SYN, seeds the send window
                     EmitSegment(_sndNxt, TcpFlags.Ack, ReadOnlySpan<byte>.Empty);
                     _state = TcpState.Established;
@@ -375,7 +391,7 @@ namespace TqkLibrary.Vpn.IpStack.Tcp
                 {
                     int usable = (int)((_sndUna + _sndWnd) - _sndNxt); // signed window space left
                     if (usable <= 0) break;
-                    int chunk = Math.Min(Math.Min((int)Mss, usable), _sndBufferedBytes);
+                    int chunk = Math.Min(Math.Min((int)_sendMss, usable), _sndBufferedBytes);
                     EmitData(_sndNxt, DequeueUpTo(chunk));
                 }
 
@@ -502,7 +518,7 @@ namespace TqkLibrary.Vpn.IpStack.Tcp
                 }
 
                 RetxUnit u = node.Value;
-                EmitSegment(u.Seq, u.Flags, u.Payload, (u.Flags & TcpFlags.Syn) != 0 ? Mss : (ushort)0);
+                EmitSegment(u.Seq, u.Flags, u.Payload, (u.Flags & TcpFlags.Syn) != 0 ? _localMss : (ushort)0);
                 u.Retransmitted = true;
                 u.SentTicks = now;
                 _rtoMs = Math.Min(_rtoMs * 2, _opts.MaxRto.TotalMilliseconds); // exponential backoff (RFC 6298 §5.5)

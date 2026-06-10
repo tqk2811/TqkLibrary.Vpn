@@ -41,7 +41,7 @@ namespace TqkLibrary.Vpn.IpStack.Tcp
         public async Task<TcpConnection> ConnectAsync(IPAddress remoteAddress, ushort remotePort, CancellationToken cancellationToken = default)
         {
             ushort localPort = (ushort)Interlocked.Increment(ref _nextPort);
-            var connection = new TcpConnection(_localAddress, localPort, remoteAddress, remotePort, SendIp);
+            var connection = new TcpConnection(_localAddress, localPort, remoteAddress, remotePort, SendIp, linkMtu: _channel.Mtu);
             _connections[localPort] = connection;
             connection.Closed += () => { _connections.TryRemove(localPort, out _); connection.Dispose(); }; // drop faulted connections (RST / RTO give-up)
 

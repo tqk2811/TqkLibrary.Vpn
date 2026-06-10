@@ -78,6 +78,30 @@ namespace TqkLibrary.Vpn.IpStack.Tcp
         /// <summary>The data payload after the TCP header.</summary>
         public static ReadOnlyMemory<byte> Payload(ReadOnlyMemory<byte> segment) => segment.Slice(DataOffset(segment.Span));
 
+        /// <summary>
+        /// Reads the Maximum Segment Size option (kind 2) from the TCP options, or 0 if no MSS option is present.
+        /// Walks the options between the fixed 20-byte header and the data offset, skipping End-of-List/No-Operation
+        /// padding and tolerating malformed/truncated options (returns 0 rather than throwing).
+        /// </summary>
+        public static ushort MaxSegmentSize(ReadOnlySpan<byte> segment)
+        {
+            int dataOffset = Math.Min(DataOffset(segment), segment.Length);
+            int i = 20;
+            while (i < dataOffset)
+            {
+                byte kind = segment[i];
+                if (kind == 0) break;             // End of Option List
+                if (kind == 1) { i++; continue; } // No-Operation: a single byte with no length
+                if (i + 1 >= dataOffset) break;    // truncated option header
+                byte length = segment[i + 1];
+                if (length < 2 || i + length > dataOffset) break; // malformed length
+                if (kind == 2 && length == 4)
+                    return (ushort)((segment[i + 2] << 8) | segment[i + 3]);
+                i += length;
+            }
+            return 0;
+        }
+
         static void WriteU16(byte[] b, int o, ushort v) { b[o] = (byte)(v >> 8); b[o + 1] = (byte)v; }
         static void WriteU32(byte[] b, int o, uint v) { b[o] = (byte)(v >> 24); b[o + 1] = (byte)(v >> 16); b[o + 2] = (byte)(v >> 8); b[o + 3] = (byte)v; }
         static uint ReadU32(ReadOnlySpan<byte> b, int o) => ((uint)b[o] << 24) | ((uint)b[o + 1] << 16) | ((uint)b[o + 2] << 8) | b[o + 3];

@@ -75,6 +75,37 @@ namespace TqkLibrary.Vpn.IpStack
             return packet;
         }
 
+        /// <summary>
+        /// Splits an IPv4 datagram into fragments each at most <paramref name="mtu"/> bytes, so a link whose MTU is
+        /// smaller than the datagram can still carry it (RFC 791 §2.3). Returns the datagram unchanged (single element)
+        /// if it already fits, or if it cannot be split (header ≥ MTU, or fewer than 8 payload bytes would fit). Each
+        /// fragment gets a fresh 20-byte header; the payload is cut on 8-byte boundaries with DF cleared and MF set on
+        /// every fragment except the last. Options are not supported — the source datagram must have IHL 5.
+        /// </summary>
+        public static IReadOnlyList<byte[]> Fragment(ReadOnlySpan<byte> datagram, int mtu)
+        {
+            int headerLength = HeaderLength(datagram);
+            // Largest payload per fragment, rounded down to an 8-byte boundary (offset field counts 8-byte units).
+            int maxPayload = (mtu - headerLength) & ~7;
+            if (datagram.Length <= mtu || headerLength != 20 || maxPayload < 8)
+                return new[] { datagram.ToArray() };
+
+            ReadOnlySpan<byte> payload = datagram.Slice(headerLength);
+            ushort identification = Identification(datagram);
+            byte protocol = Protocol(datagram);
+            IPAddress source = Source(datagram);
+            IPAddress destination = Destination(datagram);
+
+            var fragments = new List<byte[]>();
+            for (int offset = 0; offset < payload.Length; offset += maxPayload)
+            {
+                int length = Math.Min(maxPayload, payload.Length - offset);
+                bool moreFragments = offset + length < payload.Length;
+                fragments.Add(BuildFragment(source, destination, protocol, payload.Slice(offset, length), identification, offset, moreFragments));
+            }
+            return fragments;
+        }
+
         /// <summary>Header length in bytes (IHL * 4).</summary>
         public static int HeaderLength(ReadOnlySpan<byte> packet) => (packet[0] & 0x0F) * 4;
 

@@ -94,7 +94,19 @@ namespace TqkLibrary.Vpn.IpStack.Tcp
             }
         }
 
-        void SendIp(byte[] ipPacket) => _ = _channel.WriteIpPacketAsync(ipPacket);
+        void SendIp(byte[] ipPacket)
+        {
+            // Single egress chokepoint: oversized datagrams (large UDP/ICMP) are fragmented to the link MTU (RFC 791)
+            // instead of being sent with DF set and silently dropped. TCP segments stay under MSS, so they pass through.
+            int mtu = _channel.Mtu;
+            if (ipPacket.Length <= mtu)
+            {
+                _ = _channel.WriteIpPacketAsync(ipPacket);
+                return;
+            }
+            foreach (byte[] fragment in Ipv4.Fragment(ipPacket, mtu))
+                _ = _channel.WriteIpPacketAsync(fragment);
+        }
 
         void OnInbound(ReadOnlyMemory<byte> ipPacket)
         {

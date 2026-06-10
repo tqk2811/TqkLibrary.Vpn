@@ -1,7 +1,8 @@
 using System.Net;
 using System.Net.Sockets;
+using TqkLibrary.Vpn.Ipsec.Nat.Enums;
 
-namespace TqkLibrary.Vpn.Transport.Udp
+namespace TqkLibrary.Vpn.Ipsec.Nat
 {
     /// <summary>
     /// A UDP channel for L2TP/IPsec that multiplexes IKE and ESP toward one gateway (RFC 3948). It binds an

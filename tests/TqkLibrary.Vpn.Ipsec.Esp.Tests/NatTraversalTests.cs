@@ -1,7 +1,8 @@
-using TqkLibrary.Vpn.Transport.Udp;
+using TqkLibrary.Vpn.Ipsec.Nat;
+using TqkLibrary.Vpn.Ipsec.Nat.Enums;
 using Xunit;
 
-namespace TqkLibrary.Vpn.Transport.Udp.Tests
+namespace TqkLibrary.Vpn.Ipsec.Esp.Tests
 {
     public class NatTraversalTests
     {

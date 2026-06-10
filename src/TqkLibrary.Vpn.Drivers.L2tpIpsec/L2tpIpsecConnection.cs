@@ -1,5 +1,4 @@
 using System.Net;
-using System.Net.Sockets;
 using TqkLibrary.Vpn.Abstractions.Channels;
 using TqkLibrary.Vpn.Abstractions.Channels.Interfaces;
 using TqkLibrary.Vpn.Abstractions.Drivers;
@@ -9,10 +8,11 @@ using TqkLibrary.Vpn.Ipsec.Esp;
 using TqkLibrary.Vpn.Ipsec.Ike.V1;
 using TqkLibrary.Vpn.Ipsec.Ike.V1.Enums;
 using TqkLibrary.Vpn.Ipsec.Ike.V1.Models;
+using TqkLibrary.Vpn.Ipsec.Nat;
+using TqkLibrary.Vpn.Ipsec.Nat.Enums;
 using TqkLibrary.Vpn.L2tp;
 using TqkLibrary.Vpn.Ppp;
 using TqkLibrary.Vpn.Ppp.Auth;
-using TqkLibrary.Vpn.Transport.Udp;
 
 namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
 {
@@ -518,7 +518,7 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
         {
             if (IPAddress.TryParse(host, out IPAddress? literal)) return literal;
             IPAddress[] addresses = await Dns.GetHostAddressesAsync(host).ConfigureAwait(false);
-            return addresses.First(a => a.AddressFamily == AddressFamily.InterNetwork);
+            return addresses.First(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork);
         }
 
         static uint ToSpi(byte[] spi) => (uint)((spi[0] << 24) | (spi[1] << 16) | (spi[2] << 8) | spi[3]);

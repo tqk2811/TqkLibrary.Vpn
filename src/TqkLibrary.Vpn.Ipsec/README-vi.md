@@ -1,17 +1,18 @@
 # TqkLibrary.Vpn.Ipsec
 
-> IPsec: ESP transform (RFC 4303) dưới `Esp/`, và IKE dưới `Ike/` — IKEv1 Main+Quick Mode (`Ike/V1`) và IKEv2 (`Ike/V2`).
+> IPsec: ESP transform (RFC 4303) dưới `Esp/`, IKE dưới `Ike/` — IKEv1 Main+Quick Mode (`Ike/V1`) và IKEv2 (`Ike/V2`) — và NAT-T UDP framing/channel (RFC 3948, cổng 500/4500) dưới `Nat/`.
 
 ## Mục đích
 
-Project này hiện thực **IPsec ở tầng PROTOCOL** cho VPN client userspace, gồm hai mảng tách bạch:
+Project này hiện thực **IPsec ở tầng PROTOCOL** cho VPN client userspace, gồm ba mảng tách bạch:
 
 - **IKE (Internet Key Exchange)** — control plane: thương lượng SA và sinh khóa.
   - `Ike/V1` — ISAKMP/IKEv1 (RFC 2407/2408/2409): Main Mode (PSK, 6 message) + Quick Mode (3 message), cộng các Informational (DPD keepalive, Delete teardown, Quick Mode rekey). **Đây là phần đang chạy thực tế**, được driver L2TP/IPsec dùng để dựng ESP CHILD SA cho L2TP/IPsec qua VPN Gate.
   - `Ike/V2` — IKEv2 (RFC 7296): IKE_SA_INIT + IKE_AUTH (PSK) đầy đủ, có unit test, **nhưng chưa driver nào wire vào**.
 - **ESP (Encapsulating Security Payload)** — data plane (RFC 4303): `Esp/` đóng/mở gói ESP (`Protect` / `TryUnprotect`), gán sequence number, anti-replay window, hỗ trợ hai bộ suite **AES-CBC+HMAC** và **AES-GCM** (AEAD). `EspSuiteSelection` là descriptor "suite đã negotiate" — ánh xạ thuật toán → độ dài keymat → `EspCipherSuite`, dùng chung cho cả IKEv1 lẫn IKEv2 sau khi đọc transform server chọn.
+- **NAT-T (UDP encapsulation)** — `Nat/` (RFC 3948, gom từ project cũ `TqkLibrary.Vpn.Transport.Udp`): framing **Non-ESP Marker** phân biệt IKE với ESP khi chung cổng 4500 ([NatTraversal.cs](Nat/NatTraversal.cs)) + kênh UDP một-gateway có trạng thái cổng ([NatTraversalChannel.cs](Nat/NatTraversalChannel.cs)) — bind cổng local ephemeral (≠500/4500, tránh đụng IKEEXT của OS và ép forced-NAT-T), gửi/nhận IKE+ESP, đổi cổng 500→4500 theo lệnh.
 
-Toàn bộ là **logic giao thức thuần** (build/process từng message, encode/decode payload, dẫn xuất khóa). Project **không** sở hữu transport: driver bên ngoài lo socket UDP, chuyển port 500→4500 khi NAT-T, và điều phối handshake. Primitive crypto (AES, DH, HMAC-PRF, GCM) nằm ở project `TqkLibrary.Vpn.Crypto`.
+`Ike/` và `Esp/` là **logic giao thức thuần** (build/process từng message, encode/decode payload, dẫn xuất khóa) — không socket; `Nat/` là ngoại lệ duy nhất sở hữu một `UdpClient`. Driver bên ngoài vẫn điều phối handshake (retransmit, thời điểm gọi `SwitchToNatTPort`). Primitive crypto (AES, DH, HMAC-PRF, GCM) nằm ở project `TqkLibrary.Vpn.Crypto`.
 
 ## Vị trí trong kiến trúc
 
@@ -29,6 +30,10 @@ Xem thêm tài liệu as-built toàn cục: [10-codebase-architecture-and-flow.m
 
 ```
 TqkLibrary.Vpn.Ipsec/
+├─ Nat/                         NAT-T UDP encapsulation (RFC 3948) — gom từ project cũ Transport.Udp
+│  ├─ NatTraversal.cs           static helper: hằng số cổng 500/4500 + framing Non-ESP Marker (Wrap/Classify/Unwrap)
+│  ├─ NatTraversalChannel.cs    kênh UDP có trạng thái: gửi/nhận IKE & ESP, đổi cổng 500->4500
+│  └─ Enums/NatTPacketKind.cs   phân loại datagram trên 4500: Invalid / Ike / Esp
 ├─ Esp/                         ESP data plane (RFC 4303) — đóng/mở gói, anti-replay, các cipher suite
 │  ├─ EspSession.cs             Cặp SA hai chiều: outbound (sequence) + inbound (anti-replay) — đơn vị data plane gửi qua
 │  ├─ EspCipherSuite.cs         Lớp trừu tượng cho 1 ESP transform + 3 factory (CBC/SHA256, CBC/SHA1, GCM)
@@ -82,6 +87,14 @@ TqkLibrary.Vpn.Ipsec/
 | `AntiReplayWindow` | Cửa sổ trượt 64 gói; `Check` (thuần) + `Commit` (sau khi qua integrity) | [AntiReplayWindow.cs:7](Esp/AntiReplayWindow.cs#L7) |
 | `EspConstants` | Hằng số + helper header (`ReadSpi`/`ReadSequence`/`WriteHeader`) | [EspConstants.cs:4](Esp/EspConstants.cs#L4) |
 
+### NAT-T (Nat/)
+
+| Type | Vai trò | Vị trí |
+|------|---------|--------|
+| `NatTraversal` (static) | Hằng số cổng (`IkePort`=500, `NatTPort`=4500, `MarkerLength`=4) + framing Non-ESP Marker: `WrapIke`/`Classify`/`UnwrapIke` | [NatTraversal.cs:9](Nat/NatTraversal.cs#L9) |
+| `NatTPacketKind` (enum) | Phân loại datagram nhận trên 4500: `Invalid` / `Ike` / `Esp` | [NatTPacketKind.cs:4](Nat/Enums/NatTPacketKind.cs#L4) |
+| `NatTraversalChannel` (sealed, `IAsyncDisposable`) | Kênh UDP một-gateway: bind cổng ephemeral, `SendIkeAsync`/`SendEspAsync`/`ReceiveAsync` (tự thêm/bóc marker theo cổng đích), `SwitchToNatTPort` đổi 500→4500 | [NatTraversalChannel.cs:13](Nat/NatTraversalChannel.cs#L13) |
+
 ### IKEv1 (đang chạy)
 
 | Type | Vai trò | Vị trí |
@@ -125,7 +138,8 @@ TqkLibrary.Vpn.Ipsec/
 | **RFC 2409** (IKEv1) | `IkeV1KeyMaterial` (§5), `IkeV1Auth` (§5), `IkeV1QuickMode` (§5.5), `IkeV1Phase2Keys` (§5.5), `IkeV1Cipher` (§5.5) | [IkeV1KeyMaterial.cs:8](Ike/V1/IkeV1KeyMaterial.cs#L8), [IkeV1Auth.cs:6](Ike/V1/IkeV1Auth.cs#L6), [IkeV1QuickMode.cs:6](Ike/V1/IkeV1QuickMode.cs#L6), [IkeV1Phase2Keys.cs:6](Ike/V1/IkeV1Phase2Keys.cs#L6), [IkeV1Cipher.cs:8](Ike/V1/IkeV1Cipher.cs#L8) | Có trong comment |
 | **RFC 2408** (ISAKMP) | `IsakmpMessage` (§3.1), `IsakmpSaPayload` (§3.4), `IsakmpPayload` (base), `IsakmpProposal` (§3.5)/`IsakmpTransform` (§3.6), `IsakmpAttribute` (§3.3), `IkeV1Dpd` (Notification §3.14), `IkeV1Delete` (Delete §3.15), `IkeV1Constants` (flags §3.1) | [IsakmpMessage.cs:8](Ike/V1/IsakmpMessage.cs#L8), [IsakmpSaPayload.cs:7](Ike/V1/Payloads/IsakmpSaPayload.cs#L7), [IkeV1Dpd.cs:20](Ike/V1/IkeV1Dpd.cs#L20), [IkeV1Delete.cs:6](Ike/V1/IkeV1Delete.cs#L6), [IkeV1Constants.cs:3](Ike/V1/Enums/IkeV1Constants.cs#L3) | Có trong comment |
 | **RFC 2407** (IPsec DOI) | `IkeV1Constants` (protocol/transform id, attribute class, encap mode) | [IkeV1Constants.cs:32](Ike/V1/Enums/IkeV1Constants.cs#L32), [IkeV1Constants.cs:117](Ike/V1/Enums/IkeV1Constants.cs#L117) | Có trong comment |
-| **RFC 3947** (NAT-T cho IKEv1) | `IkeV1NatDetection` (Vendor ID + NAT-D hash), `IsakmpPayloadType.NatDiscovery`, encap UDP-Tunnel/Transport | [IkeV1NatDetection.cs:8](Ike/V1/IkeV1NatDetection.cs#L8), [IsakmpPayloadType.cs:48](Ike/V1/Enums/IsakmpPayloadType.cs#L48), [IkeV1Constants.cs:141](Ike/V1/Enums/IkeV1Constants.cs#L141) | Có trong comment |
+| **RFC 3947** (NAT-T cho IKEv1) | `IkeV1NatDetection` (Vendor ID + NAT-D hash), `IsakmpPayloadType.NatDiscovery`, encap UDP-Tunnel/Transport; trigger `NatTraversalChannel.SwitchToNatTPort` (kênh chỉ thực thi đổi cổng, quyết định NAT do tầng IKE) | [IkeV1NatDetection.cs:8](Ike/V1/IkeV1NatDetection.cs#L8), [IsakmpPayloadType.cs:48](Ike/V1/Enums/IsakmpPayloadType.cs#L48), [IkeV1Constants.cs:141](Ike/V1/Enums/IkeV1Constants.cs#L141), [NatTraversalChannel.cs:33-34](Nat/NatTraversalChannel.cs#L33-L34) | Có trong comment (RFC 3947 không ghi trong comment `Nat/`) |
+| **RFC 3948** (UDP Encapsulation of ESP — Non-ESP Marker §2.2, ghép kênh IKE/ESP trên 4500) | `NatTraversal` (framing/Classify), `NatTPacketKind`, `NatTraversalChannel` | [NatTraversal.cs:6](Nat/NatTraversal.cs#L6), [NatTPacketKind.cs:3](Nat/Enums/NatTPacketKind.cs#L3), [NatTraversalChannel.cs:8](Nat/NatTraversalChannel.cs#L8) | RFC ghi rõ trong comment |
 | **draft-ietf-ipsec-nat-t-ike-02/03** | `IkeV1NatDetection.VendorIdDraft02/03` (fallback NAT-T cũ, payload NAT-D = 130) | [IkeV1NatDetection.cs:17](Ike/V1/IkeV1NatDetection.cs#L17) | Có trong comment |
 | **RFC 3706** (DPD) | `IkeV1Dpd` (R-U-THERE / R-U-THERE-ACK), `IkeV1InformationalKind` | [IkeV1Dpd.cs:6](Ike/V1/IkeV1Dpd.cs#L6), [IkeV1InformationalKind.cs:3](Ike/V1/Enums/IkeV1InformationalKind.cs#L3) | Có trong comment |
 | **RFC 7296** (IKEv2) | `IkeMessage` (§3.1), `IkeKeyMaterial` (§2.14), `ChildSaKeys` (§2.17), `IkeCipher` (§3.14), `IkePskAuth` (§2.15), `IkeSaInitiator` (§2.15), `NatDetection` (§2.23), `Ike/V2/Payloads/*`, `Ike/V2/Enums/*` | [IkeMessage.cs:7](Ike/V2/IkeMessage.cs#L7), [IkeKeyMaterial.cs:7](Ike/V2/IkeKeyMaterial.cs#L7), [ChildSaKeys.cs:7](Ike/V2/ChildSaKeys.cs#L7), [IkeCipher.cs:8](Ike/V2/IkeCipher.cs#L8), [IkePskAuth.cs:7](Ike/V2/IkePskAuth.cs#L7), [NatDetection.cs:7](Ike/V2/NatDetection.cs#L7) | Có trong comment (chưa wire) |
@@ -168,6 +182,30 @@ IkeV1Phase2Keys keys = ike.CreatePhase2Keys();
 // BuildDeleteEsp/BuildDeleteIsakmp (teardown), ProcessInformational (phân loại message đến).
 ```
 
+### NAT-T — kênh UDP cho IKE/ESP (Nat/)
+
+```csharp
+await using var natt = new NatTraversalChannel(serverIp, NatTraversal.IkePort);
+
+// Main Mode 1-4 trên UDP/500 (chưa marker)
+await natt.SendIkeAsync(ike.BuildMainMode1());
+var (kind, reply) = await natt.ReceiveAsync(ct);   // kind == NatTPacketKind.Ike
+
+// IKE phát hiện NAT (NAT-D) → chuyển sang UDP/4500 (từ đây IKE có Non-ESP Marker)
+natt.SwitchToNatTPort();
+await natt.SendIkeAsync(ike.BuildMainMode5());
+
+// Sau Quick Mode: data plane ESP (không marker; SPI là 4 byte đầu)
+await natt.SendEspAsync(espDatagram);
+
+// Vòng nhận chung cho cả IKE và ESP
+var (k, payload) = await natt.ReceiveAsync(ct);
+if (k == NatTPacketKind.Ike) { /* DPD / Delete / rekey reply */ }
+else if (k == NatTPacketKind.Esp) { /* đẩy vào EspSession */ }
+```
+
+Cách dùng thật trong driver: [L2tpIpsecConnection.cs:129-151](../TqkLibrary.Vpn.Drivers.L2tpIpsec/L2tpIpsecConnection.cs#L129-L151) (vòng nhận demux IKE/ESP ở [:237-259](../TqkLibrary.Vpn.Drivers.L2tpIpsec/L2tpIpsecConnection.cs#L237-L259)).
+
 ### IKEv2 — (chưa driver nào dùng)
 
 ```csharp
@@ -196,9 +234,10 @@ if (ike.ProcessAuthResponse(Recv())) { ChildSaKeys child = ike.ChildKeys!; EspSu
 
 ## Trạng thái & ghi chú
 
-- **Đang chạy thực tế:** `Ike/V1` + `Esp/` — driver `L2tpIpsec` dùng `IkeV1Client` ([L2tpIpsecConnection.cs:136](../TqkLibrary.Vpn.Drivers.L2tpIpsec/L2tpIpsecConnection.cs#L136)) và `EspSession`/`EspCipherSuite` cho data plane. Đã verify live trên VPN Gate (PSK + AES-256 + HMAC-SHA1, MODP group 2/14).
+- **Đang chạy thực tế:** `Ike/V1` + `Esp/` + `Nat/` — driver `L2tpIpsec` dùng `IkeV1Client` ([L2tpIpsecConnection.cs:136](../TqkLibrary.Vpn.Drivers.L2tpIpsec/L2tpIpsecConnection.cs#L136)), `NatTraversalChannel` ([L2tpIpsecConnection.cs:130](../TqkLibrary.Vpn.Drivers.L2tpIpsec/L2tpIpsecConnection.cs#L130)) và `EspSession`/`EspCipherSuite` cho data plane. Đã verify live trên VPN Gate (PSK + AES-256 + HMAC-SHA1, MODP group 2/14).
+- **`Nat/` gom từ project cũ `TqkLibrary.Vpn.Transport.Udp`** (đã xóa; namespace mới `TqkLibrary.Vpn.Ipsec.Nat`): kênh một-gateway (không multiplex nhiều peer); chỉ phục vụ IKE/ESP trên 500/4500 — logic phát hiện NAT (NAT-D, RFC 3947) vẫn ở `Ike/V1`, kênh chỉ đổi cổng theo lệnh. Khác biệt `netstandard2.0` vs `net8.0` duy nhất: `ReceiveAsync` trên netstandard2.0 không truyền được `CancellationToken` vào `UdpClient.ReceiveAsync` (chỉ `ThrowIfCancellationRequested` trước khi chờ) — [NatTraversalChannel.cs:58-63](Nat/NatTraversalChannel.cs#L58-L63). Cấp phát đơn giản (`ToArray` mỗi gói), chấp nhận được với nhịp datagram IKE/ESP.
 - **Đầy đủ nhưng chưa wire:** `Ike/V2` (IKEv2) — `IkeClient` có đủ IKE_SA_INIT + IKE_AUTH (PSK) và unit test, nhưng **không driver nào tham chiếu** (grep `IkeClient` trong `Drivers` không có kết quả). Đây là khung sẵn cho IKEv2 transport mode/ESP tương lai. ESP CHILD_SA chào **2 proposal**: AES-CBC-256+SHA256 (#1) rồi AES-GCM-16-256 (#2) — `ProcessAuthResponse` đọc proposal server chọn → `NegotiatedEsp` + `ChildKeys` đúng độ dài.
 - **ESP suite (negotiate được):** ba bộ — AES-CBC+HMAC-SHA256-128 (mặc định IKEv2), AES-CBC+HMAC-SHA1-96 (ESP SA của IKEv1), AES-GCM-16 (RFC 4106, AEAD). Cả IKEv1 (QM2) lẫn IKEv2 (SAr2) **đọc transform server chọn** rồi dựng đúng suite qua `EspSuiteSelection` — IKEv1 chào CBC **trước** GCM nên VPN Gate/SoftEther (không hỗ trợ GCM) vẫn chọn CBC (đường live không đổi); gateway hỗ trợ GCM (strongSwan…) chọn được GCM. Anti-replay cố định cửa sổ 64, **không hỗ trợ Extended Sequence Number** (ESN): GCM IV để 4 byte cao = 0 ([EspGcmSuite.cs:87](Esp/EspGcmSuite.cs#L87)); sequence là 32-bit, `Protect` dùng `checked` nên sẽ ném nếu vượt `uint.MaxValue` — đây là **backstop**: driver `L2tpIpsec` theo dõi `OutboundSequence` và chủ động rekey Phase 2 ở high-watermark ~75%×2³² (RFC 4303 §3.3.3) **trước khi** chạm giới hạn này.
 - **IKEv1 PFS:** Quick Mode rekey **không có PFS** (KEYMAT chỉ từ SKEYID_d + nonce mới, không trao đổi KE mới) — phù hợp interop L2TP/IPsec phổ biến.
 - **netstandard2.0 vs net8.0:** cùng codebase; tránh `record`/`init` (netstandard2.0 thiếu `IsExternalInit`). Primitive crypto khác biệt nằm ở `TqkLibrary.Vpn.Crypto` (BouncyCastle trên netstandard2.0), không phải project này.
-- **Phạm vi:** chỉ logic giao thức (build/process/encode/decode/derive). Transport UDP, chuyển port 500→4500 khi NAT-T, retransmit, vòng đời SA do driver bên ngoài sở hữu.
+- **Phạm vi:** `Ike/`+`Esp/` chỉ logic giao thức (build/process/encode/decode/derive); socket UDP NAT-T nay thuộc `Nat/` của chính project này. Điều phối handshake (retransmit, thời điểm `SwitchToNatTPort`) và vòng đời SA vẫn do driver bên ngoài sở hữu.

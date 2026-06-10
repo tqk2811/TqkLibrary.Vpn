@@ -17,7 +17,7 @@ Driver MS-SSTP ([SstpDriver.cs:8](SstpDriver.cs#L8)) gồm: TLS trên 443 (chấ
 - **Phụ thuộc (ProjectReference) — CHỈ 2 project:**
   - [TqkLibrary.Vpn.Abstractions](../TqkLibrary.Vpn.Abstractions) — interface/model/enum (`IVpnProtocolDriver`, `IVpnConnection`, `IPacketChannel`, `SwappablePacketChannel`, `TunnelConfig`, typed exception...).
   - [TqkLibrary.Vpn.Ppp](../TqkLibrary.Vpn.Ppp) — `PppEngine`, `MsChapV2Authenticator` (+ `DeriveHlak`), `IPppFrameChannel`.
-  - **Không** ref `Ipsec` / `L2tp` / `Transport.Udp` — SSTP tự cuộn TLS bằng BCL (`TcpClient` + `SslStream`, `HMACSHA256`, `SHA256`) trong `SstpTransport`.
+  - **Không** ref `Ipsec` / `L2tp` — SSTP tự cuộn TLS bằng BCL (`TcpClient` + `SslStream`, `HMACSHA256`, `SHA256`) trong `SstpTransport`.
 - **Được dùng bởi:** [TqkLibrary.Vpn](../TqkLibrary.Vpn) (entry point — `VpnClientBuilder.UseSstp()` / `UseSstp(SstpReconnectOptions)` đăng ký driver này).
 
 ## Cấu trúc thư mục

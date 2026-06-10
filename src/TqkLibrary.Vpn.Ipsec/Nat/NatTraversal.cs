@@ -1,18 +1,7 @@
-namespace TqkLibrary.Vpn.Transport.Udp
+using TqkLibrary.Vpn.Ipsec.Nat.Enums;
+
+namespace TqkLibrary.Vpn.Ipsec.Nat
 {
-    /// <summary>What a datagram received on UDP/4500 carries, per the Non-ESP Marker rule (RFC 3948 §2.2).</summary>
-    public enum NatTPacketKind
-    {
-        /// <summary>Too short / unrecognisable.</summary>
-        Invalid,
-
-        /// <summary>An IKE message (prefixed with the 4-byte zero Non-ESP Marker).</summary>
-        Ike,
-
-        /// <summary>An ESP packet (first 4 bytes are a non-zero SPI).</summary>
-        Esp,
-    }
-
     /// <summary>
     /// UDP-encapsulation framing for IKE/ESP multiplexed on port 4500 (RFC 3948). IKE messages carry a leading
     /// 4-byte zero "Non-ESP Marker"; ESP packets do not (their first four bytes are the always-non-zero SPI).

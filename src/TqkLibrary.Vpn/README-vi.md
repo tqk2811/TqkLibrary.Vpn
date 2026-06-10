@@ -69,12 +69,12 @@ Bản thân project façade **không hiện thực chuẩn mạng nào** — nó
 | RFC 2759 (MS-CHAPv2) | `SstpDriver` + `L2tpIpsecDriver` (PPP auth) | [VpnClientBuilder.cs:20](VpnClientBuilder.cs#L20), [VpnClientBuilder.cs:26](VpnClientBuilder.cs#L26) | (suy luận) — hiện thực thực tế ở Ppp/`MsChapV2` |
 | RFC 2409 (IKEv1 / ISAKMP) | `L2tpIpsecDriver` qua `UseL2tpIpsec()` | [VpnClientBuilder.cs:26-29](VpnClientBuilder.cs#L26-L29), [L2tpIpsecDriver.cs:8](../TqkLibrary.Vpn.Drivers.L2tpIpsec/L2tpIpsecDriver.cs#L8) | (suy luận) — comment driver "IKEv1 PSK over NAT-T"; logic ở Ipsec `Ike/V1` |
 | RFC 4303 (ESP) | `L2tpIpsecDriver` (data plane) | [L2tpIpsecDriver.cs:8](../TqkLibrary.Vpn.Drivers.L2tpIpsec/L2tpIpsecDriver.cs#L8), [L2tpIpsecDriver.cs:37](../TqkLibrary.Vpn.Drivers.L2tpIpsec/L2tpIpsecDriver.cs#L37) | (suy luận) — `SecurityKinds = Esp`; hiện thực ở Ipsec `Esp` |
-| RFC 3948 (UDP encapsulation / NAT-T) | `L2tpIpsecDriver` (transport UDP) | [L2tpIpsecDriver.cs:8](../TqkLibrary.Vpn.Drivers.L2tpIpsec/L2tpIpsecDriver.cs#L8), [L2tpIpsecDriver.cs:36](../TqkLibrary.Vpn.Drivers.L2tpIpsec/L2tpIpsecDriver.cs#L36) | (suy luận) — "NAT-T"; hiện thực ở Transport.Udp |
+| RFC 3948 (UDP encapsulation / NAT-T) | `L2tpIpsecDriver` (transport UDP) | [L2tpIpsecDriver.cs:8](../TqkLibrary.Vpn.Drivers.L2tpIpsec/L2tpIpsecDriver.cs#L8), [L2tpIpsecDriver.cs:36](../TqkLibrary.Vpn.Drivers.L2tpIpsec/L2tpIpsecDriver.cs#L36) | (suy luận) — "NAT-T"; hiện thực ở [`Ipsec/Nat`](../TqkLibrary.Vpn.Ipsec/Nat) |
 | RFC 2661 (L2TPv2) | `L2tpIpsecDriver` | [L2tpIpsecDriver.cs:8](../TqkLibrary.Vpn.Drivers.L2tpIpsec/L2tpIpsecDriver.cs#L8) | (suy luận) — comment driver "L2TP"; hiện thực ở L2tp |
 | RFC 1661/1332 (PPP/IPCP) | cả 2 driver (`UsesPpp`, `AddressAssignment.Ipcp`) | [SstpDriver.cs:22-31](../TqkLibrary.Vpn.Drivers.Sstp/SstpDriver.cs#L22-L31), [L2tpIpsecDriver.cs:31-40](../TqkLibrary.Vpn.Drivers.L2tpIpsec/L2tpIpsecDriver.cs#L31-L40) | (suy luận) — IP cấp qua IPCP; hiện thực ở Ppp |
 | FIPS-197 (AES), NIST SP 800-38D (AES-GCM) | dùng gián tiếp khi mã hóa ESP/TLS | — | (suy luận) — primitive ở Crypto; façade không chạm trực tiếp |
 
-> Tóm lại: dùng bảng này như **bản đồ "shortcut façade → chuẩn"**. Để xem ánh xạ chuẩn → file:line chính xác (có comment RFC trong code), đọc README các project: Drivers, Ipsec, L2tp, Ppp, Transport.Udp, Crypto.
+> Tóm lại: dùng bảng này như **bản đồ "shortcut façade → chuẩn"**. Để xem ánh xạ chuẩn → file:line chính xác (có comment RFC trong code), đọc README các project: Drivers, Ipsec (gồm NAT-T `Nat/`), L2tp, Ppp, Crypto.
 
 ## API / cách dùng
 

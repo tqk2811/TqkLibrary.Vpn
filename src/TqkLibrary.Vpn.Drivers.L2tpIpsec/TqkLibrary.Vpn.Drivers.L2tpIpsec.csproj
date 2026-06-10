@@ -7,7 +7,6 @@
   <ItemGroup>
     <ProjectReference Include="..\TqkLibrary.Vpn.Abstractions\TqkLibrary.Vpn.Abstractions.csproj" />
     <ProjectReference Include="..\TqkLibrary.Vpn.Ppp\TqkLibrary.Vpn.Ppp.csproj" />
-    <ProjectReference Include="..\TqkLibrary.Vpn.Transport.Udp\TqkLibrary.Vpn.Transport.Udp.csproj" />
     <ProjectReference Include="..\TqkLibrary.Vpn.Ipsec\TqkLibrary.Vpn.Ipsec.csproj" />
     <ProjectReference Include="..\TqkLibrary.Vpn.L2tp\TqkLibrary.Vpn.L2tp.csproj" />
   </ItemGroup>

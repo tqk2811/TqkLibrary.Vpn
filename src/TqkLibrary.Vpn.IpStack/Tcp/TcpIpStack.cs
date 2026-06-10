@@ -41,6 +41,7 @@ namespace TqkLibrary.Vpn.IpStack.Tcp
             ushort localPort = (ushort)Interlocked.Increment(ref _nextPort);
             var connection = new TcpConnection(_localAddress, localPort, remoteAddress, remotePort, SendIp);
             _connections[localPort] = connection;
+            connection.Closed += () => { _connections.TryRemove(localPort, out _); connection.Dispose(); }; // drop faulted connections (RST / RTO give-up)
 
             connection.StartConnect();
 

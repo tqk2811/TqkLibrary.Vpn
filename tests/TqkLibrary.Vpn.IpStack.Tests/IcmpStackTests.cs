@@ -64,6 +64,25 @@ namespace TqkLibrary.Vpn.IpStack.Tests
         }
 
         [Fact]
+        public async Task Ping_ManyConcurrent_EachGetsItsOwnReply()
+        {
+            var link = new LoopbackPair();
+            IPAddress ipA = IPAddress.Parse("10.0.0.1"), ipB = IPAddress.Parse("10.0.0.2");
+            var stackA = new TcpIpStack(link.A, ipA);
+            _ = new TcpIpStack(link.B, ipB);
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            // Distinct payloads per ping: each waiter must receive exactly its own echo, never a sibling's.
+            Task<PingReply>[] pings = Enumerable.Range(0, 32)
+                .Select(i => stackA.PingAsync(ipB, new byte[] { (byte)i, 0x5A }, cts.Token))
+                .ToArray();
+
+            PingReply[] replies = await Task.WhenAll(pings);
+            for (int i = 0; i < replies.Length; i++)
+                Assert.Equal(new byte[] { (byte)i, 0x5A }, replies[i].Data);
+        }
+
+        [Fact]
         public async Task Ping_Cancellation_Throws()
         {
             var channel = new CaptureChannel(); // no peer → no reply ever arrives

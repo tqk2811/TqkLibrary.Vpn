@@ -70,9 +70,10 @@ namespace TqkLibrary.Vpn.IpStack.Tcp
         /// </summary>
         public async Task<PingReply> PingAsync(IPAddress remoteAddress, ReadOnlyMemory<byte> data = default, CancellationToken cancellationToken = default)
         {
-            ushort sequence = (ushort)Interlocked.Increment(ref _nextPingSequence);
             var waiter = new TaskCompletionSource<PingReply>(TaskCreationOptions.RunContinuationsAsynchronously);
-            _pings[sequence] = waiter;
+            ushort sequence;
+            do { sequence = (ushort)Interlocked.Increment(ref _nextPingSequence); } // skip sequences with a ping still
+            while (!_pings.TryAdd(sequence, waiter));                               // pending after a 65536-wrap
             try
             {
                 ReadOnlySpan<byte> payload = data.IsEmpty ? DefaultPingData : data.Span;

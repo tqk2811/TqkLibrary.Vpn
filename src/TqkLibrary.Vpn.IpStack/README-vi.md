@@ -118,7 +118,7 @@ Các điểm vào public chính:
 ### Đường gói đi vào (demux)
 
 1. `TcpIpStack` đăng ký handler `InboundIpPacket` của `IPacketChannel` ngay trong constructor — [TcpIpStack.cs:36](Tcp/TcpIpStack.cs#L36).
-2. Mỗi gói IPv4 inbound vào `OnInbound` — [TcpIpStack.cs:98](Tcp/TcpIpStack.cs#L98): **trước tiên đưa qua `Ipv4Reassembler.Offer`** [TcpIpStack.cs:103](Tcp/TcpIpStack.cs#L103) — gói nguyên đi thẳng, fragment được buffer (return `null` ⇒ bỏ qua tới khi ráp xong); sau đó đọc protocol [Ipv4.cs:97](Ipv4.cs#L97); nếu TCP (6) lấy **destination port = local port của ta** [TcpIpStack.cs:113](Tcp/TcpIpStack.cs#L113) rồi tra `TcpConnection`; nếu UDP (17) tra `UdpConnection` theo local port [TcpIpStack.cs:121](Tcp/TcpIpStack.cs#L121); nếu ICMP (1) vào `OnIcmp` [TcpIpStack.cs:129](Tcp/TcpIpStack.cs#L129).
+2. Mỗi gói IPv4 inbound vào `OnInbound` — [TcpIpStack.cs:99](Tcp/TcpIpStack.cs#L99): **trước tiên đưa qua `Ipv4Reassembler.Offer`** [TcpIpStack.cs:104](Tcp/TcpIpStack.cs#L104) — gói nguyên đi thẳng, fragment được buffer (return `null` ⇒ bỏ qua tới khi ráp xong); sau đó đọc protocol [Ipv4.cs:97](Ipv4.cs#L97); nếu TCP (6) lấy **destination port = local port của ta** [TcpIpStack.cs:113](Tcp/TcpIpStack.cs#L113) rồi tra `TcpConnection`; nếu UDP (17) tra `UdpConnection` theo local port [TcpIpStack.cs:121](Tcp/TcpIpStack.cs#L121); nếu ICMP (1) vào `OnIcmp` [TcpIpStack.cs:129](Tcp/TcpIpStack.cs#L129).
 3. Segment được đẩy vào state machine qua `TcpConnection.OnSegment` — [TcpConnection.cs:153](Tcp/TcpConnection.cs#L153); datagram UDP qua `UdpConnection.OnDatagram` — [UdpConnection.cs:59](Tcp/UdpConnection.cs#L59).
 
 ### IPv4 reassembly (RFC 791 §3.2)
@@ -131,12 +131,12 @@ Các điểm vào public chính:
 
 ### ICMP (RFC 792)
 
-`OnIcmp` — [TcpIpStack.cs:133](Tcp/TcpIpStack.cs#L133) phân loại theo type:
+`OnIcmp` — [TcpIpStack.cs:134](Tcp/TcpIpStack.cs#L134) phân loại theo type:
 
-- **Echo Request (8) → tự trả lời:** build Echo Reply echo lại payload + identifier/sequence rồi gửi về source — [TcpIpStack.cs:138-144](Tcp/TcpIpStack.cs#L138-L144). Host được cấp IP trong tunnel vì thế đáp ping của bên khác.
-- **Echo Reply (0) → khớp ping đang chờ:** chỉ nhận nếu `identifier == _pingIdentifier` (per-stack, random), tra `_pings` theo sequence rồi complete `PingReply` — [TcpIpStack.cs:146-151](Tcp/TcpIpStack.cs#L146-L151).
-- **Destination Unreachable (3) → fail ping:** trích datagram bị quote (IP header + 8 byte = Echo Request đã gửi), đọc identifier/sequence để định danh ping rồi ném `IcmpUnreachableException(code)` — [TcpIpStack.cs:153-165](Tcp/TcpIpStack.cs#L153-L165).
-- **`PingAsync`** — [TcpIpStack.cs:71](Tcp/TcpIpStack.cs#L71): cấp sequence (`Interlocked`), đăng ký `TaskCompletionSource` vào `_pings`, build Echo Request + đo `Stopwatch`, gửi rồi `await` (hủy qua `CancellationToken`); `finally` gỡ entry khỏi `_pings`.
+- **Echo Request (8) → tự trả lời:** build Echo Reply echo lại payload + identifier/sequence rồi gửi về source — [TcpIpStack.cs:139-145](Tcp/TcpIpStack.cs#L139-L145). Host được cấp IP trong tunnel vì thế đáp ping của bên khác.
+- **Echo Reply (0) → khớp ping đang chờ:** chỉ nhận nếu `identifier == _pingIdentifier` (per-stack, random), tra `_pings` theo sequence rồi complete `PingReply` — [TcpIpStack.cs:147-152](Tcp/TcpIpStack.cs#L147-L152).
+- **Destination Unreachable (3) → fail ping:** trích datagram bị quote (IP header + 8 byte = Echo Request đã gửi), đọc identifier/sequence để định danh ping rồi ném `IcmpUnreachableException(code)` — [TcpIpStack.cs:154-166](Tcp/TcpIpStack.cs#L154-L166).
+- **`PingAsync`** — [TcpIpStack.cs:71](Tcp/TcpIpStack.cs#L71): cấp sequence bằng vòng `Interlocked` + `TryAdd` (sequence còn ping pending bị bỏ qua thay vì ghi đè waiter — an toàn khi đếm wrap qua 65536), build Echo Request + đo `Stopwatch`, gửi rồi `await` (hủy qua `CancellationToken`); `finally` gỡ entry khỏi `_pings`.
 
 ### TCP state machine (active-open)
 
@@ -148,12 +148,12 @@ Các điểm vào public chính:
 - **Zero-window persist:** cửa sổ peer = 0 mà còn dữ liệu ⇒ persist timer dò **1 byte** (chỉ khi không có gì in-flight; RTO lo retransmit byte dò) tới khi cửa sổ mở lại — [TcpConnection.cs:539](Tcp/TcpConnection.cs#L539).
 - **Half-close FSM:** peer FIN được ghi nhận rồi **chỉ tiêu thụ khi `_rcvNxt` chạm tới** (sau reassembly) ⇒ `ReadAsync` trả 0 — [NoteFin:305](Tcp/TcpConnection.cs#L305)/[TryConsumePeerFin:313](Tcp/TcpConnection.cs#L313). `AdvanceClose` lái trạng thái: FinWait1→**FinWait2** (FIN ta được ACK) / **Closing** (đóng đồng thời) / **TimeWait** (FIN+ACK 1 segment); FinWait2·Closing→TimeWait; CloseWait→LastAck; LastAck→CLOSED — [AdvanceClose:325](Tcp/TcpConnection.cs#L325). Chủ động đóng qua `CloseSend` (Established→FinWait1, CloseWait→LastAck), **FIN hoãn** tới khi đệm gửi cạn — [CloseSend:203](Tcp/TcpConnection.cs#L203).
 - **TIME-WAIT linger:** vào TimeWait arm `_closeTimer` (mặc định 2s, tunable); retransmitted FIN của peer được re-ACK + reset linger; hết linger → CLOSED — [EnterTimeWait:349](Tcp/TcpConnection.cs#L349)/[OnCloseTimer:357](Tcp/TcpConnection.cs#L357).
-- **Terminal:** graceful CLOSED, RST, hoặc hết retry đều qua **một đường** `Terminate`: dừng mọi timer, fault `Connected` (nếu lỗi) + kết thúc đọc, raise event `Closed` (stack gỡ + dispose) — [RST:224](Tcp/TcpConnection.cs#L224), [Terminate:592](Tcp/TcpConnection.cs#L592).
-- So sánh số thứ tự dùng số học modulo (`SeqGreater`/`SeqGeq`) để an toàn với wrap-around — [TcpConnection.cs:617](Tcp/TcpConnection.cs#L617).
+- **Terminal:** graceful CLOSED, RST, hoặc hết retry đều qua **một đường** `Terminate`: dừng mọi timer, fault `Connected` (nếu lỗi) + kết thúc đọc, raise event `Closed` (stack gỡ + dispose) — [RST:224](Tcp/TcpConnection.cs#L224), [Terminate:592](Tcp/TcpConnection.cs#L592). `Dispose` gọi trực tiếp khi kết nối còn sống cũng **abort an toàn**: pending `ReadAsync` nhận end-of-stream, pending connect fault `ObjectDisposedException`, rồi mới nhả timer — [Dispose:613](Tcp/TcpConnection.cs#L613).
+- So sánh số thứ tự dùng số học modulo (`SeqGreater`/`SeqGeq`) để an toàn với wrap-around — [TcpConnection.cs:625](Tcp/TcpConnection.cs#L625).
 
 ### Đóng gói đi ra
 
-`EmitSegment(seq, flags, payload)` → build TCP segment tại seq cho trước [TcpSegment.cs:10](Tcp/TcpSegment.cs#L10) → bọc IPv4 [Ipv4.cs:18](Ipv4.cs#L18) → đẩy qua `IPacketChannel.WriteIpPacketAsync` (`SendIp`) — [TcpConnection.cs:459](Tcp/TcpConnection.cs#L459), [TcpIpStack.cs:96](Tcp/TcpIpStack.cs#L96). Data/SYN/FIN còn được đưa vào retx queue (`EnqueueRetx`) để retransmit theo seq đã lưu. Checksum TCP/UDP tính trên pseudo-header IPv4 (src/dst/protocol/length) — [TcpSegment.cs:39-55](Tcp/TcpSegment.cs#L39-L55), [UdpDatagram.cs:41-56](UdpDatagram.cs#L41-L56). ICMP build qua [Icmpv4.cs:7](Icmpv4.cs#L7) (checksum trên toàn message, không pseudo-header) rồi cũng bọc IPv4 + `SendIp`.
+`EmitSegment(seq, flags, payload)` → build TCP segment tại seq cho trước [TcpSegment.cs:10](Tcp/TcpSegment.cs#L10) → bọc IPv4 [Ipv4.cs:18](Ipv4.cs#L18) → đẩy qua `IPacketChannel.WriteIpPacketAsync` (`SendIp`) — [TcpConnection.cs:459](Tcp/TcpConnection.cs#L459), [TcpIpStack.cs:97](Tcp/TcpIpStack.cs#L97). Data/SYN/FIN còn được đưa vào retx queue (`EnqueueRetx`) để retransmit theo seq đã lưu. Checksum TCP/UDP tính trên pseudo-header IPv4 (src/dst/protocol/length) — [TcpSegment.cs:39-55](Tcp/TcpSegment.cs#L39-L55), [UdpDatagram.cs:41-56](UdpDatagram.cs#L41-L56). ICMP build qua [Icmpv4.cs:7](Icmpv4.cs#L7) (checksum trên toàn message, không pseudo-header) rồi cũng bọc IPv4 + `SendIp`.
 
 ## Trạng thái & ghi chú
 

@@ -606,9 +606,17 @@ namespace TqkLibrary.Vpn.IpStack.Tcp
             handler?.Invoke();
         }
 
-        /// <summary>Stops the retransmission/persist/time-wait timers. Idempotent; also invoked when the connection terminates.</summary>
+        /// <summary>
+        /// Aborts the connection if it is still alive — a pending <see cref="ReadAsync"/> completes with end-of-stream
+        /// and a pending connect faults — then releases the timers. Idempotent; also invoked when the connection terminates.
+        /// </summary>
         public void Dispose()
         {
+            lock (_sync)
+            {
+                _connected.TrySetException(new ObjectDisposedException(nameof(TcpConnection))); // no-op once connected
+                Terminate(null);
+            }
             _rtoTimer.Dispose();
             _persistTimer.Dispose();
             _closeTimer.Dispose();

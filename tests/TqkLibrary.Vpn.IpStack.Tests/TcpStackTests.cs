@@ -100,6 +100,29 @@ namespace TqkLibrary.Vpn.IpStack.Tests
             Assert.Equal("hello-tunnel", Encoding.ASCII.GetString(buffer));
         }
 
+        [Fact]
+        public async Task Dispose_WhileReadPending_ReleasesReaderWithEndOfStream()
+        {
+            var link = new LoopbackPair();
+            var stack = new TcpIpStack(link.A, ClientIp);
+            _ = new PassiveTcpServer(link.B, ServerIp);
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            TcpConnection connection = await stack.ConnectAsync(ServerIp, 80, cts.Token);
+
+            // Park a reader with no data and no cancellation token, then dispose: the read must complete (EOF),
+            // not hang forever on the never-signalled waiter.
+            byte[] buffer = new byte[8];
+            Task<int> pendingRead = connection.ReadAsync(buffer, 0, buffer.Length, CancellationToken.None);
+            Assert.False(pendingRead.IsCompleted);
+
+            connection.Dispose();
+
+            Task winner = await Task.WhenAny(pendingRead, Task.Delay(TimeSpan.FromSeconds(5)));
+            Assert.Same(pendingRead, winner);
+            Assert.Equal(0, await pendingRead);
+        }
+
         static async Task<string> ReadStringAsync(TcpConnection connection, int count, CancellationToken cancellationToken)
         {
             byte[] buffer = new byte[count];

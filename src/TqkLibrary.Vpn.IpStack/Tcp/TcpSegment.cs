@@ -53,15 +53,8 @@ namespace TqkLibrary.Vpn.IpStack.Tcp
 
         static ushort Checksum(IPAddress sourceIp, IPAddress destinationIp, ReadOnlySpan<byte> segment)
         {
-            uint sum = 0;
-            byte[] s = sourceIp.GetAddressBytes();
-            byte[] d = destinationIp.GetAddressBytes();
-            sum += (uint)((s[0] << 8) | s[1]);
-            sum += (uint)((s[2] << 8) | s[3]);
-            sum += (uint)((d[0] << 8) | d[1]);
-            sum += (uint)((d[2] << 8) | d[3]);
-            sum += 6; // protocol (TCP)
-            sum += (uint)segment.Length;
+            // Pseudo-header drives the address-family difference (4-byte IPv4 vs 16-byte IPv6 addresses); the rest is identical.
+            uint sum = InternetChecksum.PseudoHeaderSum(sourceIp, destinationIp, 6 /* TCP */, segment.Length);
             for (int i = 0; i + 1 < segment.Length; i += 2)
                 sum += (uint)((segment[i] << 8) | segment[i + 1]);
             if ((segment.Length & 1) != 0)

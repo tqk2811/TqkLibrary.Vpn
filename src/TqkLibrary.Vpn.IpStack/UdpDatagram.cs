@@ -40,15 +40,8 @@ namespace TqkLibrary.Vpn.IpStack
 
         static ushort Checksum(IPAddress sourceIp, IPAddress destinationIp, ReadOnlySpan<byte> datagram)
         {
-            uint sum = 0;
-            byte[] s = sourceIp.GetAddressBytes();
-            byte[] d = destinationIp.GetAddressBytes();
-            sum += (uint)((s[0] << 8) | s[1]);
-            sum += (uint)((s[2] << 8) | s[3]);
-            sum += (uint)((d[0] << 8) | d[1]);
-            sum += (uint)((d[2] << 8) | d[3]);
-            sum += 17; // protocol (UDP)
-            sum += (uint)datagram.Length;
+            // Pseudo-header drives the address-family difference (4-byte IPv4 vs 16-byte IPv6 addresses); the rest is identical.
+            uint sum = InternetChecksum.PseudoHeaderSum(sourceIp, destinationIp, 17 /* UDP */, datagram.Length);
             for (int i = 0; i + 1 < datagram.Length; i += 2)
                 sum += (uint)((datagram[i] << 8) | datagram[i + 1]);
             if ((datagram.Length & 1) != 0)

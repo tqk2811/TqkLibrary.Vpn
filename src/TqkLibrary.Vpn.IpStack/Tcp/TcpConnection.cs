@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Net;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Threading;
 using TqkLibrary.Vpn.IpStack.Tcp.Enums;
@@ -140,10 +141,11 @@ namespace TqkLibrary.Vpn.IpStack.Tcp
             _remotePort = remotePort;
             _sendIp = sendIp;
             _opts = options ?? TcpRetransmitOptions.Default;
-            // MSS = link MTU − IPv4(20) − TCP(20); floored so a tiny MTU can't yield a useless segment size, and
-            // capped so an absurd MTU stays within the 16-bit option field. Until the peer's SYN-ACK is seen we send
-            // at our own MSS.
-            _localMss = (ushort)Math.Min(65495, Math.Max(MinMss, linkMtu - 40));
+            // MSS = link MTU − IP header − TCP(20); the IP header is 20 (IPv4) or 40 (IPv6). Floored so a tiny MTU
+            // can't yield a useless segment size, and capped so an absurd MTU stays within the 16-bit option field.
+            // Until the peer's SYN-ACK is seen we send at our own MSS.
+            int ipHeaderOverhead = _localIp.AddressFamily == AddressFamily.InterNetworkV6 ? 60 : 40;
+            _localMss = (ushort)Math.Min(65495, Math.Max(MinMss, linkMtu - ipHeaderOverhead));
             _sendMss = _localMss;
             _rtoMs = _opts.InitialRto.TotalMilliseconds;
             _persistMs = _opts.PersistMin.TotalMilliseconds;
@@ -567,7 +569,7 @@ namespace TqkLibrary.Vpn.IpStack.Tcp
         void EmitSegment(uint seq, TcpFlags flags, ReadOnlySpan<byte> payload, ushort mss = 0, byte windowScale = TcpSegment.NoWindowScale)
         {
             byte[] tcp = TcpSegment.Build(_localIp, _remoteIp, _localPort, _remotePort, seq, _rcvNxt, flags, ReceiveWindow, payload, mss, windowScale);
-            byte[] ip = Ipv4.Build(_localIp, _remoteIp, Ipv4.ProtocolTcp, tcp, _ipId++);
+            byte[] ip = IpLayer.Build(_localIp, _remoteIp, Ipv4.ProtocolTcp, tcp, _ipId++); // TCP protocol number 6 is shared by IPv4/IPv6
             _sendIp(ip);
         }
 

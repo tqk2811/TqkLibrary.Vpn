@@ -1,24 +1,28 @@
 using System.Net;
+using System.Net.Sockets;
 
 namespace TqkLibrary.Vpn.IpStack.Tcp
 {
     /// <summary>
-    /// A userspace UDP socket bound to one local port on the tunnel address. Datagrams are sent immediately; inbound
-    /// datagrams matching the local port are queued and surfaced by <see cref="ReceiveAsync"/>. No connection state —
-    /// the remote endpoint is supplied per send and reported per receive.
+    /// A userspace UDP socket bound to one local port on the tunnel address(es). Datagrams are sent immediately;
+    /// inbound datagrams matching the local port are queued and surfaced by <see cref="ReceiveAsync"/>. No connection
+    /// state — the remote endpoint is supplied per send and reported per receive. Dual-stack: the source address is
+    /// chosen per send from the remote's address family.
     /// </summary>
     public sealed class UdpConnection
     {
-        readonly IPAddress _localAddress;
+        readonly IPAddress? _localV4;
+        readonly IPAddress? _localV6;
         readonly Action<byte[]> _sendIp;
         readonly object _sync = new();
         readonly Queue<Datagram> _inbound = new();
         TaskCompletionSource<bool>? _waiter;
         ushort _identification;
 
-        internal UdpConnection(IPAddress localAddress, ushort localPort, Action<byte[]> sendIp)
+        internal UdpConnection(IPAddress? localV4, IPAddress? localV6, ushort localPort, Action<byte[]> sendIp)
         {
-            _localAddress = localAddress;
+            _localV4 = localV4;
+            _localV6 = localV6;
             LocalPort = localPort;
             _sendIp = sendIp;
         }
@@ -29,8 +33,11 @@ namespace TqkLibrary.Vpn.IpStack.Tcp
         /// <summary>Sends <paramref name="data"/> to the given remote endpoint as one UDP datagram.</summary>
         public void SendTo(IPAddress remoteAddress, ushort remotePort, ReadOnlySpan<byte> data)
         {
-            byte[] udp = UdpDatagram.Build(_localAddress, remoteAddress, LocalPort, remotePort, data);
-            byte[] ip = Ipv4.Build(_localAddress, remoteAddress, Ipv4.ProtocolUdp, udp, _identification++);
+            IPAddress? local = remoteAddress.AddressFamily == AddressFamily.InterNetworkV6 ? _localV6 : _localV4;
+            if (local is null)
+                throw new InvalidOperationException($"No local {remoteAddress.AddressFamily} address is bound on this UDP socket.");
+            byte[] udp = UdpDatagram.Build(local, remoteAddress, LocalPort, remotePort, data);
+            byte[] ip = IpLayer.Build(local, remoteAddress, Ipv4.ProtocolUdp, udp, _identification++); // UDP protocol number 17 is shared by IPv4/IPv6
             _sendIp(ip);
         }
 

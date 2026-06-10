@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Security.Cryptography;
 using TqkLibrary.Vpn.Abstractions.Channels.Interfaces;
+using TqkLibrary.Vpn.IpStack.Tcp.Enums;
 
 namespace TqkLibrary.Vpn.IpStack.Tcp
 {
@@ -23,7 +24,7 @@ namespace TqkLibrary.Vpn.IpStack.Tcp
         readonly ushort _pingIdentifier;
         int _nextPort = 49152;
         int _nextPingSequence;
-        int _icmpIpId;
+        int _replyIpId;
 
         /// <summary>Creates the stack over the given channel, sourcing packets from <paramref name="localAddress"/>.</summary>
         public TcpIpStack(IPacketChannel channel, IPAddress localAddress)
@@ -78,7 +79,7 @@ namespace TqkLibrary.Vpn.IpStack.Tcp
             {
                 ReadOnlySpan<byte> payload = data.IsEmpty ? DefaultPingData : data.Span;
                 byte[] icmp = Icmpv4.BuildEcho(Icmpv4.TypeEchoRequest, _pingIdentifier, sequence, payload);
-                byte[] ip = Ipv4.Build(_localAddress, remoteAddress, Ipv4.ProtocolIcmp, icmp, (ushort)Interlocked.Increment(ref _icmpIpId));
+                byte[] ip = Ipv4.Build(_localAddress, remoteAddress, Ipv4.ProtocolIcmp, icmp, (ushort)Interlocked.Increment(ref _replyIpId));
 
                 var stopwatch = Stopwatch.StartNew();
                 SendIp(ip);
@@ -126,6 +127,8 @@ namespace TqkLibrary.Vpn.IpStack.Tcp
                 ushort localPort = TcpSegment.DestinationPort(tcp.Span); // our local port (the segment's destination)
                 if (_connections.TryGetValue(localPort, out TcpConnection? connection))
                     connection.OnSegment(tcp);
+                else
+                    SendTcpReset(Ipv4.Source(span), Ipv4.Destination(span), tcp.Span); // no socket here → RST (RFC 793)
             }
             else if (protocol == Ipv4.ProtocolUdp)
             {
@@ -134,6 +137,8 @@ namespace TqkLibrary.Vpn.IpStack.Tcp
                 ushort localPort = UdpDatagram.DestinationPort(udp.Span);
                 if (_udpSockets.TryGetValue(localPort, out UdpConnection? socket))
                     socket.OnDatagram(Ipv4.Source(span), UdpDatagram.SourcePort(udp.Span), UdpDatagram.Payload(udp).ToArray());
+                else
+                    SendPortUnreachable(span); // no socket here → ICMP port unreachable (RFC 792 / RFC 1122 §3.2.2.1)
             }
             else if (protocol == Ipv4.ProtocolIcmp)
             {
@@ -152,7 +157,7 @@ namespace TqkLibrary.Vpn.IpStack.Tcp
                 {
                     // Answer pings aimed at this tunnel host: echo the payload back with the same identifier/sequence.
                     byte[] reply = Icmpv4.BuildEcho(Icmpv4.TypeEchoReply, Icmpv4.Identifier(span), Icmpv4.Sequence(span), Icmpv4.Payload(icmp).Span);
-                    byte[] ip = Ipv4.Build(_localAddress, source, Ipv4.ProtocolIcmp, reply, (ushort)Interlocked.Increment(ref _icmpIpId));
+                    byte[] ip = Ipv4.Build(_localAddress, source, Ipv4.ProtocolIcmp, reply, (ushort)Interlocked.Increment(ref _replyIpId));
                     SendIp(ip);
                     break;
                 }
@@ -178,6 +183,55 @@ namespace TqkLibrary.Vpn.IpStack.Tcp
                     break;
                 }
             }
+        }
+
+        /// <summary>
+        /// Answers an inbound TCP segment aimed at a local port with no connection by sending a RST (RFC 793 p.36):
+        /// the peer learns the port is dead instead of retransmitting into the void. A RST is never sent in reply to a
+        /// RST, which would otherwise loop into a reset storm.
+        /// </summary>
+        void SendTcpReset(IPAddress remote, IPAddress local, ReadOnlySpan<byte> segment)
+        {
+            TcpFlags flags = TcpSegment.Flags(segment);
+            if ((flags & TcpFlags.Rst) != 0) return;
+
+            uint sequence, acknowledgment;
+            TcpFlags rstFlags;
+            if ((flags & TcpFlags.Ack) != 0)
+            {
+                // The segment carries an ACK: the RST borrows its sequence and acknowledges nothing of its own.
+                sequence = TcpSegment.Acknowledgment(segment);
+                acknowledgment = 0;
+                rstFlags = TcpFlags.Rst;
+            }
+            else
+            {
+                // No ACK to borrow: RST sequence 0, ACK the sequence span the segment consumed (SYN/FIN each count 1).
+                int dataLength = Math.Max(0, segment.Length - TcpSegment.DataOffset(segment));
+                uint segmentLength = (uint)dataLength
+                    + (((flags & TcpFlags.Syn) != 0) ? 1u : 0u)
+                    + (((flags & TcpFlags.Fin) != 0) ? 1u : 0u);
+                sequence = 0;
+                acknowledgment = TcpSegment.Sequence(segment) + segmentLength;
+                rstFlags = TcpFlags.Rst | TcpFlags.Ack;
+            }
+
+            ushort localPort = TcpSegment.DestinationPort(segment); // our port (the segment's destination)
+            ushort remotePort = TcpSegment.SourcePort(segment);
+            byte[] reset = TcpSegment.Build(local, remote, localPort, remotePort, sequence, acknowledgment, rstFlags, window: 0, ReadOnlySpan<byte>.Empty);
+            SendIp(Ipv4.Build(local, remote, Ipv4.ProtocolTcp, reset, (ushort)Interlocked.Increment(ref _replyIpId)));
+        }
+
+        /// <summary>
+        /// Answers an inbound UDP datagram aimed at a local port with no socket by sending an ICMP Destination
+        /// Unreachable / Port Unreachable that quotes the offending datagram (RFC 792, RFC 1122 §3.2.2.1).
+        /// </summary>
+        void SendPortUnreachable(ReadOnlySpan<byte> offendingIpPacket)
+        {
+            IPAddress remote = Ipv4.Source(offendingIpPacket);
+            IPAddress local = Ipv4.Destination(offendingIpPacket);
+            byte[] icmp = Icmpv4.BuildDestinationUnreachable(Icmpv4.CodePortUnreachable, offendingIpPacket);
+            SendIp(Ipv4.Build(local, remote, Ipv4.ProtocolIcmp, icmp, (ushort)Interlocked.Increment(ref _replyIpId)));
         }
     }
 }

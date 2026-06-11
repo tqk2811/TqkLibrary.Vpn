@@ -2,13 +2,9 @@
   "profiles": {
     "proxy-server sstp public-vpn-226.opengw.net": {
       "commandName": "Project",
-      "commandLineArgs": "proxy-server --vpn sstp://vpn:vpn@public-vpn-226.opengw.net"
+      "commandLineArgs": "proxy-server --vpn sstp://vpn:vpn@public-vpn-226.opengw.net --proxy-host 0.0.0.0 --proxy-port 18080"
     },
     "proxy-server l2tp public-vpn-226.opengw.net": {
-      "commandName": "Project",
-      "commandLineArgs": "proxy-server --vpn l2tp://vpn:vpn@public-vpn-226.opengw.net"
-    },
-    "proxy-server l2tp as LAN proxy (0.0.0.0:18080)": {
       "commandName": "Project",
       "commandLineArgs": "proxy-server --vpn l2tp://vpn:vpn@public-vpn-226.opengw.net --proxy-host 0.0.0.0 --proxy-port 18080"
     },

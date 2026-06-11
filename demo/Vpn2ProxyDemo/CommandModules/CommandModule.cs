@@ -4,36 +4,47 @@ using System.Net.Http;
 using TqkLibrary.Proxy;
 using TqkLibrary.Proxy.Interfaces;
 using TqkLibrary.Vpn.IpStack.Tcp;
+using Vpn2ProxyDemo.CommandModules.Enums;
 using Vpn2ProxyDemo.CommandModules.Interfaces;
+using Vpn2ProxyDemo.CommandModules.Models;
 
 namespace Vpn2ProxyDemo.CommandModules
 {
     /// <summary>
-    /// Base chung cho mọi command module VPN của demo — **không gắn với protocol hay kiểu credential cụ thể**.
-    /// Giữ option chung (<c>--check-url</c> + <c>--proxy-host</c>/<c>--proxy-port</c>), in header + IP trực tiếp,
-    /// bắt lỗi, và chạy phần dùng chung <c>TcpIpStack -> VpnProxySource -> ProxyServer</c> rồi **giữ proxy sống
-    /// tới khi người dùng nhấn Enter** (test duy trì kết nối VPN qua keepalive/auto-reconnect).
+    /// Command duy nhất của demo VPN. Toàn bộ thông tin kết nối gói trong một option URI <c>--vpn</c>
+    /// (<c>scheme://user:pass@host[:port]</c>) — <c>scheme</c> chọn giao thức (SSTP / L2TP), <c>user:pass</c> là
+    /// credential, <c>host[:port]</c> là gateway. Giữ option chung (<c>--check-url</c> +
+    /// <c>--proxy-host</c>/<c>--proxy-port</c> + <c>--dns-server</c>/<c>--resolve</c>), in header + IP trực tiếp, bắt lỗi,
+    /// rồi chạy phần dùng chung <c>TcpIpStack -> VpnProxySource -> ProxyServer</c> và **giữ proxy sống tới khi người dùng
+    /// nhấn Enter** (test duy trì kết nối VPN qua keepalive/auto-reconnect).
     /// <para>
-    /// Lớp con tự quyết: option riêng (thêm vào <see cref="Command"/> trong ctor của nó) và cách connect
-    /// (<see cref="ConnectAsync"/> đọc <see cref="ParseResult"/> rồi trả về <see cref="VpnTunnel"/>). Thêm một
-    /// dạng VPN mới = thêm một lớp con, không phải sửa base.
+    /// Phần connect riêng từng giao thức nằm ở hàm static của <see cref="VpnTunnel"/>
+    /// (<see cref="VpnTunnel.ConnectSstpAsync"/> / <see cref="VpnTunnel.ConnectL2tpAsync"/>); <see cref="ConnectAsync"/>
+    /// chỉ dispatch theo <see cref="VpnProtocol"/> đã parse. Thêm một giao thức mới = thêm một hàm static + một nhánh switch.
     /// </para>
     /// </summary>
-    internal abstract class CommandModuleBase : ICommandModule
+    internal sealed class CommandModule : ICommandModule
     {
-        protected Option<string> CheckUrlOption { get; }
-        protected Option<string> ProxyHostOption { get; }
-        protected Option<int> ProxyPortOption { get; }
-        protected Option<string> DnsServerOption { get; }
-        protected Option<string> ResolveOption { get; }
+        Option<string> VpnOption { get; }
+        Option<string> CheckUrlOption { get; }
+        Option<string> ProxyHostOption { get; }
+        Option<int> ProxyPortOption { get; }
+        Option<string> DnsServerOption { get; }
+        Option<string> ResolveOption { get; }
 
-        readonly Command _command;
+        readonly RootCommand _command;
         public Command Command => _command;
 
-        protected CommandModuleBase(string name, string description)
+        public CommandModule()
         {
-            _command = new Command(name, description);
+            _command = new RootCommand("Demo: VPN (MS-SSTP / L2TP-IPsec) -> IProxySource -> ProxyServer -> HttpClient -> checkip.");
 
+            VpnOption = new Option<string>("--vpn")
+            {
+                Description = "VPN target dạng URI scheme://user:pass@host[:port]. scheme = sstp (MS-SSTP/TLS, default port 443) "
+                    + "hoặc l2tp (L2TP/IPsec IKEv1 PSK \"vpn\", NAT-T 500/4500 — bỏ qua port). Thiếu user:pass ⇒ mặc định vpn:vpn.",
+                DefaultValueFactory = _ => "sstp://vpn:vpn@public-vpn-226.opengw.net",
+            };
             CheckUrlOption = new Option<string>("--check-url")
             {
                 Description = "URL sanity-check IP công cộng (gọi 1 lần qua proxy khi vừa lên, không chặn việc giữ proxy).",
@@ -59,6 +70,7 @@ namespace Vpn2ProxyDemo.CommandModules
                 Description = "Tên miền phân giải bằng DNS-over-UDP qua tunnel (đồng thời kiểm tra VPN có hỗ trợ UDP).",
                 DefaultValueFactory = _ => "google.com",
             };
+            _command.Options.Add(VpnOption);
             _command.Options.Add(CheckUrlOption);
             _command.Options.Add(ProxyHostOption);
             _command.Options.Add(ProxyPortOption);
@@ -70,12 +82,18 @@ namespace Vpn2ProxyDemo.CommandModules
 
         async Task<int> InvokeAsync(ParseResult parseResult, CancellationToken ct)
         {
+            string vpnUri = parseResult.GetValue(VpnOption)!;
             string checkUrl = parseResult.GetValue(CheckUrlOption)!;
             string proxyHost = parseResult.GetValue(ProxyHostOption)!;
             int proxyPort = parseResult.GetValue(ProxyPortOption);
             string dnsServer = parseResult.GetValue(DnsServerOption)!;
             string resolveDomain = parseResult.GetValue(ResolveOption)!;
 
+            if (!VpnTarget.TryParse(vpnUri, out VpnTarget? target, out string? vpnError))
+            {
+                Console.WriteLine($"  !! {vpnError}");
+                return 1;
+            }
             if (!IPAddress.TryParse(proxyHost, out IPAddress? bindAddress))
             {
                 Console.WriteLine($"  !! --proxy-host '{proxyHost}' không phải IP hợp lệ (vd 127.0.0.1 hoặc 0.0.0.0).");
@@ -87,7 +105,10 @@ namespace Vpn2ProxyDemo.CommandModules
                 return 1;
             }
 
-            PrintHeader(_command.Name, checkUrl);
+            // Tag protocol cho log/header ("sstp"/"l2tp") — trước đây là tên subcommand.
+            string tag = target!.Protocol.ToString().ToLowerInvariant();
+
+            PrintHeader(tag, checkUrl);
 
             // IP thật (không qua VPN) để so sánh.
             await PrintDirectIpAsync(checkUrl);
@@ -95,15 +116,15 @@ namespace Vpn2ProxyDemo.CommandModules
 
             try
             {
-                // Lớp con connect VPN và trả về tunnel (giữ vòng đời kết nối).
-                await using VpnTunnel tunnel = await ConnectAsync(parseResult, ct);
+                // Connect VPN theo giao thức đã chọn và trả về tunnel (giữ vòng đời kết nối).
+                await using VpnTunnel tunnel = await ConnectAsync(target, ct);
 
                 // Kiểm tra VPN có định tuyến UDP không + phân giải DNS-over-UDP qua tunnel.
-                await ProbeUdpDnsAsync(_command.Name, tunnel.Stack, tunnel.AssignedDns, dnsServer, resolveDomain, ct);
+                await ProbeUdpDnsAsync(tag, tunnel.Stack, tunnel.AssignedDns, dnsServer, resolveDomain, ct);
 
                 // Phần dùng chung: stack -> IProxySource -> ProxyServer; giữ proxy sống tới khi nhấn Enter.
                 IProxySource source = new VpnProxySource(tunnel.Stack);
-                await RunProxyUntilEnterAsync(_command.Name, source, new IPEndPoint(bindAddress, proxyPort), checkUrl, ct);
+                await RunProxyUntilEnterAsync(tag, source, new IPEndPoint(bindAddress, proxyPort), checkUrl, ct);
             }
             catch (OperationCanceledException)
             {
@@ -119,8 +140,14 @@ namespace Vpn2ProxyDemo.CommandModules
             return 0;
         }
 
-        /// <summary>Đọc option riêng của lớp con từ <paramref name="parseResult"/>, connect VPN, trả tunnel đã lên.</summary>
-        protected abstract Task<VpnTunnel> ConnectAsync(ParseResult parseResult, CancellationToken ct);
+        /// <summary>Dispatch connect theo giao thức đã parse về hàm static tương ứng của <see cref="VpnTunnel"/>.</summary>
+        static Task<VpnTunnel> ConnectAsync(VpnTarget target, CancellationToken ct)
+            => target.Protocol switch
+            {
+                VpnProtocol.Sstp => VpnTunnel.ConnectSstpAsync(target.Host, target.Port, target.User, target.Pass, ct),
+                VpnProtocol.L2tp => VpnTunnel.ConnectL2tpAsync(target.Host, target.User, target.Pass, ct),
+                _ => throw new ArgumentOutOfRangeException(nameof(target), target.Protocol, "Giao thức VPN không hỗ trợ."),
+            };
 
         /// <summary>
         /// Gửi một truy vấn DNS (bản ghi A) cho <paramref name="domain"/> qua UDP xuyên tunnel để kiểm tra VPN có

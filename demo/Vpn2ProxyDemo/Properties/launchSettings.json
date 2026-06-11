@@ -2,27 +2,27 @@
   "profiles": {
     "sstp public-vpn-226.opengw.net": {
       "commandName": "Project",
-      "commandLineArgs": "sstp --host public-vpn-226.opengw.net"
+      "commandLineArgs": "--vpn sstp://vpn:vpn@public-vpn-226.opengw.net"
     },
     "l2tp public-vpn-226.opengw.net": {
       "commandName": "Project",
-      "commandLineArgs": "l2tp --host public-vpn-226.opengw.net"
+      "commandLineArgs": "--vpn l2tp://vpn:vpn@public-vpn-226.opengw.net"
     },
     "sstp public-vpn-226.opengw.net as proxy": {
       "commandName": "Project",
-      "commandLineArgs": "sstp --host public-vpn-226.opengw.net --proxy-host 127.0.0.1 --proxy-port 18080"
+      "commandLineArgs": "--vpn sstp://vpn:vpn@public-vpn-226.opengw.net --proxy-host 127.0.0.1 --proxy-port 18080"
     },
     "l2tp public-vpn-226.opengw.net as proxy": {
       "commandName": "Project",
-      "commandLineArgs": "l2tp --host public-vpn-226.opengw.net --proxy-host 0.0.0.0 --proxy-port 18080"
+      "commandLineArgs": "--vpn l2tp://vpn:vpn@public-vpn-226.opengw.net --proxy-host 0.0.0.0 --proxy-port 18080"
     },
     "sstp resolve example.com (UDP DNS via VPN-assigned DNS)": {
       "commandName": "Project",
-      "commandLineArgs": "sstp --host public-vpn-226.opengw.net --resolve example.com"
+      "commandLineArgs": "--vpn sstp://vpn:vpn@public-vpn-226.opengw.net --resolve example.com"
     },
     "l2tp resolve github.com (UDP DNS via 8.8.8.8)": {
       "commandName": "Project",
-      "commandLineArgs": "l2tp --host public-vpn-226.opengw.net --resolve github.com --dns-server 8.8.8.8"
+      "commandLineArgs": "--vpn l2tp://vpn:vpn@public-vpn-226.opengw.net --resolve github.com --dns-server 8.8.8.8"
     },
     "help": {
       "commandName": "Project",

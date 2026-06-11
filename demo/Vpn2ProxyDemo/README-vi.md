@@ -23,8 +23,9 @@ SstpConnection / L2tpIpsecConnection      (kết nối VPN, nhận IP ảo + DNS
 Vpn2ProxyDemo/
 ├── Program.cs                        RootCommand { sstp, l2tp } -> Parse(args).InvokeAsync()
 ├── Properties/launchSettings.json    profile chạy nhanh từng case (sstp / l2tp / help)
-├── VpnProxySource.cs                 IProxySource bọc TcpIpStack của tunnel (adapter inline)
-├── VpnConnectSource.cs               IConnectSource: mở VpnTcpClient qua tunnel, trả Stream cho ProxyServer
+├── VpnProxySource.cs                 IProxySource (partial) bọc TcpIpStack; IsSupportUdp=true, Bind/Ipv6=false
+├── VpnProxySource.VpnConnectSource.cs        IConnectSource (nested): mở VpnTcpClient qua tunnel, trả Stream cho ProxyServer
+├── VpnProxySource.VpnUdpAssociateSource.cs   IUdpAssociateSource (nested): egress UDP đa đích qua UdpConnection (SOCKS5 UDP-ASSOCIATE)
 ├── UdpDnsProbe.cs                    build/parse gói DNS (RFC 1035) trên VpnUdpClient: probe UDP + phân giải domain qua tunnel
 ├── UdpDnsProbeResult.cs              kết quả probe: UdpSupported + danh sách IPv4 + số lần thử/thời gian/lỗi
 └── CommandModules/
@@ -87,7 +88,8 @@ Subcommand: `sstp` | `l2tp`. Option mỗi subcommand:
 - **Cần mạng + server còn sống.** Host VPN Gate thay đổi liên tục; nếu `public-vpn-226` đã tắt, lấy host khác từ https://www.vpngate.net/ và truyền qua `--host`. Server phải bật đúng giao thức bạn chọn (cột MS-SSTP / L2TP trên trang VPN Gate).
 - **Không cần quyền admin** — toàn bộ stack là userspace (không TUN/TAP, không routing table).
 - IP `[direct]` (không VPN) in ra đầu tiên để so sánh với IP `[sstp]`/`[l2tp]` đi qua tunnel.
-- **Kiểm tra UDP + DNS qua tunnel:** ngay sau khi tunnel lên, demo gửi một truy vấn DNS (bản ghi A) qua **UDP xuyên tunnel** (`UdpDnsProbe` → `VpnUdpClient`, không dùng host DNS) tới `--dns-server` (mặc định: DNS do VPN cấp, fallback `8.8.8.8`). Nhận được phản hồi ⇒ in `VPN HỖ TRỢ UDP` + IPv4 của `--resolve`; timeout sau 3 lần thử ⇒ VPN có thể không định tuyến UDP (hoặc DNS server không reachable — thử `--dns-server` khác). Đây là kênh UDP đi thẳng IP stack, **khác** với UDP-ASSOCIATE qua proxy (chưa làm).
+- **Kiểm tra UDP + DNS qua tunnel:** ngay sau khi tunnel lên, demo gửi một truy vấn DNS (bản ghi A) qua **UDP xuyên tunnel** (`UdpDnsProbe` → `VpnUdpClient`, không dùng host DNS) tới `--dns-server` (mặc định: DNS do VPN cấp, fallback `8.8.8.8`). Nhận được phản hồi ⇒ in `VPN HỖ TRỢ UDP` + IPv4 của `--resolve`; timeout sau 3 lần thử ⇒ VPN có thể không định tuyến UDP (hoặc DNS server không reachable — thử `--dns-server` khác). Đây là kênh UDP đi thẳng IP stack.
+- **SOCKS5 UDP-ASSOCIATE:** proxy hỗ trợ UDP cho client SOCKS5 (`IsSupportUdp=true`). Client gửi datagram qua proxy, `VpnUdpAssociateSource` relay ra ngoài bằng UDP của tunnel rồi trả về (vd `curl --socks5 127.0.0.1:port --resolve ... ` hoặc một DNS client trỏ qua SOCKS5 UDP). Chỉ IPv4; **BIND không hỗ trợ** (stack active-open-only + địa chỉ tunnel private không routable từ internet).
 - **Giữ kết nối:** sau khi proxy lên, demo dừng tại bước `ProxyServer` và chờ Enter — tunnel vẫn chạy keepalive + auto-reconnect (xem driver), nên đây là chỗ test "duy trì kết nối": cứ gửi traffic qua proxy liên tục/định kỳ rồi quan sát log reconnect. Sanity-check checkip lúc đầu lỗi cũng **không** dừng proxy.
 - `--proxy-host 0.0.0.0` mở proxy cho cả máy khác trong LAN — chỉ dùng trên mạng tin cậy (proxy không có auth).
 - Demo tham chiếu project tới [`src/TqkLibrary.Vpn.Drivers`](../../src/TqkLibrary.Vpn.Drivers) (driver façades) và [`src/TqkLibrary.Vpn.Sockets`](../../src/TqkLibrary.Vpn.Sockets) (`VpnTcpClient`/`VpnUdpClient`/`TcpIpStack`), cùng NuGet `TqkLibrary.Proxy` 1.0.35.

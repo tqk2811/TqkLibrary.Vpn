@@ -34,19 +34,21 @@ gửi một truy vấn DNS (bản ghi A) qua **UDP xuyên tunnel** bằng [`UdpD
 (`VpnUdpClient` → `TcpIpStack.BindUdp`). Nhận được phản hồi ⇒ **VPN có định tuyến UDP**, đồng thời in IPv4 phân giải
 được. Đây là kênh data plane **độc lập** với proxy TCP (proxy vẫn `IsSupportUdp=false`: SOCKS UDP-ASSOCIATE chưa làm).
 
-Mỗi kết nối qua proxy: `ProxyServer` gọi [`VpnProxySource.GetConnectSourceAsync` @ :35](../demo/Vpn2ProxyDemo/VpnProxySource.cs#L35)
-→ [`VpnConnectSource.ConnectAsync` @ :32](../demo/Vpn2ProxyDemo/VpnConnectSource.cs#L32) resolve host ra IPv4 (host DNS) rồi
-`VpnTcpClient.ConnectAsync` dial trong tunnel → [`GetStreamAsync` @ :58](../demo/Vpn2ProxyDemo/VpnConnectSource.cs#L58) trả
-stream duplex cho proxy bơm traffic. **Chỉ IPv4 + active-open** ⇒ BIND/UDP-ASSOCIATE ném `NotSupportedException`
-([VpnProxySource.cs:39-44](../demo/Vpn2ProxyDemo/VpnProxySource.cs#L39-L44)).
+Mỗi kết nối TCP qua proxy: `ProxyServer` gọi [`VpnProxySource.GetConnectSourceAsync` @ :36](../demo/Vpn2ProxyDemo/VpnProxySource.cs#L36)
+→ [`VpnConnectSource.ConnectAsync` @ :33](../demo/Vpn2ProxyDemo/VpnProxySource.VpnConnectSource.cs#L33) resolve host ra IPv4 (host DNS) rồi
+`VpnTcpClient.ConnectAsync` dial trong tunnel → [`GetStreamAsync` @ :59](../demo/Vpn2ProxyDemo/VpnProxySource.VpnConnectSource.cs#L59) trả
+stream duplex cho proxy bơm traffic. **SOCKS5 UDP-ASSOCIATE** dùng [`VpnUdpAssociateSource` @ :20](../demo/Vpn2ProxyDemo/VpnProxySource.VpnUdpAssociateSource.cs#L20)
+(egress UDP qua `UdpConnection`). **BIND** vẫn ném `NotSupportedException` — stack active-open-only + địa chỉ tunnel private
+không routable từ internet ([VpnProxySource.cs:40-42](../demo/Vpn2ProxyDemo/VpnProxySource.cs#L40-L42)). Chỉ IPv4.
 
 ## 3. Thành phần
 
 | File | Vai trò |
 |---|---|
 | [Program.cs:10](../demo/Vpn2ProxyDemo/Program.cs#L10) | `RootCommand { sstp, l2tp }` → `Parse(args).InvokeAsync()` (System.CommandLine 2.0.7) |
-| [VpnProxySource.cs:15](../demo/Vpn2ProxyDemo/VpnProxySource.cs#L15) | `IProxySource` bọc `TcpIpStack` của tunnel; `IsSupportUdp/Ipv6/Bind=false` |
-| [VpnConnectSource.cs:16](../demo/Vpn2ProxyDemo/VpnConnectSource.cs#L16) | `IConnectSource`: mở `VpnTcpClient` qua tunnel, trả `Stream` (resolve IPv4 bằng host DNS) |
+| [VpnProxySource.cs:16](../demo/Vpn2ProxyDemo/VpnProxySource.cs#L16) | `IProxySource` (partial) bọc `TcpIpStack`; `IsSupportUdp=true`, `Ipv6/Bind=false`; phát `IConnectSource`/`IUdpAssociateSource` |
+| [VpnProxySource.VpnConnectSource.cs:17](../demo/Vpn2ProxyDemo/VpnProxySource.VpnConnectSource.cs#L17) | `IConnectSource` (nested): mở `VpnTcpClient` qua tunnel, trả `Stream` (resolve IPv4 bằng host DNS) |
+| [VpnProxySource.VpnUdpAssociateSource.cs:20](../demo/Vpn2ProxyDemo/VpnProxySource.VpnUdpAssociateSource.cs#L20) | `IUdpAssociateSource` (nested): egress UDP qua `UdpConnection` (`SendTo`/`ReceiveAsync` đa đích), `UnbindUdp` khi `Dispose` |
 | [UdpDnsProbe.cs:18](../demo/Vpn2ProxyDemo/UdpDnsProbe.cs#L18) | Build/parse gói DNS (RFC 1035) trên `VpnUdpClient` → gửi truy vấn A qua UDP xuyên tunnel (kiểm tra UDP + phân giải domain), retry + timeout |
 | [UdpDnsProbeResult.cs:11](../demo/Vpn2ProxyDemo/UdpDnsProbeResult.cs#L11) | Kết quả probe: `UdpSupported` + danh sách IPv4 + số lần thử/thời gian/lỗi |
 | [CommandModules/Interfaces/ICommandModule.cs:6](../demo/Vpn2ProxyDemo/CommandModules/Interfaces/ICommandModule.cs#L6) | Hợp đồng subcommand: `Command Command { get; }` |
@@ -81,10 +83,13 @@ Bind `0.0.0.0` thì sanity-check vẫn nối qua `127.0.0.1`; bind IP cụ thể
 ## 5. Trạng thái & chưa làm
 
 - ✅ HTTP/HTTPS CONNECT + SOCKS4/5 CONNECT qua tunnel (chỉ IPv4, active-open) cho **cả** MS-SSTP và L2TP/IPsec.
+- ✅ **SOCKS5 UDP-ASSOCIATE qua proxy** (`VpnUdpAssociateSource` → `UdpConnection`): client gửi UDP qua proxy, server
+  relay datagram ra ngoài bằng userspace UDP của stack (đa đích, `SendTo`/`ReceiveAsync`); socket được `UnbindUdp` khi
+  association đóng. IPv4-only (đích IPv6 bị từ chối).
 - ✅ Giữ proxy + tunnel sống tới khi nhấn Enter (test duy trì kết nối: keepalive/auto-reconnect của driver chạy nền).
 - ✅ **Probe UDP + DNS-over-UDP qua tunnel** (`UdpDnsProbe` → `VpnUdpClient`): vừa kiểm tra VPN có định tuyến UDP
   vừa phân giải `--resolve` ra IPv4 (đích DNS = `--dns-server` / DNS VPN cấp / `8.8.8.8`). Đây là data plane UDP
   thật, độc lập với proxy TCP.
-- ⏳ **Chưa:** BIND, UDP-ASSOCIATE qua proxy (đã có `VpnUdpClient`, cần SOCKS5 UDP framing để client dùng UDP qua
-  proxy — khác với probe ở trên đi thẳng stack), proxy resolve host vẫn bằng host DNS, IPv6. Tách adapter thành
-  project `TqkLibrary.Vpn.Proxy` nếu cần tái dùng — xem [`11`](11-todo-roadmap.md).
+- ⏳ **Chưa:** BIND (stack active-open-only + địa chỉ tunnel private không routable từ internet ⇒ peer ngoài không
+  dial vào được), proxy resolve host vẫn bằng host DNS, IPv6. Tách adapter thành project `TqkLibrary.Vpn.Proxy` nếu
+  cần tái dùng — xem [`11`](11-todo-roadmap.md).

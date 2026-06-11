@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using System.CommandLine;
 using System.Net;
 using TqkLibrary.Proxy;
@@ -57,9 +58,12 @@ namespace Vpn2ProxyDemo.CommandModules
             IPAddress bindAddress = IPAddress.Parse(parseResult.GetValue(ProxyHostOption)!);
             int proxyPort = parseResult.GetValue(ProxyPortOption);
 
-            // Phần dùng chung: stack -> IProxySource -> ProxyServer.
-            IProxySource source = new VpnProxySource(tunnel.Stack);
-            using var proxyServer = new ProxyServer(new IPEndPoint(bindAddress, proxyPort), source);
+            // Logger console: tách bạch để dispose flush sau khi proxy dừng (khai báo trước proxyServer ⇒ dispose sau).
+            using ILoggerFactory loggerFactory = CreateLoggerFactory();
+
+            // Phần dùng chung: stack -> IProxySource -> ProxyServer (cùng chia sẻ ILoggerFactory).
+            IProxySource source = new VpnProxySource(tunnel.Stack, loggerFactory);
+            using var proxyServer = new ProxyServer(new IPEndPoint(bindAddress, proxyPort), source, loggerFactory);
             proxyServer.StartListen();
             int port = proxyServer.IPEndPoint!.Port;
 
@@ -87,6 +91,17 @@ namespace Vpn2ProxyDemo.CommandModules
             Console.WriteLine($"[{tag}] Trỏ trình duyệt/curl tới {displayUrl} để test; kết nối DUY TRÌ tới khi bạn nhấn Enter...");
             await WaitForEnterAsync(ct);
         }
+
+        /// <summary>Console logger cho ProxyServer + VpnProxySource: mức Information, riêng category <c>Vpn2ProxyDemo</c> ở Debug (hiện log connect/UDP của demo).</summary>
+        ILoggerFactory CreateLoggerFactory()
+            => LoggerFactory.Create(builder => builder
+                .SetMinimumLevel(LogLevel.Information)
+                .AddFilter("Vpn2ProxyDemo", LogLevel.Debug)
+                .AddSimpleConsole(options =>
+                {
+                    options.SingleLine = true;
+                    options.TimestampFormat = "HH:mm:ss.fff ";
+                }));
 
         /// <summary>Chờ tới khi người dùng nhấn Enter trên console, hoặc <paramref name="ct"/> bị hủy (Ctrl+C).</summary>
         async Task WaitForEnterAsync(CancellationToken ct)

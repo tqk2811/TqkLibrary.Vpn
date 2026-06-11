@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using System.Net;
 using System.Net.Sockets;
 using TqkLibrary.Proxy.Interfaces;
@@ -20,12 +21,14 @@ namespace Vpn2ProxyDemo
         public sealed class VpnUdpAssociateSource : IUdpAssociateSource
         {
             readonly TcpIpStack _stack;
+            readonly ILogger? _logger;
             UdpConnection? _socket;
             bool _disposed;
 
-            internal VpnUdpAssociateSource(TcpIpStack stack)
+            internal VpnUdpAssociateSource(TcpIpStack stack, ILogger? logger = null)
             {
                 _stack = stack;
+                _logger = logger;
             }
 
             /// <inheritdoc/>
@@ -45,6 +48,7 @@ namespace Vpn2ProxyDemo
                 // and never reads these. Report the bound local UDP port for diagnostics.
                 LocalEndPoint = new IPEndPoint(IPAddress.Any, _socket.LocalPort);
                 RelayEndPoint = LocalEndPoint;
+                _logger?.LogInformation("UDP ASSOCIATE — bind cổng UDP {Port} trên tunnel.", _socket.LocalPort);
                 return Task.FromResult(RelayEndPoint);
             }
 
@@ -60,6 +64,7 @@ namespace Vpn2ProxyDemo
                     throw new NotSupportedException("IPv6 is not supported over the VPN userspace stack.");
 
                 _socket.SendTo(destination.Address, (ushort)destination.Port, payload.AsSpan(offset, count));
+                _logger?.LogDebug("UDP gửi {Count} byte -> {Destination} qua tunnel.", count, destination);
                 return Task.CompletedTask;
             }
 
@@ -70,6 +75,7 @@ namespace Vpn2ProxyDemo
                 if (_socket is null) throw new InvalidOperationException($"Call {nameof(AssociateAsync)} first.");
 
                 var result = await _socket.ReceiveAsync(cancellationToken).ConfigureAwait(false);
+                _logger?.LogDebug("UDP nhận {Count} byte <- {Source}:{Port} qua tunnel.", result.Data.Length, result.RemoteAddress, result.RemotePort);
                 return new UdpAssociateDatagram(new IPEndPoint(result.RemoteAddress, result.RemotePort), result.Data);
             }
 
@@ -84,6 +90,7 @@ namespace Vpn2ProxyDemo
                 _disposed = true;
                 if (_socket is not null)
                 {
+                    _logger?.LogDebug("UDP ASSOCIATE — gỡ cổng UDP {Port} khỏi tunnel.", _socket.LocalPort);
                     _stack.UnbindUdp(_socket.LocalPort);
                     _socket = null;
                 }

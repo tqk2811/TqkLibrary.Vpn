@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using System.Net;
 using System.Net.Sockets;
 using TqkLibrary.Proxy.Exceptions;
@@ -17,12 +18,14 @@ namespace Vpn2ProxyDemo
         public sealed class VpnConnectSource : IConnectSource
         {
             readonly TcpIpStack _stack;
+            readonly ILogger? _logger;
             Stream? _stream;
             bool _disposed;
 
-            internal VpnConnectSource(TcpIpStack stack)
+            internal VpnConnectSource(TcpIpStack stack, ILogger? logger = null)
             {
                 _stack = stack;
+                _logger = logger;
             }
 
             /// <summary>
@@ -39,18 +42,23 @@ namespace Vpn2ProxyDemo
                     ? address.Port
                     : (Uri.UriSchemeHttps.Equals(address.Scheme, StringComparison.OrdinalIgnoreCase) ? 443 : 80);
 
+                _logger?.LogDebug("CONNECT {Host}:{Port} — đang phân giải IPv4...", address.Host, port);
                 IPAddress ip = await ResolveIpv4Async(address.Host, address.HostNameType).ConfigureAwait(false);
+                _logger?.LogDebug("CONNECT {Host} -> {Ip}, đang dial qua tunnel...", address.Host, ip);
                 try
                 {
                     VpnTcpClient client = await VpnTcpClient.ConnectAsync(_stack, ip, (ushort)port, cancellationToken).ConfigureAwait(false);
                     _stream = client.GetStream();
+                    _logger?.LogInformation("CONNECT {Host}:{Port} ({Ip}) đã nối qua tunnel.", address.Host, port, ip);
                 }
                 catch (OperationCanceledException)
                 {
+                    _logger?.LogDebug("CONNECT {Host}:{Port} ({Ip}) bị hủy.", address.Host, port, ip);
                     throw;
                 }
                 catch (Exception ex)
                 {
+                    _logger?.LogWarning(ex, "CONNECT {Host}:{Port} ({Ip}) thất bại qua tunnel.", address.Host, port, ip);
                     throw new InitConnectSourceFailedException($"Failed to connect to {address.Host}:{port} ({ip}) through the VPN tunnel: {ex.Message}");
                 }
             }
@@ -90,6 +98,7 @@ namespace Vpn2ProxyDemo
                 _disposed = true;
                 _stream?.Dispose();
                 _stream = null;
+                _logger?.LogDebug("CONNECT source đã đóng.");
             }
         }
     }

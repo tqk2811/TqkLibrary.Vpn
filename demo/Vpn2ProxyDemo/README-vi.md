@@ -25,9 +25,9 @@ Luồng: **vpn → TcpIpStack → (dns | proxy-server | http-request)**
 Vpn2ProxyDemo/
 ├── Program.cs                        RootCommand { dns, proxy-server, http-request } -> Parse(args).InvokeAsync()
 ├── Properties/launchSettings.json    profile chạy nhanh từng case (proxy/dns × sstp/l2tp / help)
-├── VpnProxySource.cs                 IProxySource (partial) bọc TcpIpStack; IsSupportUdp=true, Bind/Ipv6=false
-├── VpnProxySource.VpnConnectSource.cs        IConnectSource (nested): mở VpnTcpClient qua tunnel, trả Stream cho ProxyServer
-├── VpnProxySource.VpnUdpAssociateSource.cs   IUdpAssociateSource (nested): egress UDP đa đích qua UdpConnection (SOCKS5 UDP-ASSOCIATE)
+├── VpnProxySource.cs                 IProxySource (partial) bọc TcpIpStack; IsSupportUdp=true, Bind/Ipv6=false; ctor nhận ILoggerFactory? -> sinh ILogger cho mỗi nested source
+├── VpnProxySource.VpnConnectSource.cs        IConnectSource (nested): mở VpnTcpClient qua tunnel, trả Stream cho ProxyServer; log resolve/connect/lỗi (ILogger?)
+├── VpnProxySource.VpnUdpAssociateSource.cs   IUdpAssociateSource (nested): egress UDP đa đích qua UdpConnection (SOCKS5 UDP-ASSOCIATE); log associate/send/receive/unbind (ILogger?)
 ├── UdpDnsProbe.cs                    build/parse gói DNS (RFC 1035) trên VpnUdpClient: probe UDP + phân giải domain qua tunnel
 ├── UdpDnsProbeResult.cs              kết quả probe: UdpSupported + danh sách IPv4 + số lần thử/thời gian/lỗi
 ├── VpnTunnel.cs                      bọc TcpIpStack + AssignedDns + vòng đời (IAsyncDisposable); hàm static ConnectSstpAsync(host,port)/ConnectL2tpAsync(host) (dựng driver -> VpnTunnel)
@@ -37,7 +37,7 @@ Vpn2ProxyDemo/
     ├── Models/VpnTarget.cs                   parse URI --vpn (scheme://user:pass@host[:port]) -> Protocol/Host/Port/User/Pass (System.Uri); TryParse + thông báo lỗi
     ├── CommandModuleBase.cs                  base abstract: option chung --vpn + parse target + header (Protocol) + connect VPN (giữ vòng đời) -> RunAsync (abstract); ConnectAsync dispatch theo VpnTarget.Protocol; ValidateOptions (virtual, fail-fast option riêng)
     ├── ProbeUdpDnsCommandModule.cs           subcommand "dns": +--dns-server/--resolve; RunAsync -> ProbeUdpDnsAsync (probe UDP + phân giải domain qua tunnel)
-    ├── ProxyServerCommandModule.cs           subcommand "proxy-server" (NOT sealed): +--proxy-host/--proxy-port (ValidateOptions fail-fast); RunAsync dựng VpnProxySource -> ProxyServer rồi OnProxyReadyAsync (virtual, mặc định giữ tới khi nhấn Enter)
+    ├── ProxyServerCommandModule.cs           subcommand "proxy-server" (NOT sealed): +--proxy-host/--proxy-port (ValidateOptions fail-fast); RunAsync dựng ILoggerFactory console + VpnProxySource + ProxyServer (chung factory) rồi OnProxyReadyAsync (virtual, mặc định giữ tới khi nhấn Enter)
     └── HttpRequestProxyServerCommandModule.cs  subcommand "http-request" (kế thừa ProxyServerCommandModule): +--url; override OnProxyReadyAsync -> GET url qua proxy, in body rồi thoát luôn
 ```
 
@@ -92,4 +92,5 @@ CLI gồm 3 subcommand; target VPN gói trong `--vpn` (URI). Option:
 - **SOCKS5 UDP-ASSOCIATE:** proxy hỗ trợ UDP cho client SOCKS5 (`IsSupportUdp=true`). Client gửi datagram qua proxy, `VpnUdpAssociateSource` relay ra ngoài bằng UDP của tunnel rồi trả về (vd `curl --socks5 127.0.0.1:port --resolve ... ` hoặc một DNS client trỏ qua SOCKS5 UDP). Chỉ IPv4; **BIND không hỗ trợ** (stack active-open-only + địa chỉ tunnel private không routable từ internet).
 - **Giữ kết nối (`proxy-server`):** sau khi proxy lên, demo dừng tại bước `ProxyServer` và chờ Enter — tunnel vẫn chạy keepalive + auto-reconnect (xem driver), nên đây là chỗ test "duy trì kết nối": cứ gửi traffic qua proxy liên tục/định kỳ rồi quan sát log reconnect.
 - `--proxy-host 0.0.0.0` mở proxy cho cả máy khác trong LAN — chỉ dùng trên mạng tin cậy (proxy không có auth).
-- Demo tham chiếu project tới [`src/TqkLibrary.Vpn.Drivers`](../../src/TqkLibrary.Vpn.Drivers) (driver façades) và [`src/TqkLibrary.Vpn.Sockets`](../../src/TqkLibrary.Vpn.Sockets) (`VpnTcpClient`/`VpnUdpClient`/`TcpIpStack`), cùng NuGet `TqkLibrary.Proxy` 1.0.35.
+- Demo tham chiếu project tới [`src/TqkLibrary.Vpn.Drivers`](../../src/TqkLibrary.Vpn.Drivers) (driver façades) và [`src/TqkLibrary.Vpn.Sockets`](../../src/TqkLibrary.Vpn.Sockets) (`VpnTcpClient`/`VpnUdpClient`/`TcpIpStack`), cùng NuGet `TqkLibrary.Proxy` 1.0.35 + `Microsoft.Extensions.Logging`/`.Console` 10.0.x.
+- **Log:** `proxy-server`/`http-request` tạo một `ILoggerFactory` console (mức Information; riêng category `Vpn2ProxyDemo` ở Debug) rồi truyền cho cả `ProxyServer` (log của thư viện proxy) và `VpnProxySource` (log connect/UDP của adapter). `dns` không bật log.

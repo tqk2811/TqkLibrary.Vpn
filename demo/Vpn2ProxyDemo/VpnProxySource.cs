@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using TqkLibrary.Proxy.Interfaces;
 using TqkLibrary.Vpn.IpStack.Tcp;
 
@@ -16,11 +17,14 @@ namespace Vpn2ProxyDemo
     public sealed partial class VpnProxySource : IProxySource
     {
         readonly TcpIpStack _stack;
+        readonly ILoggerFactory? _loggerFactory;
 
         /// <summary>Creates the source over a userspace TCP/IP stack already bound to a connected tunnel.</summary>
-        public VpnProxySource(TcpIpStack stack)
+        /// <param name="loggerFactory">Optional — sinh logger cho mỗi connect/UDP-associate source (null = không log).</param>
+        public VpnProxySource(TcpIpStack stack, ILoggerFactory? loggerFactory = null)
         {
             _stack = stack ?? throw new ArgumentNullException(nameof(stack));
+            _loggerFactory = loggerFactory;
         }
 
         /// <inheritdoc/>
@@ -34,7 +38,7 @@ namespace Vpn2ProxyDemo
 
         /// <inheritdoc/>
         public Task<IConnectSource> GetConnectSourceAsync(Guid tunnelId, CancellationToken cancellationToken = default)
-            => Task.FromResult<IConnectSource>(new VpnConnectSource(_stack));
+            => Task.FromResult<IConnectSource>(new VpnConnectSource(_stack, _loggerFactory?.CreateLogger<VpnConnectSource>()));
 
         /// <inheritdoc/>
         public Task<IBindSource> GetBindSourceAsync(Guid tunnelId, CancellationToken cancellationToken = default)
@@ -43,6 +47,6 @@ namespace Vpn2ProxyDemo
 
         /// <inheritdoc/>
         public Task<IUdpAssociateSource> GetUdpAssociateSourceAsync(Guid tunnelId, CancellationToken cancellationToken = default)
-            => Task.FromResult<IUdpAssociateSource>(new VpnUdpAssociateSource(_stack));
+            => Task.FromResult<IUdpAssociateSource>(new VpnUdpAssociateSource(_stack, _loggerFactory?.CreateLogger<VpnUdpAssociateSource>()));
     }
 }

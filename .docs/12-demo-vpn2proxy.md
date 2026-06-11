@@ -14,7 +14,7 @@ client trỏ traffic vào proxy.
 Đây là **project demo** ([`demo/Vpn2ProxyDemo`](../demo/Vpn2ProxyDemo)), **không** phải project `src/`. Adapter
 `IProxySource`/`IConnectSource` viết **inline trong demo** (chưa tách thành `TqkLibrary.Vpn.Proxy` — xem roadmap
 [`11`](11-todo-roadmap.md) mục "Adapter proxy"). Tham chiếu project: `Drivers.L2tpIpsec` + `Drivers.Sstp` + `Sockets`;
-NuGet `TqkLibrary.Proxy` 1.0.35.
+NuGet `TqkLibrary.Proxy` 1.0.35 + `Microsoft.Extensions.Logging`/`.Console` 10.0.x (console log cho `ProxyServer` + `VpnProxySource`).
 
 ## 2. Luồng
 
@@ -37,21 +37,21 @@ gửi một truy vấn DNS (bản ghi A) qua **UDP xuyên tunnel** bằng [`UdpD
 được. Đây là kênh data plane **độc lập** với proxy TCP (riêng với SOCKS5 UDP-ASSOCIATE — proxy đã `IsSupportUdp=true`).
 `http-request` kế thừa `proxy-server`: dựng cùng proxy rồi GET `--url` **qua proxy đó** (in body, thoát) thay vì giữ tới khi Enter.
 
-Mỗi kết nối TCP qua proxy: `ProxyServer` gọi [`VpnProxySource.GetConnectSourceAsync` @ :36](../demo/Vpn2ProxyDemo/VpnProxySource.cs#L36)
-→ [`VpnConnectSource.ConnectAsync` @ :33](../demo/Vpn2ProxyDemo/VpnProxySource.VpnConnectSource.cs#L33) resolve host ra IPv4 (host DNS) rồi
-`VpnTcpClient.ConnectAsync` dial trong tunnel → [`GetStreamAsync` @ :59](../demo/Vpn2ProxyDemo/VpnProxySource.VpnConnectSource.cs#L59) trả
-stream duplex cho proxy bơm traffic. **SOCKS5 UDP-ASSOCIATE** dùng [`VpnUdpAssociateSource` @ :20](../demo/Vpn2ProxyDemo/VpnProxySource.VpnUdpAssociateSource.cs#L20)
+Mỗi kết nối TCP qua proxy: `ProxyServer` gọi [`VpnProxySource.GetConnectSourceAsync` @ :40](../demo/Vpn2ProxyDemo/VpnProxySource.cs#L40)
+→ [`VpnConnectSource.ConnectAsync` @ :36](../demo/Vpn2ProxyDemo/VpnProxySource.VpnConnectSource.cs#L36) resolve host ra IPv4 (host DNS) rồi
+`VpnTcpClient.ConnectAsync` dial trong tunnel → [`GetStreamAsync` @ :67](../demo/Vpn2ProxyDemo/VpnProxySource.VpnConnectSource.cs#L67) trả
+stream duplex cho proxy bơm traffic. **SOCKS5 UDP-ASSOCIATE** dùng [`VpnUdpAssociateSource` @ :21](../demo/Vpn2ProxyDemo/VpnProxySource.VpnUdpAssociateSource.cs#L21)
 (egress UDP qua `UdpConnection`). **BIND** vẫn ném `NotSupportedException` — stack active-open-only + địa chỉ tunnel private
-không routable từ internet ([VpnProxySource.cs:40-42](../demo/Vpn2ProxyDemo/VpnProxySource.cs#L40-L42)). Chỉ IPv4.
+không routable từ internet ([VpnProxySource.cs:44-46](../demo/Vpn2ProxyDemo/VpnProxySource.cs#L44-L46)). Chỉ IPv4.
 
 ## 3. Thành phần
 
 | File | Vai trò |
 |---|---|
 | [Program.cs:10](../demo/Vpn2ProxyDemo/Program.cs#L10) | `RootCommand { dns, proxy-server, http-request }` → `Parse(args).InvokeAsync()` (System.CommandLine 2.0.7) |
-| [VpnProxySource.cs:16](../demo/Vpn2ProxyDemo/VpnProxySource.cs#L16) | `IProxySource` (partial) bọc `TcpIpStack`; `IsSupportUdp=true`, `Ipv6/Bind=false`; phát `IConnectSource`/`IUdpAssociateSource` |
-| [VpnProxySource.VpnConnectSource.cs:17](../demo/Vpn2ProxyDemo/VpnProxySource.VpnConnectSource.cs#L17) | `IConnectSource` (nested): mở `VpnTcpClient` qua tunnel, trả `Stream` (resolve IPv4 bằng host DNS) |
-| [VpnProxySource.VpnUdpAssociateSource.cs:20](../demo/Vpn2ProxyDemo/VpnProxySource.VpnUdpAssociateSource.cs#L20) | `IUdpAssociateSource` (nested): egress UDP qua `UdpConnection` (`SendTo`/`ReceiveAsync` đa đích), `UnbindUdp` khi `Dispose` |
+| [VpnProxySource.cs:17](../demo/Vpn2ProxyDemo/VpnProxySource.cs#L17) | `IProxySource` (partial) bọc `TcpIpStack`; `IsSupportUdp=true`, `Ipv6/Bind=false`; ctor nhận **`ILoggerFactory?`** → sinh `ILogger` cho mỗi `IConnectSource`/`IUdpAssociateSource` |
+| [VpnProxySource.VpnConnectSource.cs:18](../demo/Vpn2ProxyDemo/VpnProxySource.VpnConnectSource.cs#L18) | `IConnectSource` (nested): mở `VpnTcpClient` qua tunnel, trả `Stream` (resolve IPv4 bằng host DNS); **log** resolve/connect/lỗi/đóng qua `ILogger?` |
+| [VpnProxySource.VpnUdpAssociateSource.cs:21](../demo/Vpn2ProxyDemo/VpnProxySource.VpnUdpAssociateSource.cs#L21) | `IUdpAssociateSource` (nested): egress UDP qua `UdpConnection` (`SendTo`/`ReceiveAsync` đa đích), `UnbindUdp` khi `Dispose`; **log** associate/send/receive/unbind qua `ILogger?` |
 | [UdpDnsProbe.cs:18](../demo/Vpn2ProxyDemo/UdpDnsProbe.cs#L18) | Build/parse gói DNS (RFC 1035) trên `VpnUdpClient` → gửi truy vấn A qua UDP xuyên tunnel (kiểm tra UDP + phân giải domain), retry + timeout |
 | [UdpDnsProbeResult.cs:11](../demo/Vpn2ProxyDemo/UdpDnsProbeResult.cs#L11) | Kết quả probe: `UdpSupported` + danh sách IPv4 + số lần thử/thời gian/lỗi |
 | [VpnTunnel.cs:21](../demo/Vpn2ProxyDemo/VpnTunnel.cs#L21) | Bọc `TcpIpStack` + `AssignedDns` + vòng đời tunnel (`IAsyncDisposable`); **hàm static connect** [`ConnectSstpAsync` @ :41](../demo/Vpn2ProxyDemo/VpnTunnel.cs#L41) (MS-SSTP/TLS, nhận `host`+`port`) + [`ConnectL2tpAsync` @ :65](../demo/Vpn2ProxyDemo/VpnTunnel.cs#L65) (L2TP/IPsec IKEv1 PSK "vpn", NAT-T — không port) — mỗi hàm dựng driver → `SstpConnection`/`L2tpIpsecConnection` → `TcpIpStack` → `VpnTunnel` |
@@ -60,14 +60,14 @@ không routable từ internet ([VpnProxySource.cs:40-42](../demo/Vpn2ProxyDemo/V
 | [CommandModules/Models/VpnTarget.cs:13](../demo/Vpn2ProxyDemo/CommandModules/Models/VpnTarget.cs#L13) | Tham số kết nối parse từ `--vpn` (`scheme://user:pass@host[:port]`); [`TryParse` @ :37](../demo/Vpn2ProxyDemo/CommandModules/Models/VpnTarget.cs#L37) dùng `System.Uri` → `Protocol/Host/Port/User/Pass` (thiếu user:pass ⇒ `vpn:vpn`; SSTP thiếu port ⇒ 443) + thông báo lỗi |
 | [CommandModules/CommandModuleBase.cs:18](../demo/Vpn2ProxyDemo/CommandModules/CommandModuleBase.cs#L18) | **Base abstract** cho mọi subcommand action: chỉ option chung `--vpn`, parse target, in header (Protocol), connect VPN (giữ vòng đời) rồi gọi [`RunAsync` @ :84](../demo/Vpn2ProxyDemo/CommandModules/CommandModuleBase.cs#L84) (abstract); [`ConnectAsync` @ :90](../demo/Vpn2ProxyDemo/CommandModules/CommandModuleBase.cs#L90) dispatch theo `VpnTarget.Protocol`; [`ValidateOptions` @ :87](../demo/Vpn2ProxyDemo/CommandModules/CommandModuleBase.cs#L87) (virtual) cho subclass fail-fast option riêng |
 | [CommandModules/ProbeUdpDnsCommandModule.cs:11](../demo/Vpn2ProxyDemo/CommandModules/ProbeUdpDnsCommandModule.cs#L11) | Subcommand `dns`: thêm `--dns-server/--resolve`; [`RunAsync` → `ProbeUdpDnsAsync` @ :44](../demo/Vpn2ProxyDemo/CommandModules/ProbeUdpDnsCommandModule.cs#L44) probe UDP + phân giải domain qua tunnel (không dựng proxy) |
-| [CommandModules/ProxyServerCommandModule.cs:17](../demo/Vpn2ProxyDemo/CommandModules/ProxyServerCommandModule.cs#L17) | Subcommand `proxy-server` (NOT sealed): thêm `--proxy-host/--proxy-port` + [`ValidateOptions` @ :43](../demo/Vpn2ProxyDemo/CommandModules/ProxyServerCommandModule.cs#L43) (fail-fast bind); [`RunAsync` @ :54](../demo/Vpn2ProxyDemo/CommandModules/ProxyServerCommandModule.cs#L54) dựng `VpnProxySource` + `ProxyServer.StartListen()` rồi gọi [`OnProxyReadyAsync` @ :83](../demo/Vpn2ProxyDemo/CommandModules/ProxyServerCommandModule.cs#L83) (virtual, mặc định: giữ tới khi nhấn Enter) |
+| [CommandModules/ProxyServerCommandModule.cs:18](../demo/Vpn2ProxyDemo/CommandModules/ProxyServerCommandModule.cs#L18) | Subcommand `proxy-server` (NOT sealed): thêm `--proxy-host/--proxy-port` + [`ValidateOptions` @ :44](../demo/Vpn2ProxyDemo/CommandModules/ProxyServerCommandModule.cs#L44) (fail-fast bind); [`RunAsync` @ :55](../demo/Vpn2ProxyDemo/CommandModules/ProxyServerCommandModule.cs#L55) dựng `ILoggerFactory` console ([`CreateLoggerFactory` @ :96](../demo/Vpn2ProxyDemo/CommandModules/ProxyServerCommandModule.cs#L96)) + `VpnProxySource` + `ProxyServer` (cùng chia sẻ factory) rồi gọi [`OnProxyReadyAsync` @ :87](../demo/Vpn2ProxyDemo/CommandModules/ProxyServerCommandModule.cs#L87) (virtual, mặc định: giữ tới khi nhấn Enter) |
 | [CommandModules/HttpRequestProxyServerCommandModule.cs:12](../demo/Vpn2ProxyDemo/CommandModules/HttpRequestProxyServerCommandModule.cs#L12) | Subcommand `http-request` (kế thừa `ProxyServerCommandModule`): thêm `--url`, override [`OnProxyReadyAsync` @ :27](../demo/Vpn2ProxyDemo/CommandModules/HttpRequestProxyServerCommandModule.cs#L27) — GET `--url` qua proxy (WebProxy), in body rồi **thoát luôn** (không chờ Enter) |
 
 Luồng điều phối chung nằm ở base [`CommandModuleBase.InvokeAsync` @ :40](../demo/Vpn2ProxyDemo/CommandModules/CommandModuleBase.cs#L40)
 (parse `--vpn` bằng `VpnTarget.TryParse` → `ValidateOptions` (subclass) → in header → `ConnectAsync` dispatch theo giao thức →
 gọi `RunAsync` của subclass). `dns` chạy [`ProbeUdpDnsAsync` @ :44](../demo/Vpn2ProxyDemo/CommandModules/ProbeUdpDnsCommandModule.cs#L44);
-`proxy-server`/`http-request` dùng chung [`RunAsync` @ :54](../demo/Vpn2ProxyDemo/CommandModules/ProxyServerCommandModule.cs#L54) (dựng proxy) rồi phân nhánh ở
-[`OnProxyReadyAsync`](../demo/Vpn2ProxyDemo/CommandModules/ProxyServerCommandModule.cs#L83): giữ tới khi nhấn Enter (`proxy-server`)
+`proxy-server`/`http-request` dùng chung [`RunAsync` @ :55](../demo/Vpn2ProxyDemo/CommandModules/ProxyServerCommandModule.cs#L55) (dựng proxy + `ILoggerFactory`) rồi phân nhánh ở
+[`OnProxyReadyAsync`](../demo/Vpn2ProxyDemo/CommandModules/ProxyServerCommandModule.cs#L87): giữ tới khi nhấn Enter (`proxy-server`)
 **hoặc** GET `--url` qua proxy rồi thoát (`http-request`).
 
 ## 4. Tham số CLI (3 subcommand `dns` / `proxy-server` / `http-request`)
@@ -98,9 +98,9 @@ gọi `RunAsync` của subclass). `dns` chạy [`ProbeUdpDnsAsync` @ :44](../dem
 |---|---|---|
 | `--url` | `https://checkip.amazonaws.com/` | URL GET **qua proxy** (qua tunnel); in response body rồi thoát luôn |
 
-`proxy-server`/`http-request` validate `--proxy-host/--proxy-port` **trước** khi connect ([ProxyServerCommandModule.cs:43](../demo/Vpn2ProxyDemo/CommandModules/ProxyServerCommandModule.cs#L43)).
+`proxy-server`/`http-request` validate `--proxy-host/--proxy-port` **trước** khi connect ([ProxyServerCommandModule.cs:44](../demo/Vpn2ProxyDemo/CommandModules/ProxyServerCommandModule.cs#L44)).
 Bind `0.0.0.0` thì client vẫn nối qua `127.0.0.1`; bind IP cụ thể thì nối thẳng IP đó
-([ProxyServerCommandModule.cs:68](../demo/Vpn2ProxyDemo/CommandModules/ProxyServerCommandModule.cs#L68)).
+([ProxyServerCommandModule.cs:72](../demo/Vpn2ProxyDemo/CommandModules/ProxyServerCommandModule.cs#L72)).
 
 ## 5. Trạng thái & chưa làm
 

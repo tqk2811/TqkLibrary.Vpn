@@ -39,17 +39,26 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.V1
             return body;
         }
 
+        /// <summary>
+        /// Reads the 2-byte Notify Message Type from any ISAKMP Notification body (RFC 2408 §3.14:
+        /// DOI(4) | Protocol(1) | SPI-Size(1) | Notify-Type(2) | SPI | Data), regardless of SPI size or notify value.
+        /// </summary>
+        public static bool TryReadNotifyType(byte[] body, out ushort notifyType)
+        {
+            notifyType = 0;
+            if (body is null || body.Length < 8) return false;
+            notifyType = (ushort)((body[6] << 8) | body[7]);
+            return true;
+        }
+
         /// <summary>Parses a Notification body, recovering its notify message type and sequence; false if it is not a DPD notify.</summary>
         public static bool TryParseNotify(byte[] body, out ushort notifyType, out uint sequence)
         {
-            notifyType = 0;
             sequence = 0;
-            if (body.Length < 8) return false;
-
-            byte spiSize = body[5];
-            int dataOffset = 8 + spiSize;
-            notifyType = (ushort)((body[6] << 8) | body[7]);
+            if (!TryReadNotifyType(body, out notifyType)) return false;
             if (notifyType != RUThere && notifyType != RUThereAck) return false;
+
+            int dataOffset = 8 + body[5]; // 8-byte fixed prefix (DOI..Notify-Type) + SPI
             if (body.Length < dataOffset + 4) return false;
 
             sequence = (uint)((body[dataOffset] << 24) | (body[dataOffset + 1] << 16) | (body[dataOffset + 2] << 8) | body[dataOffset + 3]);

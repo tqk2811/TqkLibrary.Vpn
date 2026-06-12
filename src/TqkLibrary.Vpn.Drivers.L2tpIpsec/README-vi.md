@@ -95,7 +95,7 @@ await conn.DisposeAsync();                          // teardown sạch: IKE Dele
 
 Class hạ tầng `L2tpIpsecConnection` cũng public nếu cần điều khiển chi tiết (sự kiện `StateChanged`/`Reconnected`, `DisconnectAsync`...). Lỗi kết nối ném typed exception (`VpnAuthenticationException` / `VpnServerRejectedException` / `VpnNetworkTimeoutException` — đều kế thừa `VpnConnectionException`).
 
-**Timeout cấu hình được:** truyền `L2tpIpsecTimeoutOptions` (ctor driver/connection hoặc `VpnClientBuilder.UseL2tpIpsec(reconnect, timeout)`) để chỉnh số lần/khoảng retransmit IKE (`IkeMaxAttempts`/`IkeRetransmitInterval`, mặc định 5×2.5s) và L2TP control channel (`L2tpMaxRetransmits`/`L2tpRetransmitInterval`, mặc định 8×1s). IKE hết số lần ⇒ `VpnNetworkTimeoutException`; L2TP hết cap ⇒ link-loss → reconnect.
+**Timeout cấu hình được:** truyền `L2tpIpsecTimeoutOptions` (ctor driver/connection hoặc `VpnClientBuilder.UseL2tpIpsec(reconnect, timeout)`) để chỉnh số lần/khoảng retransmit IKE (`IkeMaxAttempts`/`IkeRetransmitInterval`, mặc định 5×2.5s) và L2TP control channel (`L2tpMaxRetransmits`/`L2tpRetransmitInterval`, mặc định 8×1s). IKE hết số lần ⇒ `VpnNetworkTimeoutException` (**phân loại theo cổng — P0.8a**: im lặng sau float UDP/4500 ⇒ thông điệp nghi forced-NAT-T); gateway trả NOTIFY lỗi handshake ⇒ `VpnServerRejectedException`; L2TP hết cap ⇒ link-loss → reconnect.
 
 ## Luồng nội bộ
 
@@ -104,7 +104,7 @@ Class hạ tầng `L2tpIpsecConnection` cũng public nếu cần điều khiển
 1. Resolve host → tạo `NatTraversalChannel` (UDP/500), chạy `ReceiveLoopAsync` ghép kênh IKE/ESP — [L2tpIpsecConnection.cs:129-134](L2tpIpsecConnection.cs#L129-L134). Trước đó `CleanupAttemptResourcesAsync` dọn attempt cũ: cancel vòng đọc, null `_natt` rồi **await** `DisposeAsync` (socket cũ đóng hẳn trước khi mở socket mới) — [L2tpIpsecConnection.cs:184-211](L2tpIpsecConnection.cs#L184-L211); vòng đọc còn **guard sau mỗi `ReceiveAsync`** (re-check token + identity channel) để gói stale đang in-flight không lọt vào waiter của attempt mới — [L2tpIpsecConnection.cs:244-246](L2tpIpsecConnection.cs#L244-L246).
 2. **IKEv1 Phase 1 (Main Mode)** MM1–MM4 trên UDP/500 — [L2tpIpsecConnection.cs:140-141](L2tpIpsecConnection.cs#L140-L141).
 3. Phát hiện NAT-T → `SwitchToNatTPort()` (sang UDP/4500), MM5/MM6 đã mã hoá; sai PSK ⇒ `VpnAuthenticationException` — [L2tpIpsecConnection.cs:144-146](L2tpIpsecConnection.cs#L144-L146).
-4. **Phase 2 (Quick Mode)** QM1–QM3 → khoá ESP CHILD SA + `NegotiatedEsp` (suite server chọn: AES-CBC mặc định, hoặc AES-GCM nếu gateway hỗ trợ); không có SA ⇒ `VpnServerRejectedException`; IKE no-response ⇒ `VpnNetworkTimeoutException` — [L2tpIpsecConnection.cs:149-151](L2tpIpsecConnection.cs#L149-L151).
+4. **Phase 2 (Quick Mode)** QM1–QM3 → khoá ESP CHILD SA + `NegotiatedEsp` (suite server chọn: AES-CBC mặc định, hoặc AES-GCM nếu gateway hỗ trợ); HASH(2) sai/không có SA ⇒ `VpnServerRejectedException` — [L2tpIpsecConnection.cs:149-151](L2tpIpsecConnection.cs#L149-L151). **Phân loại lỗi handshake (P0.8a)** ở [`ExchangeIkeAsync` :221](L2tpIpsecConnection.cs#L221): reply là NOTIFY lỗi (`IkeV1Client.TryReadRejectNotify`) ⇒ `VpnServerRejectedException` nêu mã; **no-response theo cổng** — im lặng sau float UDP/4500 ⇒ `VpnNetworkTimeoutException` chỉ rõ **nghi forced-NAT-T**, trên cổng 500 ⇒ "host unreachable/UDP blocked".
 5. Dựng `EspSession` + `IpsecL2tpTransport` (data plane) — `BuildEspSession(ike.NegotiatedEsp, …)` chọn đúng cipher suite; `L2tpClient.ConnectAsync` (L2TP tunnel/session); `PppEngine` + `MsChapV2Authenticator` chạy LCP/Auth/IPCP (auth fail ⇒ `VpnAuthenticationException`) — [L2tpIpsecConnection.cs:154-175](L2tpIpsecConnection.cs#L154-L175).
 6. Khi `LinkUp`: cắm kênh PPP vào facade `SwappablePacketChannel` và bật keepalive — [L2tpIpsecConnection.cs:179-180](L2tpIpsecConnection.cs#L179-L180).
 
@@ -125,6 +125,7 @@ Class hạ tầng `L2tpIpsecConnection` cũng public nếu cần điều khiển
 - **Hạn chế đã biết:**
   - UDP checksum của gói L2TP-trong-ESP gửi 0 (hợp lệ IPv4 sau NAT vì client không biết địa chỉ thật cho pseudo-header) — [UdpEncapsulation.cs:4-6](UdpEncapsulation.cs#L4-L6).
   - Mỗi connection chỉ một PPP session; `OpenSessionAsync` ném `NotSupportedException` — [L2tpIpsecVpnConnection.cs:22-23](L2tpIpsecVpnConnection.cs#L22-L23).
+  - **Forced-NAT-T:** client luôn float UDP/4500 (ESP-in-UDP) — gateway từ chối trò này nay **được phân loại** (P0.8a, xem flow bước 4) nhưng **chưa có fallback**: (b) bind cổng 500/4500 thật + (c) ESP native proto-50 (`Transport.RawIp`, phụ thuộc F.9) chờ lab Docker (roadmap P0.8b/c).
 
 > Quick Mode QM2 nay **xác thực HASH(2)** của responder (`IkeV1Client.ProcessQuickMode2`/`ProcessRekeyQuickMode2`, RFC 2409 §5.5) — sai ⇒ `VpnServerRejectedException` (handshake chính) / giữ SA cũ (rekey). Chi tiết ở README project `Ipsec`.
 

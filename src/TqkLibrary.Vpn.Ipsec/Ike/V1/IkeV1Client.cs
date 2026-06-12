@@ -409,6 +409,46 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.V1
             return new IkeV1InformationalResult(IkeV1InformationalKind.Unknown, 0);
         }
 
+        // RFC 2408 §3.14: notify message types 1–16383 signal an error (NO-PROPOSAL-CHOSEN=14, INVALID-ID-INFORMATION=18,
+        // AUTHENTICATION-FAILED=24…); 16384+ are status notifies (DPD R-U-THERE=36136, NAT-D, INITIAL-CONTACT…).
+        const ushort MaxErrorNotifyType = 16383;
+
+        /// <summary>
+        /// Detects whether <paramref name="wire"/> is an unencrypted ISAKMP Informational carrying an error Notification —
+        /// the way a gateway refuses a Main/Quick Mode exchange in the clear (e.g. NO-PROPOSAL-CHOSEN). Returns the notify
+        /// type so a handshake caller can fail fast with a clear reason instead of mis-decoding it as the expected reply.
+        /// Returns false for a normal (non-Informational) reply, a status notify (DPD…), or anything unparsable.
+        /// </summary>
+        public static bool TryReadRejectNotify(byte[] wire, out ushort notifyType)
+        {
+            notifyType = 0;
+            if (wire is null || wire.Length < IsakmpMessage.HeaderSize) return false;
+
+            IsakmpMessage header;
+            IsakmpPayloadType first;
+            try { header = IsakmpMessage.ReadHeader(wire, out first); }
+            catch { return false; }
+            if (header.ExchangeType != IsakmpExchangeType.Informational) return false;
+
+            byte[] body = new byte[wire.Length - IsakmpMessage.HeaderSize];
+            Buffer.BlockCopy(wire, IsakmpMessage.HeaderSize, body, 0, body.Length);
+            var payloads = new List<IsakmpPayload>();
+            try { IsakmpMessage.ParsePayloadChain(body, first, payloads); }
+            catch { return false; }
+
+            foreach (IsakmpRawPayload payload in payloads.OfType<IsakmpRawPayload>())
+            {
+                if (payload.Type == IsakmpPayloadType.Notification
+                    && IkeV1Dpd.TryReadNotifyType(payload.Body, out ushort type)
+                    && type >= 1 && type <= MaxErrorNotifyType)
+                {
+                    notifyType = type;
+                    return true;
+                }
+            }
+            return false;
+        }
+
         /// <summary>Wraps <paramref name="afterHash"/> in a HASH(1)-prefixed Informational message under a fresh message id.</summary>
         byte[] BuildInformational(List<IsakmpPayload> afterHash)
         {

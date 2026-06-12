@@ -114,7 +114,7 @@ Hai triết lý: **plugin theo driver** (mỗi giao thức một `IVpnProtocolDr
 | Hạng mục | Trạng thái |
 |---|---|
 | Driver MS-SSTP + L2TP/IPsec | ✅ Live (VPN Gate), keepalive/rekey/teardown/auto-reconnect |
-| Userspace TCP/IP (IPv4+IPv6, TCP đầy đủ, UDP, ICMP) | ✅ Hoàn chỉnh, 301 test offline |
+| Userspace TCP/IP (IPv4+IPv6, TCP đầy đủ, UDP, ICMP) | ✅ Hoàn chỉnh, 317 test offline |
 | IKEv2 | ✅ Build + test, ⏳ chưa wire vào driver |
 | Tầng L2 Ethernet (LAN ảo multi-host) | ⏳ Nền L2.0–L2.3 xong (codec/switch/VirtualHost/ARP); NDISC/DHCP/`EthernetAdapter` chưa |
 | IKEv2-native / OpenVPN / WireGuard / SoftEther / OpenConnect / PPTP | ⏳ Roadmap đa-VPN opensource (xem [.docs/11](.docs/11-todo-roadmap.md)) |
@@ -124,7 +124,7 @@ Hai triết lý: **plugin theo driver** (mỗi giao thức một `IVpnProtocolDr
 
 ```powershell
 dotnet build                                          # xanh cả netstandard2.0 + net8.0
-dotnet test --filter "Category!=Integration"          # 301 test offline (test live VPN Gate đánh dấu Integration)
+dotnet test --filter "Category!=Integration"          # 317 test offline (test live VPN Gate đánh dấu Integration)
 ```
 
 ## Tài liệu

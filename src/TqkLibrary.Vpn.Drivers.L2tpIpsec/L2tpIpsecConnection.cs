@@ -227,11 +227,48 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
                 await natt.SendIkeAsync(request).ConfigureAwait(false);
 
                 Task completed = await Task.WhenAny(waiter.Task, Task.Delay(_timeouts.IkeRetransmitInterval, cancellationToken)).ConfigureAwait(false);
-                if (completed == waiter.Task) return await waiter.Task.ConfigureAwait(false);
+                if (completed == waiter.Task)
+                {
+                    byte[] reply = await waiter.Task.ConfigureAwait(false);
+                    // A gateway that refuses the exchange in the clear (e.g. NO-PROPOSAL-CHOSEN) sends an Informational
+                    // NOTIFY where a Main/Quick Mode reply is expected; surface it rather than mis-decoding it downstream.
+                    if (IkeV1Client.TryReadRejectNotify(reply, out ushort notifyType))
+                        throw IkeRejected(notifyType, natt.RemotePort);
+                    return reply;
+                }
                 cancellationToken.ThrowIfCancellationRequested();
             }
-            throw new VpnNetworkTimeoutException("No IKE response from the gateway.");
+            throw IkeTimedOut(natt.RemotePort);
         }
+
+        // Diagnose a failed handshake exchange by the port it stalled on. Past the NAT-T float (UDP/4500) silence is the
+        // signature of a gateway that refuses forced NAT-T: it is not behind a NAT, so it expects native ESP on UDP/500 —
+        // which this userspace UDP client cannot send yet (the real-port / native-ESP fallbacks P0.8b/c are not built).
+        static VpnNetworkTimeoutException IkeTimedOut(int targetPort)
+            => new(targetPort == NatTraversal.NatTPort
+                ? "No IKE response on UDP/4500 after the NAT-T float. The gateway may refuse forced NAT-T (it is not "
+                  + "behind a NAT and rejects UDP-encapsulated IPsec); a real-port / native-ESP fallback is not yet implemented."
+                : "No IKE response from the gateway on UDP/500 (host unreachable, UDP blocked, or wrong address).");
+
+        static VpnServerRejectedException IkeRejected(ushort notifyType, int targetPort)
+            => new(targetPort == NatTraversal.NatTPort
+                ? $"The IKEv1 gateway refused the exchange after the NAT-T float (NOTIFY {NotifyName(notifyType)}); it may refuse forced NAT-T."
+                : $"The IKEv1 gateway refused the exchange (NOTIFY {NotifyName(notifyType)}).");
+
+        // Common ISAKMP/IKEv1 error notify names (RFC 2408 §3.14) for diagnostics; unknown types fall back to the number.
+        static string NotifyName(ushort notifyType) => notifyType switch
+        {
+            1 => "INVALID-PAYLOAD-TYPE",
+            7 => "INVALID-PROTOCOL-ID",
+            8 => "INVALID-SPI",
+            14 => "NO-PROPOSAL-CHOSEN",
+            17 => "PAYLOAD-MALFORMED",
+            18 => "INVALID-ID-INFORMATION",
+            20 => "INVALID-CERTIFICATE",
+            24 => "AUTHENTICATION-FAILED",
+            29 => "ATTRIBUTES-NOT-SUPPORTED",
+            _ => notifyType.ToString(System.Globalization.CultureInfo.InvariantCulture),
+        };
 
         // The receive loop binds to ITS attempt's NAT-T channel so a stale loop never reads the next attempt's socket.
         async Task ReceiveLoopAsync(NatTraversalChannel natt, CancellationToken cancellationToken)

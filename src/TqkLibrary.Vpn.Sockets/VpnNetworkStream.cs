@@ -30,11 +30,9 @@ namespace TqkLibrary.Vpn.Sockets
             => _connection.ReadAsync(buffer, offset, count, cancellationToken);
 
         /// <inheritdoc/>
+        /// <remarks>Backpressured + error-propagating: awaits the peer window when the send buffer is full, throws <see cref="IOException"/> if the connection has faulted/closed.</remarks>
         public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
-        {
-            _connection.Send(buffer.AsSpan(offset, count));
-            return Task.CompletedTask;
-        }
+            => _connection.SendAsync(buffer.AsMemory(offset, count), cancellationToken);
 
         /// <inheritdoc/>
         public override int Read(byte[] buffer, int offset, int count)
@@ -42,13 +40,16 @@ namespace TqkLibrary.Vpn.Sockets
 
         /// <inheritdoc/>
         public override void Write(byte[] buffer, int offset, int count)
-            => _connection.Send(buffer.AsSpan(offset, count));
+            => _connection.SendAsync(buffer.AsMemory(offset, count)).GetAwaiter().GetResult();
 
         /// <inheritdoc/>
-        public override void Flush() { }
+        public override void Flush()
+            => _connection.SendAsync(ReadOnlyMemory<byte>.Empty).GetAwaiter().GetResult();
 
         /// <inheritdoc/>
-        public override Task FlushAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        /// <remarks>Surfaces a pending fault (RST / give-up) to the caller; the data is already in the TCP send buffer, so it does not block on ACKs.</remarks>
+        public override Task FlushAsync(CancellationToken cancellationToken)
+            => _connection.SendAsync(ReadOnlyMemory<byte>.Empty, cancellationToken);
 
         /// <inheritdoc/>
         public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();

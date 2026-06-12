@@ -109,6 +109,9 @@ namespace TqkLibrary.Vpn.IpStack.Tcp
         readonly Queue<byte[]> _sndChunks = new();
         int _sndChunkPos;
         int _sndBufferedBytes;
+        // Backpressure: a writer blocked in SendAsync because the buffer hit the high-water mark; completed once the
+        // window drains the buffer back below the mark (SignalSendable) or the connection terminates.
+        TaskCompletionSource<bool>? _sendWaiter;
 
         // Out-of-order receive reassembly: segments past _rcvNxt held until the gap fills (bounded by ReceiveWindow).
         readonly List<(uint Seq, byte[] Data)> _ooo = new();
@@ -141,6 +144,7 @@ namespace TqkLibrary.Vpn.IpStack.Tcp
         readonly Timer _closeTimer;
 
         bool _terminal;
+        Exception? _terminalError;   // fault that terminated the connection (null = graceful close); surfaced to SendAsync writers
 
         /// <summary>Raised once when the connection reaches a terminal state — graceful CLOSED or a fault (RST / retransmission give-up); lets the stack drop and dispose it.</summary>
         public event Action? Closed;
@@ -208,6 +212,7 @@ namespace TqkLibrary.Vpn.IpStack.Tcp
         }
 
         /// <summary>Queues application data to send (flushed within the peer's advertised window).</summary>
+        /// <remarks>Fire-and-forget, no backpressure: callers that must respect the peer window and observe faults use <see cref="SendAsync"/>.</remarks>
         public void Send(ReadOnlySpan<byte> data)
         {
             lock (_sync)
@@ -219,6 +224,63 @@ namespace TqkLibrary.Vpn.IpStack.Tcp
                     _sndBufferedBytes += data.Length;
                 }
                 TrySendData();
+            }
+        }
+
+        /// <summary>
+        /// Queues application data to send with backpressure: enqueues only up to the send buffer's high-water mark, then
+        /// awaits the peer's window draining the buffer before enqueuing more (so a slow/zero-window peer can't make the
+        /// buffer grow without bound). Throws <see cref="IOException"/> if the connection has faulted (RST / give-up) or
+        /// closed — so a caller such as <c>HttpClient</c> observes the failure instead of writing into the void.
+        /// </summary>
+        public async Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
+        {
+            int offset = 0;
+            while (true)
+            {
+                Task waiter;
+                lock (_sync)
+                {
+                    ThrowIfFaulted();
+                    if (offset >= data.Length)
+                        return;
+                    int room = _opts.SendBufferHighWaterMark - _sndBufferedBytes;
+                    if (room > 0)
+                    {
+                        int n = Math.Min(room, data.Length - offset);
+                        _sndChunks.Enqueue(data.Slice(offset, n).ToArray());
+                        _sndBufferedBytes += n;
+                        offset += n;
+                        TrySendData();
+                        continue;                 // re-check fault / room / completion under the lock
+                    }
+                    // Buffer full: park until the window drains it below the mark (SignalSendable) or we terminate.
+                    _sendWaiter ??= new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    waiter = _sendWaiter.Task;
+                }
+                await Task.WhenAny(waiter, Task.Delay(Timeout.Infinite, cancellationToken)).ConfigureAwait(false);
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+        }
+
+        // Throws if the connection is no longer writable; must be called under _sync.
+        void ThrowIfFaulted()
+        {
+            if (!_terminal) return;
+            if (_terminalError != null) throw new IOException(_terminalError.Message, _terminalError);
+            throw new IOException("The connection has been closed.");
+        }
+
+        // Wakes a writer parked in SendAsync once the buffer has drained below the high-water mark (or we terminated, so it
+        // can throw). Must be called under _sync. RunContinuationsAsynchronously keeps the woken continuation off this lock.
+        void SignalSendable()
+        {
+            if (_sendWaiter == null) return;
+            if (_terminal || _sndBufferedBytes < _opts.SendBufferHighWaterMark)
+            {
+                TaskCompletionSource<bool> waiter = _sendWaiter;
+                _sendWaiter = null;
+                waiter.TrySetResult(true);
             }
         }
 
@@ -468,6 +530,7 @@ namespace TqkLibrary.Vpn.IpStack.Tcp
             else StopPersist();
 
             ArmRtoTimer();
+            SignalSendable();   // the send above may have drained the buffer below the high-water mark
         }
 
         void ProcessAck(uint ack, uint segSeq, ushort segWnd, int payloadLen, TcpFlags flags, ReadOnlySpan<byte> segSpan)
@@ -947,11 +1010,13 @@ namespace TqkLibrary.Vpn.IpStack.Tcp
         {
             if (_terminal) return;
             _terminal = true;
+            _terminalError = error;
             _rtoTimer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
             _persistTimer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
             _closeTimer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
             _persistArmed = false;
             _state = TcpState.Closed;
+            SignalSendable();       // wake any writer parked in SendAsync so it throws via ThrowIfFaulted
             if (error != null) _connected.TrySetException(error);
             CompleteReceive(error); // null = end-of-stream (idempotent if the FIN already completed it)
 

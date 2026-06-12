@@ -110,6 +110,59 @@ namespace TqkLibrary.Vpn.IpStack.Tests
             Assert.Equal("abc", h.AssembleData());
         }
 
+        // ---- SendAsync backpressure + fault propagation (P0.3) ---------------------------------------------
+
+        [Fact]
+        public async Task SendAsync_BufferFull_BlocksUntilWindowDrains()
+        {
+            var opts = new TcpRetransmitOptions(
+                initialRto: TimeSpan.FromSeconds(30), minRto: TimeSpan.FromSeconds(30),   // no RTO interference
+                persistMin: TimeSpan.FromSeconds(30),                                      // persist probe won't fire during the test
+                sendBufferHighWaterMark: 4);
+            using var h = new ClientHarness(opts);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await h.HandshakeAsync(window: 0, cts.Token);   // zero window: nothing can leave the send buffer
+
+            // 10 bytes but the buffer caps at 4 → SendAsync enqueues 4, then parks waiting for the window to drain it.
+            Task send = h.Conn.SendAsync(Encoding.ASCII.GetBytes("0123456789"), cts.Token);
+            await Task.Delay(100, cts.Token);
+            Assert.False(send.IsCompleted);                 // backpressure: the writer is blocked, not buffering unbounded
+            Assert.Equal(0, h.DataBytesSent());             // zero window: nothing on the wire yet
+
+            // Open the window; the buffered bytes flush, the buffer drains, and SendAsync enqueues the rest and completes.
+            h.Inject(seq: h.ServerNxt, ack: h.ClientIss + 1, TcpFlags.Ack, window: 65535);
+            await send;
+            await h.WaitUntilAsync(() => h.DataBytesSent() == 10, cts.Token);
+            Assert.Equal("0123456789", h.AssembleData());
+        }
+
+        [Fact]
+        public async Task SendAsync_AfterReset_ThrowsIOException()
+        {
+            using var h = new ClientHarness(new TcpRetransmitOptions());
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await h.HandshakeAsync(window: 65535, cts.Token);
+
+            h.Inject(seq: h.ServerNxt, ack: h.ClientIss + 1, TcpFlags.Rst, window: 0);   // peer resets → connection faults
+            await h.WaitUntilAsync(() => h.Conn.State == TcpState.Closed, cts.Token);
+
+            await Assert.ThrowsAsync<IOException>(() => h.Conn.SendAsync(Encoding.ASCII.GetBytes("X"), cts.Token));
+        }
+
+        [Fact]
+        public async Task FlushAsync_AfterReset_ThrowsIOException()
+        {
+            using var h = new ClientHarness(new TcpRetransmitOptions());
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await h.HandshakeAsync(window: 65535, cts.Token);
+
+            h.Inject(seq: h.ServerNxt, ack: h.ClientIss + 1, TcpFlags.Rst, window: 0);
+            await h.WaitUntilAsync(() => h.Conn.State == TcpState.Closed, cts.Token);
+
+            // FlushAsync is SendAsync(empty): no data to enqueue, but it still surfaces the fault instead of swallowing it.
+            await Assert.ThrowsAsync<IOException>(() => h.Conn.SendAsync(ReadOnlyMemory<byte>.Empty, cts.Token));
+        }
+
         // ---- Slice 2: out-of-order reassembly --------------------------------------------------------------
 
         [Fact]

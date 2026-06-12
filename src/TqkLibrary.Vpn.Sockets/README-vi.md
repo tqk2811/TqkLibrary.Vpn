@@ -58,7 +58,7 @@ TqkLibrary.Vpn.Sockets/
 | --- | --- | --- |
 | `VpnTcpClient` | Mở TCP qua tunnel (`ConnectAsync`), trả `Stream` qua `GetStream()`; bọc một `TcpConnection`. | [VpnTcpClient.cs:8](VpnTcpClient.cs#L8) |
 | `VpnTcpClient.ConnectAsync` | Gọi `stack.ConnectAsync(...)` để hoàn tất 3-way handshake rồi trả client. | [VpnTcpClient.cs:15](VpnTcpClient.cs#L15) |
-| `VpnNetworkStream` | `Stream` duplex trên `TcpConnection`: `ReadAsync` -> `TcpConnection.ReadAsync`, `Write` -> `TcpConnection.Send`, `Dispose` -> `CloseSend` (gửi FIN). Non-seekable. | [VpnNetworkStream.cs:7](VpnNetworkStream.cs#L7) |
+| `VpnNetworkStream` | `Stream` duplex trên `TcpConnection`: `ReadAsync` -> `TcpConnection.ReadAsync`, `Write`/`WriteAsync` -> `TcpConnection.SendAsync` (**backpressure** theo cửa sổ peer + ném `IOException` khi connection fault — P0.3), `FlushAsync` surfaces fault, `Dispose` -> `CloseSend` (gửi FIN). Non-seekable. | [VpnNetworkStream.cs:7](VpnNetworkStream.cs#L7) |
 | `VpnUdpClient` | UDP client "connected" (remote endpoint cố định): `Send` / `ReceiveAsync`; bọc một `UdpConnection`. | [VpnUdpClient.cs:10](VpnUdpClient.cs#L10) |
 | `VpnUdpClient.ReceiveAsync` | Lọc datagram: chỉ trả về gói từ đúng `remoteAddress`:`remotePort`, bỏ qua nguồn khác. | [VpnUdpClient.cs:34](VpnUdpClient.cs#L34) |
 | `VpnSessionSocketsExtensions.CreateTcpStack` | Extension trên `IVpnSession`: dựng `TcpIpStack` từ `PacketChannel` + `Config.AssignedAddress` (ném `InvalidOperationException` nếu chưa có IP). | [VpnSessionSocketsExtensions.cs:10](Extensions/VpnSessionSocketsExtensions.cs#L10) |
@@ -138,7 +138,7 @@ byte[] reply = await dns.ReceiveAsync();  // chỉ nhận từ 8.8.8.8:53
 1. `VpnTcpClient.ConnectAsync` gọi `stack.ConnectAsync(remoteAddress, remotePort, ct)` — [VpnTcpClient.cs:15-19](VpnTcpClient.cs#L15-L19).
 2. `TcpIpStack.ConnectAsync` cấp local port ephemeral, tạo `TcpConnection`, `StartConnect()` (gửi SYN) rồi chờ `connection.Connected` (handshake xong) — [TcpIpStack.cs:28-40](../TqkLibrary.Vpn.IpStack/Tcp/TcpIpStack.cs#L28-L40).
 3. `GetStream()` bọc `TcpConnection` thành `VpnNetworkStream` — [VpnTcpClient.cs:22](VpnTcpClient.cs#L22).
-4. Đọc/ghi qua stream: `WriteAsync`/`Write` → `TcpConnection.Send` (chia theo MSS, gửi PSH|ACK); `ReadAsync` → `TcpConnection.ReadAsync` — [VpnNetworkStream.cs:29-45](VpnNetworkStream.cs#L29-L45).
+4. Đọc/ghi qua stream: `WriteAsync`/`Write` → `TcpConnection.SendAsync` (**backpressure**: chờ cửa sổ peer khi buffer chưa-gửi đầy `SendBufferHighWaterMark`, ném `IOException` khi RST/give-up; chia theo MSS, gửi PSH|ACK), `FlushAsync` → `SendAsync(empty)` surfaces fault; `ReadAsync` → `TcpConnection.ReadAsync` — [VpnNetworkStream.cs:29-51](VpnNetworkStream.cs#L29-L51).
 5. `Dispose` gọi `_connection.CloseSend()` → gửi FIN, đóng nửa gửi — [VpnNetworkStream.cs:60-64](VpnNetworkStream.cs#L60-L64).
 
 Gói inbound đi ngược lại: `IPacketChannel.InboundIpPacket` → `TcpIpStack.OnInbound` demux theo destination port → `TcpConnection.OnSegment` — [TcpIpStack.cs:55-77](../TqkLibrary.Vpn.IpStack/Tcp/TcpIpStack.cs#L55-L77).

@@ -35,6 +35,13 @@ namespace TqkLibrary.Vpn.IpStack.Tcp
         /// <summary>How long to linger in TIME-WAIT before closing (RFC 793 uses 2×MSL; a userspace socket can be far shorter).</summary>
         public TimeSpan TimeWait { get; }
 
+        /// <summary>
+        /// High-water mark (bytes) for unsent application data buffered by <see cref="TcpConnection.SendAsync"/>: once the
+        /// buffer reaches this, a writer awaits until the peer's window drains it (backpressure) instead of buffering without
+        /// bound. Tests set a tiny value so the blocking path is reached with small writes.
+        /// </summary>
+        public int SendBufferHighWaterMark { get; }
+
         /// <summary>Creates the options; any argument left <c>null</c> takes its RFC 6298 default.</summary>
         public TcpRetransmitOptions(
             TimeSpan? initialRto = null,
@@ -43,7 +50,8 @@ namespace TqkLibrary.Vpn.IpStack.Tcp
             int maxRetransmits = 5,
             TimeSpan? persistMin = null,
             TimeSpan? persistMax = null,
-            TimeSpan? timeWait = null)
+            TimeSpan? timeWait = null,
+            int sendBufferHighWaterMark = 64 * 1024)
         {
             InitialRto = initialRto ?? TimeSpan.FromSeconds(1);
             MinRto = minRto ?? TimeSpan.FromSeconds(1);
@@ -52,6 +60,7 @@ namespace TqkLibrary.Vpn.IpStack.Tcp
             PersistMin = persistMin ?? TimeSpan.FromSeconds(1);
             PersistMax = persistMax ?? TimeSpan.FromSeconds(60);
             TimeWait = timeWait ?? TimeSpan.FromSeconds(2);
+            SendBufferHighWaterMark = sendBufferHighWaterMark > 0 ? sendBufferHighWaterMark : 64 * 1024;
         }
 
         /// <summary>RFC 6298 defaults used by the stack when no options are supplied.</summary>

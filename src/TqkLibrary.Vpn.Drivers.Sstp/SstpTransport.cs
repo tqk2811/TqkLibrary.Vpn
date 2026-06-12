@@ -17,20 +17,23 @@ namespace TqkLibrary.Vpn.Drivers.Sstp
         readonly ITlsByteStream _stream;
         readonly string _host;
         readonly SemaphoreSlim _writeLock = new(1, 1);
+        readonly TimeSpan _readTimeout;
 
         /// <summary>
         /// Creates a transport over an explicit byte stream (the test/composition seam). <paramref name="host"/> is the
-        /// value sent in the HTTP <c>Host:</c> header of the SSTP_DUPLEX_POST handshake.
+        /// value sent in the HTTP <c>Host:</c> header of the SSTP_DUPLEX_POST handshake. <paramref name="options"/>
+        /// carries the read-timeout (null ⇒ no timeout, the read-until-closed default).
         /// </summary>
-        public SstpTransport(ITlsByteStream stream, string host = "")
+        public SstpTransport(ITlsByteStream stream, string host = "", SstpTransportOptions? options = null)
         {
             _stream = stream ?? throw new ArgumentNullException(nameof(stream));
             _host = host ?? string.Empty;
+            _readTimeout = options?.ReadTimeout ?? Timeout.InfiniteTimeSpan;
         }
 
         /// <summary>Creates a transport over a real TLS connection to the given server.</summary>
-        public SstpTransport(string host, int port = 443)
-            : this(new TlsByteStream(host, port), host)
+        public SstpTransport(string host, int port = 443, SstpTransportOptions? options = null)
+            : this(new TlsByteStream(host, port), host, options)
         {
         }
 
@@ -113,12 +116,33 @@ namespace TqkLibrary.Vpn.Drivers.Sstp
         /// <summary>Reads one SSTP packet; returns whether it is a control packet and its body (after the 4-byte header).</summary>
         public async Task<(bool isControl, byte[] body)> ReadPacketAsync(CancellationToken cancellationToken = default)
         {
-            byte[] header = await ReadExactlyAsync(4, cancellationToken).ConfigureAwait(false);
+            byte[] header = await ReadExactlyWithTimeoutAsync(4, cancellationToken).ConfigureAwait(false);
             bool isControl = (header[1] & 0x01) != 0;
             int length = ((header[2] & 0x0F) << 8) | header[3];
             int bodyLength = length - 4;
-            byte[] body = bodyLength > 0 ? await ReadExactlyAsync(bodyLength, cancellationToken).ConfigureAwait(false) : Array.Empty<byte>();
+            byte[] body = bodyLength > 0 ? await ReadExactlyWithTimeoutAsync(bodyLength, cancellationToken).ConfigureAwait(false) : Array.Empty<byte>();
             return (isControl, body);
+        }
+
+        // Bounds a ReadExactlyAsync by the configured read-timeout: a server that stalls mid-packet (TLS open, no bytes)
+        // surfaces as a TimeoutException instead of an indefinite block. Caller cancellation is preserved (rethrown as
+        // OperationCanceledException); only the timeout firing is mapped to TimeoutException.
+        async Task<byte[]> ReadExactlyWithTimeoutAsync(int count, CancellationToken cancellationToken)
+        {
+            if (_readTimeout == Timeout.InfiniteTimeSpan)
+                return await ReadExactlyAsync(count, cancellationToken).ConfigureAwait(false);
+
+            using var timeoutCts = new CancellationTokenSource();
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+            timeoutCts.CancelAfter(_readTimeout);
+            try
+            {
+                return await ReadExactlyAsync(count, linked.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            {
+                throw new TimeoutException($"No SSTP packet received within {_readTimeout.TotalSeconds:0.#}s; the server may have stalled.");
+            }
         }
 
         async Task<byte[]> ReadExactlyAsync(int count, CancellationToken cancellationToken)

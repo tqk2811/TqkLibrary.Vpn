@@ -25,11 +25,15 @@ namespace TqkLibrary.Vpn.Drivers.Sstp
     {
         static readonly TimeSpan EchoInterval = TimeSpan.FromSeconds(30);
         const int EchoMaxMissed = 3;
+        // Default transport read-timeout: a stalled server is detected here. Must exceed EchoInterval so a healthy-but-idle
+        // tunnel (which still exchanges an Echo every interval, resetting the read) never trips it.
+        static readonly TimeSpan DefaultReadTimeout = TimeSpan.FromSeconds(60);
 
         readonly string _host;
         readonly int _port;
         readonly uint _magic;
         readonly SstpReconnectOptions _opts;
+        readonly SstpTransportOptions _transportOptions;
         readonly Func<ITlsByteStream> _transportFactory;
         readonly SwappablePacketChannel _facade = new();
         readonly CancellationTokenSource _lifetimeCts = new();
@@ -63,12 +67,14 @@ namespace TqkLibrary.Vpn.Drivers.Sstp
         /// transport (null ⇒ accept any cert); it is ignored when an explicit <paramref name="transportFactory"/> is given.
         /// </summary>
         public SstpConnection(string host, int port = 443, uint magic = 0x1A2B3C4D, SstpReconnectOptions? reconnectOptions = null,
-            Func<ITlsByteStream>? transportFactory = null, RemoteCertificateValidationCallback? certificateValidationCallback = null)
+            Func<ITlsByteStream>? transportFactory = null, RemoteCertificateValidationCallback? certificateValidationCallback = null,
+            SstpTransportOptions? transportOptions = null)
         {
             _host = host;
             _port = port;
             _magic = magic;
             _opts = reconnectOptions ?? new SstpReconnectOptions();
+            _transportOptions = transportOptions ?? new SstpTransportOptions { ReadTimeout = DefaultReadTimeout };
             _transportFactory = transportFactory ?? (() => new TlsByteStream(_host, _port, certificateValidationCallback));
         }
 
@@ -111,7 +117,7 @@ namespace TqkLibrary.Vpn.Drivers.Sstp
             int attemptId = Interlocked.Increment(ref _attemptId); // bump BEFORE the new read loop starts
             Interlocked.Exchange(ref _echoMissed, 0);
 
-            var transport = new SstpTransport(_transportFactory(), _host);
+            var transport = new SstpTransport(_transportFactory(), _host, _transportOptions);
             _transport = transport;
 
             // TLS + SSTP_DUPLEX_POST handshake. Reclassify the transport's generic failures into typed VPN errors.
@@ -148,7 +154,15 @@ namespace TqkLibrary.Vpn.Drivers.Sstp
             var encapsulatedProtocol = new SstpAttribute((byte)SstpAttributeId.EncapsulatedProtocolId, new byte[] { 0x00, 0x01 });
             await transport.SendControlAsync(SstpMessageType.CallConnectRequest, new[] { encapsulatedProtocol }, cancellationToken).ConfigureAwait(false);
 
-            (bool _, byte[] ackBody) = await transport.ReadPacketAsync(cancellationToken).ConfigureAwait(false);
+            byte[] ackBody;
+            try
+            {
+                (_, ackBody) = await transport.ReadPacketAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (TimeoutException ex)
+            {
+                throw new VpnNetworkTimeoutException("The SSTP server did not return Call-Connect-Ack in time.", ex);
+            }
             SstpControlMessage ack = SstpControlCodec.Parse(ackBody);
             if (ack.MessageType == SstpMessageType.CallConnectNak)
                 throw new VpnServerRejectedException("The SSTP server returned Call-Connect-Nak.");

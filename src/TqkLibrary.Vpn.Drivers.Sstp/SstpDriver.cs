@@ -10,16 +10,20 @@ namespace TqkLibrary.Vpn.Drivers.Sstp
     {
         readonly SstpReconnectOptions? _reconnectOptions;
         readonly RemoteCertificateValidationCallback? _certificateValidationCallback;
+        readonly SstpTransportOptions? _transportOptions;
 
         /// <summary>
-        /// Creates the driver; <paramref name="reconnectOptions"/> tunes (or disables) auto-reconnect and
+        /// Creates the driver; <paramref name="reconnectOptions"/> tunes (or disables) auto-reconnect,
         /// <paramref name="certificateValidationCallback"/> validates the server TLS certificate (<c>null</c> ⇒ accept
-        /// any cert — the SSTP identity is bound by its crypto binding, not PKI).
+        /// any cert — the SSTP identity is bound by its crypto binding, not PKI), and <paramref name="transportOptions"/>
+        /// tunes the transport read-timeout (<c>null</c> ⇒ the default stalled-server timeout).
         /// </summary>
-        public SstpDriver(SstpReconnectOptions? reconnectOptions = null, RemoteCertificateValidationCallback? certificateValidationCallback = null)
+        public SstpDriver(SstpReconnectOptions? reconnectOptions = null, RemoteCertificateValidationCallback? certificateValidationCallback = null,
+            SstpTransportOptions? transportOptions = null)
         {
             _reconnectOptions = reconnectOptions;
             _certificateValidationCallback = certificateValidationCallback;
+            _transportOptions = transportOptions;
         }
 
         /// <inheritdoc/>
@@ -41,7 +45,7 @@ namespace TqkLibrary.Vpn.Drivers.Sstp
         public async Task<IVpnConnection> ConnectAsync(VpnEndpoint endpoint, VpnCredentials credentials, CancellationToken cancellationToken = default)
         {
             var connection = new SstpConnection(endpoint.Host, endpoint.Port, reconnectOptions: _reconnectOptions,
-                certificateValidationCallback: _certificateValidationCallback);
+                certificateValidationCallback: _certificateValidationCallback, transportOptions: _transportOptions);
             try
             {
                 await connection.ConnectAsync(credentials.Username ?? string.Empty, credentials.Password ?? string.Empty, cancellationToken)

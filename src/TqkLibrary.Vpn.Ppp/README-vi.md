@@ -23,7 +23,7 @@ Cụ thể nó giải quyết:
 - **Phụ thuộc (ProjectReference):**
   - [`TqkLibrary.Vpn.Abstractions`](../TqkLibrary.Vpn.Abstractions) — interface/model/enum dùng chung (vd `IPacketChannel`, `LinkMedium`) — [TqkLibrary.Vpn.Ppp.csproj:8](TqkLibrary.Vpn.Ppp.csproj#L8).
   - [`TqkLibrary.Vpn.Crypto`](../TqkLibrary.Vpn.Crypto) — primitive `Md4`, `Des` cho MS-CHAPv2 — [TqkLibrary.Vpn.Ppp.csproj:9](TqkLibrary.Vpn.Ppp.csproj#L9).
-  - Không có PackageReference đặc thù riêng (chỉ thừa hưởng polyfill `System.Memory`,... cho netstandard2.0 từ [Directory.Build.props:16-21](../Directory.Build.props#L16-L21)).
+  - Không có PackageReference đặc thù riêng (chỉ thừa hưởng polyfill `System.Memory`,... và `TqkLibrary.CompilerServices` cho netstandard2.0 từ [Directory.Build.props:16-25](../Directory.Build.props#L16-L25)).
 - **Được dùng bởi:** [`TqkLibrary.Vpn.Drivers.L2tpIpsec`](../TqkLibrary.Vpn.Drivers.L2tpIpsec) và [`TqkLibrary.Vpn.Drivers.Sstp`](../TqkLibrary.Vpn.Drivers.Sstp) (cả hai driver đều dựng `PppEngine` trên một `IPppFrameChannel` của riêng chúng).
 
 ## Cấu trúc thư mục
@@ -150,6 +150,6 @@ HDLC framing (chỉ dùng cho transport byte-stream như SSTP): `HdlcFramer.Enco
 - **Hỗ trợ vai trò server (một phần):** `IpcpNegotiator` có nhánh server (gán IP/DNS cho peer qua Nak) và `PppEngine` nhận `assignPeerAddress` — nhưng các driver trong project hiện chỉ dùng vai trò **client**; nhánh server là khung mở rộng — [IpcpNegotiator.cs:52-78](IpcpNegotiator.cs#L52-L78), [PppEngine.cs:28-35](PppEngine.cs#L28-L35).
 - **Phạm vi hẹp có chủ đích:** chỉ thương lượng MRU/Magic-Number/Auth/IP/DNS; chưa làm PAP, PFC/ACFC, Van Jacobson compression, Echo/Terminate keepalive, hay IPv6CP (các enum giá trị có nhưng negotiator không xử lý). State machine là tập con đơn giản của RFC 1661, không có retransmit timer — [Enums/PppNegotiationState.cs:3](Enums/PppNegotiationState.cs#L3).
 - **Auth mở rộng được:** đi qua interface `IPppAuthenticator`; hiện chỉ có một hiện thực `MsChapV2Authenticator` (Description .csproj còn nhắc PAP/CHAP nhưng code thực tế mới có MS-CHAPv2) — [Interfaces/IPppAuthenticator.cs:9](Interfaces/IPppAuthenticator.cs#L9).
-- **netstandard2.0 vs net8.0:** code không rẽ nhánh theo framework; tránh `record`/`init` (netstandard2.0 thiếu `IsExternalInit`). Trên netstandard2.0 thừa hưởng polyfill `System.Memory`/`Microsoft.Bcl.AsyncInterfaces` từ [Directory.Build.props:16-21](../Directory.Build.props#L16-L21). Crypto MS-CHAPv2 dựa vào `Md4`/`Des` của [`TqkLibrary.Vpn.Crypto`](../TqkLibrary.Vpn.Crypto), `SHA1`/`RandomNumberGenerator` của BCL.
+- **netstandard2.0 vs net8.0:** code không rẽ nhánh theo framework; `record`/`init` khả dụng cả 2 TFM nhờ polyfill `TqkLibrary.CompilerServices` (`IsExternalInit`). Trên netstandard2.0 thừa hưởng polyfill `System.Memory`/`Microsoft.Bcl.AsyncInterfaces` từ [Directory.Build.props:16-25](../Directory.Build.props#L16-L25). Crypto MS-CHAPv2 dựa vào `Md4`/`Des` của [`TqkLibrary.Vpn.Crypto`](../TqkLibrary.Vpn.Crypto), `SHA1`/`RandomNumberGenerator` của BCL.
 
 Xem thêm tài liệu as-built toàn stack: [10-codebase-architecture-and-flow.md](../../.docs/10-codebase-architecture-and-flow.md).

@@ -16,7 +16,7 @@ Project này là **nền tầng L2** cho mô phỏng LAN ảo userspace (xem des
 ## Vị trí trong kiến trúc
 
 - **Tầng:** L2 (Ethernet) — nằm **dưới** `EthernetAdapter` tương lai; bắc cầu xuống `IPacketChannel` cho stack IP đã có.
-- **Target frameworks:** `netstandard2.0; net8.0` (xem [src/Directory.Build.props](../Directory.Build.props)); tránh `record`/`init` vì netstandard2.0 thiếu `IsExternalInit` (`MacAddress` là `readonly struct` thường).
+- **Target frameworks:** `netstandard2.0; net8.0` (xem [src/Directory.Build.props](../Directory.Build.props)); `record`/`init` khả dụng cả 2 TFM nhờ polyfill `TqkLibrary.CompilerServices` (`IsExternalInit`) — `MacAddress` vẫn là `readonly struct` thường (as-built).
 - **Phụ thuộc:**
   - ProjectReference: **chỉ** `TqkLibrary.Vpn.Abstractions` (slot L2 `INeighborResolver`/`IAddressConfigurator` + `IEthernetChannel`/`IPacketChannel`/`LinkMedium` mà `VirtualHost` hiện thực/tiêu thụ). **Cố ý KHÔNG** ref `TqkLibrary.Vpn.IpStack` dù `VirtualHost` cần đọc version-nibble + IP đích — đó là **phụ thuộc ngang** mà layering cấm ([10 §2](../../.docs/10-codebase-architecture-and-flow.md)), nên đọc thẳng từ offset header cố định (RFC 791/8200).
   - PackageReference (đặc thù): không có.

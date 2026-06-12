@@ -119,7 +119,7 @@ Class hạ tầng `L2tpIpsecConnection` cũng public nếu cần điều khiển
 - **Đã hiện thực đầy đủ và chạy live (VPN Gate):** driver L2TP/IPsec dùng **IKEv1** (`Ipsec/Ike/V1`) với vòng đời keepalive/rekey/teardown/auto-reconnect.
 - **IKEv2 (`Ipsec/Ike/V2`) đủ nhưng chưa wire:** `L2tpIpsecConnection` hiện chỉ dùng `IkeV1Client`; lớp `IpsecL2tpTransport` viết trung lập IKEv1/IKEv2 (comment "identical for IKEv1 or IKEv2" — [IpsecL2tpTransport.cs:9](IpsecL2tpTransport.cs#L9)) nên có thể tái dùng khi wire IKEv2.
 - **Phụ thuộc hành vi vào project dưới:** crypto/protocol thực sự nằm ở `Ipsec` (gồm NAT-T `Nat/`)/`L2tp`/`Ppp`; project này chỉ điều phối — đọc README các project đó để biết chi tiết chuẩn.
-- **netstandard2.0 vs net8.0:** code tránh `record`/`init` (netstandard2.0 thiếu `IsExternalInit`); dùng API BCL chung khả dụng trên cả hai target.
+- **netstandard2.0 vs net8.0:** `record`/`init` khả dụng cả 2 TFM nhờ polyfill `TqkLibrary.CompilerServices` (`IsExternalInit`); dùng API BCL chung khả dụng trên cả hai target.
 - **Hạn chế đã biết:**
   - UDP checksum của gói L2TP-trong-ESP gửi 0 (hợp lệ IPv4 sau NAT vì client không biết địa chỉ thật cho pseudo-header) — [UdpEncapsulation.cs:4-6](UdpEncapsulation.cs#L4-L6).
   - Mỗi connection chỉ một PPP session; `OpenSessionAsync` ném `NotSupportedException` — [L2tpIpsecVpnConnection.cs:22-23](L2tpIpsecVpnConnection.cs#L22-L23).

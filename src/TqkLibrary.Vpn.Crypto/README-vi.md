@@ -14,7 +14,7 @@ Project này là tầng **CRYPTO** thuần — gom mọi *primitive* mật mã m
 ## Vị trí trong kiến trúc
 
 - **Tầng:** CRYPTO (primitive thuần).
-- **Target frameworks:** `netstandard2.0; net8.0` (xem [src/Directory.Build.props](../Directory.Build.props)); tránh `record`/`init` vì netstandard2.0 thiếu `IsExternalInit`.
+- **Target frameworks:** `netstandard2.0; net8.0` (xem [src/Directory.Build.props](../Directory.Build.props)); `record`/`init` khả dụng cả 2 TFM nhờ polyfill `TqkLibrary.CompilerServices` (`IsExternalInit`).
 - **Phụ thuộc:**
   - ProjectReference: **không có** (tầng đáy, tự chứa).
   - PackageReference (đặc thù): `BouncyCastle.Cryptography 2.4.0` — **chỉ** khi `TargetFramework == netstandard2.0`, và **chỉ** được dùng bởi [Aead/AesGcmCipher.cs](Aead/AesGcmCipher.cs) (BCL netstandard2.0 không có AES-GCM). Xem [TqkLibrary.Vpn.Crypto.csproj:7-10](TqkLibrary.Vpn.Crypto.csproj#L7-L10).

@@ -15,7 +15,7 @@ Vì sao tồn tại: tách "ai dùng giao thức nào" (ứng dụng) khỏi "gi
 ## Vị trí trong kiến trúc
 
 - **Tầng:** APP / Façade — đỉnh của đồ thị phụ thuộc, được ứng dụng tiêu thụ tham chiếu.
-- **Target frameworks:** `netstandard2.0; net8.0` (kế thừa từ [Directory.Build.props](../Directory.Build.props)). Tránh `record`/`init` vì netstandard2.0 thiếu `IsExternalInit`.
+- **Target frameworks:** `netstandard2.0; net8.0` (kế thừa từ [Directory.Build.props](../Directory.Build.props)). `record`/`init` khả dụng cả 2 TFM nhờ polyfill `TqkLibrary.CompilerServices` (`IsExternalInit`).
 - **Phụ thuộc (ProjectReference):**
   - [TqkLibrary.Vpn.Sockets](../TqkLibrary.Vpn.Sockets) — API socket chạy trong tunnel (re-export cho app).
   - [TqkLibrary.Vpn.Crypto](../TqkLibrary.Vpn.Crypto) — primitive mã hóa.
@@ -129,5 +129,5 @@ Toàn bộ việc lắp ráp stack (IKE → ESP → L2TP → PPP → IP) diễn 
 - **L2TP/IPsec chạy trên IKEv1** (đã kiểm chứng live trên VPN Gate). IKEv2 trong project Ipsec đã đủ và có test nhưng **chưa driver nào dùng** — façade hiện không có `UseIkeV2()`.
 - **PSK mặc định:** nếu `VpnCredentials.PreSharedKey` null, `L2tpIpsecDriver` dùng `DefaultPreSharedKey = "vpn"` (group PSK của VPN Gate) — [L2tpIpsecDriver.cs:11-12](../TqkLibrary.Vpn.Drivers.L2tpIpsec/L2tpIpsecDriver.cs#L11-L12), [L2tpIpsecDriver.cs:45](../TqkLibrary.Vpn.Drivers.L2tpIpsec/L2tpIpsecDriver.cs#L45).
 - **Multi-host:** `OpenSessionAsync` được khai báo ở `IVpnConnection` nhưng cả SSTP lẫn L2TP đều đặt `MultiHostModel.None` → chỉ một session/kết nối.
-- **netstandard2.0 vs net8.0:** không khác biệt API ở tầng façade; khác biệt chỉ phát sinh tận tầng Crypto (BouncyCastle cho AES-GCM trên netstandard2.0). Tránh `record`/`init` để build xanh cả hai TFM.
+- **netstandard2.0 vs net8.0:** không khác biệt API ở tầng façade; khác biệt chỉ phát sinh tận tầng Crypto (BouncyCastle cho AES-GCM trên netstandard2.0). `record`/`init` build xanh cả hai TFM nhờ polyfill `TqkLibrary.CompilerServices`.
 - **Không ghi vào OS:** façade/driver **không chạm bảng route hệ điều hành**; tất cả là userspace — app tự lái lưu lượng qua `PacketChannel`/sockets trong tunnel.

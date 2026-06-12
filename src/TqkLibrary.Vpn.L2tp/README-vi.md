@@ -147,5 +147,5 @@ Nếu server gửi **StopCCN/CDN**: [`OnControl`](L2tpClient.cs#L142-L150) gọi
   - Retransmit gửi lại **message đầu hàng** mỗi tick; có **cap số lần thử** tùy chọn (`maxRetransmits`, mặc định 0 = vô hạn) ở [`Retransmit`](L2tpControlChannel.cs#L111) — vượt cap raise `Failed`. Driver L2TP/IPsec đặt cap mặc định 8 qua `L2tpIpsecTimeoutOptions`. Vẫn chưa có **exponential backoff** cho khoảng retransmit (cố định mỗi tick).
   - Cửa sổ truyền/nhận hiệu dụng là **1** (gửi message tiếp theo không chặn theo `ReceiveWindowSize` đã quảng cáo).
   - Là vai trò **LAC**; không hiện thực vai trò **LNS/server**.
-- **Khác biệt netstandard2.0 vs net8.0:** không có khác biệt hành vi trong project này; tránh `record`/`init` theo quy ước thư viện (netstandard2.0 thiếu `IsExternalInit`).
+- **Khác biệt netstandard2.0 vs net8.0:** không có khác biệt hành vi trong project này; `record`/`init` khả dụng cả 2 TFM nhờ polyfill `TqkLibrary.CompilerServices` (`IsExternalInit`).
 - **Bảo mật transport:** L2TP ở đây **không tự mã hóa**; tính bí mật/toàn vẹn do ESP/IPsec ở tầng DRIVER cung cấp qua `IL2tpTransport`.

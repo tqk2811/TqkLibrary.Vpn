@@ -63,6 +63,10 @@ namespace Vpn2ProxyDemo.CommandModules
                 // Connect VPN theo giao thức đã chọn và trả về tunnel (giữ vòng đời kết nối).
                 await using VpnTunnel tunnel = await ConnectAsync(target, ct);
 
+                // Panel "VPN này hỗ trợ gì" — probe (UDP/LAN ảo) + suy luận (IPv6/listen-external) ngay sau khi tunnel lên,
+                // TRƯỚC hành động (tự bao timeout, nuốt lỗi nên không làm hỏng lệnh).
+                await PrintCapabilitiesAsync(tunnel, ct);
+
                 // Hành động cụ thể của subcommand trên tunnel đã lên.
                 await RunAsync(tag, tunnel, parseResult, ct);
             }
@@ -82,6 +86,33 @@ namespace Vpn2ProxyDemo.CommandModules
 
         /// <summary>Hành động cụ thể của subcommand trên <paramref name="tunnel"/> đã lên. Subclass đọc option riêng từ <paramref name="parseResult"/>.</summary>
         protected abstract Task RunAsync(string tag, VpnTunnel tunnel, ParseResult parseResult, CancellationToken ct);
+
+        /// <summary>
+        /// In panel "VPN này hỗ trợ gì" (<see cref="VpnCapabilityProbe"/>): probe được thì gửi gói thật (UDP/LAN ảo),
+        /// còn lại suy từ địa chỉ cấp + năng lực driver. Bao một chặn-trên thời gian + nuốt mọi lỗi (trừ hủy của caller)
+        /// để panel không bao giờ làm hỏng hành động chính.
+        /// </summary>
+        static async Task PrintCapabilitiesAsync(VpnTunnel tunnel, CancellationToken ct)
+        {
+            try
+            {
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                cts.CancelAfter(TimeSpan.FromSeconds(20)); // chặn trên an toàn (mỗi sub-probe đã tự timeout ngắn)
+                VpnCapabilityReport report = await VpnCapabilityProbe.RunAsync(tunnel, cts.Token);
+                report.Print();
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (OperationCanceledException)
+            {
+                Console.WriteLine("  (probe khả năng VPN quá thời gian)");
+                Console.WriteLine();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"  (probe khả năng VPN lỗi: {ex.GetType().Name}: {ex.Message})");
+                Console.WriteLine();
+            }
+        }
 
         /// <summary>Hook validate option riêng của subclass (gọi TRƯỚC khi connect). Trả message lỗi, hoặc <c>null</c> nếu hợp lệ.</summary>
         protected virtual string? ValidateOptions(ParseResult parseResult) => null;

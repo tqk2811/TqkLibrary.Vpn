@@ -21,6 +21,7 @@ NuGet `TqkLibrary.Proxy` 1.0.35 + `Microsoft.Extensions.Logging`/`.Console` 10.0
 ```
 [chung]         SstpConnection / L2tpIpsecConnection    (kết nối VPN từ --vpn, nhận IP ảo + DNS + PacketChannel)
    -> new TcpIpStack(channel, ip)                       (userspace TCP/IP trong tunnel)
+   -> VpnCapabilityProbe.RunAsync(tunnel).Print()       (panel "VPN hỗ trợ gì": UDP/LAN ảo PROBE thật + IPv6/listen-external SUY LUẬN — in NGAY sau connect, trước hành động)
 
 [dns]           -> UdpDnsProbe.ResolveAsync(stack, dns, domain)  (DNS-over-UDP qua tunnel: VPN có hỗ trợ UDP? + IP của domain)
 
@@ -30,6 +31,15 @@ NuGet `TqkLibrary.Proxy` 1.0.35 + `Microsoft.Extensions.Logging`/`.Console` 10.0
 
 [http-request]  -> (kế thừa proxy-server) GET --url qua proxy -> in response body -> THOÁT luôn
 ```
+
+**Panel "VPN này hỗ trợ gì"** (in tự động sau MỌI lần connect, trước hành động — [`CommandModuleBase.PrintCapabilitiesAsync` @ :95](../demo/Vpn2ProxyDemo/CommandModules/CommandModuleBase.cs#L95)
+gọi [`VpnCapabilityProbe.RunAsync` @ :26](../demo/Vpn2ProxyDemo/VpnCapabilityProbe.cs#L26)): gộp **3 nguồn** — (1) **probe thật** qua tunnel: UDP =
+DNS-over-UDP (tái dùng [`UdpDnsProbe.ResolveAsync`](../demo/Vpn2ProxyDemo/UdpDnsProbe.cs#L29)), LAN ảo = ICMP ping gateway nội bộ
+([`TcpIpStack.PingAsync`](../src/TqkLibrary.Vpn.IpStack/Tcp/TcpIpStack.cs#L105) — [`ProbeVirtualLanAsync` @ :99](../demo/Vpn2ProxyDemo/VpnCapabilityProbe.cs#L99); **phát hiện LAN ảo thì panel thêm dòng "Gateway nội bộ"** ở phần Info); (2) **năng lực
+driver tĩnh** đọc thẳng từ [`SstpDriver.Capabilities`](../src/TqkLibrary.Vpn.Drivers.Sstp/SstpDriver.cs#L29)/[`L2tpIpsecDriver.Capabilities`](../src/TqkLibrary.Vpn.Drivers.L2tpIpsec/L2tpIpsecDriver.cs#L27)
+(transport/bảo mật/auth/cấp địa chỉ); (3) **heuristic** từ IP cấp: phân loại public/private (RFC1918/CGNAT) ⇒ suy listen-external,
+IPv6 = No vì chưa có IPv6CP. Panel tự bao timeout (mỗi sub-probe ngắn + chặn-trên 20s) và **nuốt mọi lỗi** (trừ hủy của caller) nên
+không bao giờ làm hỏng hành động chính. Các khả năng thư viện chưa hỗ trợ ⇒ xem §6.
 
 Ba subcommand riêng (`dns` / `proxy-server` / `http-request`). Subcommand `dns` gọi [`ProbeUdpDnsAsync` @ :44](../demo/Vpn2ProxyDemo/CommandModules/ProbeUdpDnsCommandModule.cs#L44):
 gửi một truy vấn DNS (bản ghi A) qua **UDP xuyên tunnel** bằng [`UdpDnsProbe.ResolveAsync` @ :29](../demo/Vpn2ProxyDemo/UdpDnsProbe.cs#L29)
@@ -54,11 +64,15 @@ không routable từ internet ([VpnProxySource.cs:44-46](../demo/Vpn2ProxyDemo/V
 | [VpnProxySource.VpnUdpAssociateSource.cs:21](../demo/Vpn2ProxyDemo/VpnProxySource.VpnUdpAssociateSource.cs#L21) | `IUdpAssociateSource` (nested): egress UDP qua `UdpConnection` (`SendTo`/`ReceiveAsync` đa đích), `UnbindUdp` khi `Dispose`; **log** associate/send/receive/unbind qua `ILogger?` |
 | [UdpDnsProbe.cs:18](../demo/Vpn2ProxyDemo/UdpDnsProbe.cs#L18) | Build/parse gói DNS (RFC 1035) trên `VpnUdpClient` → gửi truy vấn A qua UDP xuyên tunnel (kiểm tra UDP + phân giải domain), retry + timeout |
 | [UdpDnsProbeResult.cs:11](../demo/Vpn2ProxyDemo/UdpDnsProbeResult.cs#L11) | Kết quả probe: `UdpSupported` + danh sách IPv4 + số lần thử/thời gian/lỗi |
-| [VpnTunnel.cs:21](../demo/Vpn2ProxyDemo/VpnTunnel.cs#L21) | Bọc `TcpIpStack` + `AssignedDns` + vòng đời tunnel (`IAsyncDisposable`); **hàm static connect** [`ConnectSstpAsync` @ :41](../demo/Vpn2ProxyDemo/VpnTunnel.cs#L41) (MS-SSTP/TLS, nhận `host`+`port`) + [`ConnectL2tpAsync` @ :65](../demo/Vpn2ProxyDemo/VpnTunnel.cs#L65) (L2TP/IPsec IKEv1, NAT-T — không port; nhận `preSharedKey` từ caller) — mỗi hàm dựng driver → `SstpConnection`/`L2tpIpsecConnection` → `TcpIpStack` → `VpnTunnel` |
+| [VpnTunnel.cs:22](../demo/Vpn2ProxyDemo/VpnTunnel.cs#L22) | Bọc `TcpIpStack` + vòng đời tunnel (`IAsyncDisposable`); lộ `AssignedAddress`/`AssignedDns`/`Mtu`/`Capabilities`/`ProtocolName` cho panel khả năng (ctor [@ :26](../demo/Vpn2ProxyDemo/VpnTunnel.cs#L26)). **Hàm static connect** [`ConnectSstpAsync` @ :58](../demo/Vpn2ProxyDemo/VpnTunnel.cs#L58) (MS-SSTP/TLS, nhận `host`+`port`) + [`ConnectL2tpAsync` @ :84](../demo/Vpn2ProxyDemo/VpnTunnel.cs#L84) (L2TP/IPsec IKEv1, NAT-T — không port; nhận `preSharedKey` từ caller) — mỗi hàm dựng `SstpConnection`/`L2tpIpsecConnection` → `TcpIpStack` + đọc `new SstpDriver()/L2tpIpsecDriver().Capabilities` → `VpnTunnel` |
+| [CapabilityStatus.cs:7](../demo/Vpn2ProxyDemo/CapabilityStatus.cs#L7) | Enum trạng thái 1 khả năng: `Yes`[✓]/`No`[✗]/`Likely`·`Unlikely`[~]/`Unknown`[?] |
+| [VpnCapability.cs:8](../demo/Vpn2ProxyDemo/VpnCapability.cs#L8) | Một dòng khả năng: `Name` + `Status` (`CapabilityStatus`) + `Detail` (lý do/số đo) |
+| [VpnCapabilityReport.cs:10](../demo/Vpn2ProxyDemo/VpnCapabilityReport.cs#L10) | Kết quả panel: `Info` (IP/DNS/MTU/transport/bảo mật/auth) + `Capabilities`; [`Print` @ :31](../demo/Vpn2ProxyDemo/VpnCapabilityReport.cs#L31) in ra Console (✓/✗/~/?) |
+| [VpnCapabilityProbe.cs:23](../demo/Vpn2ProxyDemo/VpnCapabilityProbe.cs#L23) | **Static probe** (mirror `UdpDnsProbe`): [`RunAsync` @ :26](../demo/Vpn2ProxyDemo/VpnCapabilityProbe.cs#L26) gộp probe thật (UDP qua `UdpDnsProbe`; LAN ảo qua [`ProbeVirtualLanAsync` @ :99](../demo/Vpn2ProxyDemo/VpnCapabilityProbe.cs#L99) → `PingAsync`, trả kèm gateway phát hiện) + năng lực driver + heuristic NAT/IPv6 → `VpnCapabilityReport`; mỗi sub-probe tự timeout, không ném khi hết giờ |
 | [CommandModules/Interfaces/ICommandModule.cs:6](../demo/Vpn2ProxyDemo/CommandModules/Interfaces/ICommandModule.cs#L6) | Hợp đồng command: `Command Command { get; }` |
 | [CommandModules/Enums/VpnProtocol.cs:4](../demo/Vpn2ProxyDemo/CommandModules/Enums/VpnProtocol.cs#L4) | Enum giao thức (`Sstp` / `L2tp`) — map từ scheme của URI `--vpn` |
 | [CommandModules/Models/VpnTarget.cs:14](../demo/Vpn2ProxyDemo/CommandModules/Models/VpnTarget.cs#L14) | Tham số kết nối parse từ `--vpn` (`scheme://user:pass@host[:port][?psk=...]`); [`TryParse` @ :42](../demo/Vpn2ProxyDemo/CommandModules/Models/VpnTarget.cs#L42) dùng `System.Uri` → `Protocol/Host/Port/User/Pass/PreSharedKey` (thiếu user:pass ⇒ `vpn:vpn`; SSTP thiếu port ⇒ 443; L2TP thiếu `?psk=` ⇒ `vpn`) + thông báo lỗi |
-| [CommandModules/CommandModuleBase.cs:18](../demo/Vpn2ProxyDemo/CommandModules/CommandModuleBase.cs#L18) | **Base abstract** cho mọi subcommand action: chỉ option chung `--vpn`, parse target, in header (Protocol), connect VPN (giữ vòng đời) rồi gọi [`RunAsync` @ :84](../demo/Vpn2ProxyDemo/CommandModules/CommandModuleBase.cs#L84) (abstract); [`ConnectAsync` @ :90](../demo/Vpn2ProxyDemo/CommandModules/CommandModuleBase.cs#L90) dispatch theo `VpnTarget.Protocol`; [`ValidateOptions` @ :87](../demo/Vpn2ProxyDemo/CommandModules/CommandModuleBase.cs#L87) (virtual) cho subclass fail-fast option riêng |
+| [CommandModules/CommandModuleBase.cs:18](../demo/Vpn2ProxyDemo/CommandModules/CommandModuleBase.cs#L18) | **Base abstract** cho mọi subcommand action: chỉ option chung `--vpn`, parse target, in header (Protocol), connect VPN (giữ vòng đời), **in panel khả năng** [`PrintCapabilitiesAsync` @ :95](../demo/Vpn2ProxyDemo/CommandModules/CommandModuleBase.cs#L95) (sau connect, trước hành động) rồi gọi [`RunAsync` @ :88](../demo/Vpn2ProxyDemo/CommandModules/CommandModuleBase.cs#L88) (abstract); [`ConnectAsync` @ :121](../demo/Vpn2ProxyDemo/CommandModules/CommandModuleBase.cs#L121) dispatch theo `VpnTarget.Protocol`; [`ValidateOptions` @ :118](../demo/Vpn2ProxyDemo/CommandModules/CommandModuleBase.cs#L118) (virtual) cho subclass fail-fast option riêng |
 | [CommandModules/ProbeUdpDnsCommandModule.cs:11](../demo/Vpn2ProxyDemo/CommandModules/ProbeUdpDnsCommandModule.cs#L11) | Subcommand `dns`: thêm `--dns-server/--resolve`; [`RunAsync` → `ProbeUdpDnsAsync` @ :44](../demo/Vpn2ProxyDemo/CommandModules/ProbeUdpDnsCommandModule.cs#L44) probe UDP + phân giải domain qua tunnel (không dựng proxy) |
 | [CommandModules/ProxyServerCommandModule.cs:18](../demo/Vpn2ProxyDemo/CommandModules/ProxyServerCommandModule.cs#L18) | Subcommand `proxy-server` (NOT sealed): thêm `--proxy-host/--proxy-port` + [`ValidateOptions` @ :44](../demo/Vpn2ProxyDemo/CommandModules/ProxyServerCommandModule.cs#L44) (fail-fast bind); [`RunAsync` @ :55](../demo/Vpn2ProxyDemo/CommandModules/ProxyServerCommandModule.cs#L55) dựng `ILoggerFactory` console ([`CreateLoggerFactory` @ :96](../demo/Vpn2ProxyDemo/CommandModules/ProxyServerCommandModule.cs#L96)) + `VpnProxySource` + `ProxyServer` (cùng chia sẻ factory) rồi gọi [`OnProxyReadyAsync` @ :87](../demo/Vpn2ProxyDemo/CommandModules/ProxyServerCommandModule.cs#L87) (virtual, mặc định: giữ tới khi nhấn Enter) |
 | [CommandModules/HttpRequestProxyServerCommandModule.cs:12](../demo/Vpn2ProxyDemo/CommandModules/HttpRequestProxyServerCommandModule.cs#L12) | Subcommand `http-request` (kế thừa `ProxyServerCommandModule`): thêm `--url`, override [`OnProxyReadyAsync` @ :27](../demo/Vpn2ProxyDemo/CommandModules/HttpRequestProxyServerCommandModule.cs#L27) — GET `--url` qua proxy (WebProxy), in body rồi **thoát luôn** (không chờ Enter) |
@@ -112,6 +126,29 @@ Bind `0.0.0.0` thì client vẫn nối qua `127.0.0.1`; bind IP cụ thể thì 
 - ✅ **Probe UDP + DNS-over-UDP qua tunnel** (`UdpDnsProbe` → `VpnUdpClient`): vừa kiểm tra VPN có định tuyến UDP
   vừa phân giải `--resolve` ra IPv4 (đích DNS = `--dns-server` / DNS VPN cấp / `8.8.8.8`). Đây là data plane UDP
   thật, độc lập với proxy TCP.
+- ✅ **Panel "VPN này hỗ trợ gì"** (`VpnCapabilityProbe` → `VpnCapabilityReport.Print`): in tự động sau mọi connect,
+  trước hành động. Gộp probe thật (UDP, LAN ảo ICMP) + năng lực driver (transport/bảo mật/auth) + heuristic NAT/IPv6.
+  Các khả năng thư viện chưa hỗ trợ ⇒ §6.
 - ⏳ **Chưa:** BIND (stack active-open-only + địa chỉ tunnel private không routable từ internet ⇒ peer ngoài không
   dial vào được), proxy resolve host vẫn bằng host DNS, IPv6. Tách adapter thành project `TqkLibrary.Vpn.Proxy` nếu
   cần tái dùng — xem [`11`](11-todo-roadmap.md).
+
+## 6. Khả năng VPN hiển thị & phần thư viện chưa hỗ trợ (roadmap/plan)
+
+Panel hiển thị 7 khả năng. Bảng dưới: trạng thái điển hình (VPN Gate SecureNAT) + nguồn xác định + **việc thư viện cần làm**
+để chuyển một "✗/heuristic" thành "✓ thật".
+
+| Khả năng | Hiện (VPN Gate) | Nguồn | Thư viện cần làm |
+|---|---|---|---|
+| IPv4 routing | ✓ | đã cấp IP ảo + định tuyến | — (đang chạy live) |
+| IPv6 | ✗ | tĩnh | **IPv6 trong tunnel**: PPP chưa có IPv6CP (chỉ IPCP/IPv4) ⇒ không có nguồn địa chỉ v6. → [`11` P1.1](11-todo-roadmap.md) (IPV6CP + SLAAC/DHCPv6) + P1.2 (outer IPv6). IP stack đã dual-stack sẵn. |
+| UDP | ✓ (probe) | gửi DNS-over-UDP **thật** | — (data plane UDP đã chạy; chỉ phụ thuộc server có route UDP hay không) |
+| Listen TCP (mở port ra internet) | ✗ | heuristic NAT + tĩnh | (a) **TCP passive-open/listener** — `TcpIpStack` hiện chỉ active-open, chưa có trạng thái LISTEN/accept *(chưa có mục riêng ở [`11`](11-todo-roadmap.md) — ghi nhận tại đây)*; (b) reachability cần IP **public** (sau SecureNAT là private) ⇒ phụ thuộc server, phần lớn **ngoài tầm** một VPN client. |
+| Listen UDP (mở port ra internet) | ✗ | heuristic NAT + tĩnh | (a) **UDP nhận-từ-mọi-nguồn** — `UdpConnection` hiện là connected-UDP (lọc đúng 1 remote), chưa có bind unconnected nhận datagram từ mọi nguồn *(chưa có mục riêng ở [`11`](11-todo-roadmap.md) — ghi nhận tại đây)*; (b) reachability NAT như trên. |
+| LAN ảo trong VPN | ~ (probe) | ICMP ping gateway nội bộ + DNS cùng /24 (phát hiện ⇒ panel thêm dòng **Gateway nội bộ**) | Driver hiện model **điểm-điểm** (`MultiHostModel.None`); LAN multi-host thật cần tầng L2 → [`11` L2.4–L2.8](11-todo-roadmap.md) (NDISC/DHCP/`EthernetAdapter` + bật `MultiHostModel.L2BroadcastDomain`). Driver L2 thật đầu tiên: SoftEther (V.4). |
+| MAC address (L2) | ✗ | tĩnh (`LinkLayer`) | Cả 2 driver là `LinkLayer.L3Ip` (PPP/IPCP point-to-point) ⇒ không có khung Ethernet/MAC. Nền L2 đã có (`MacAddress`/`EthernetSwitch`/`VirtualHost`/`IEthernetChannel.LinkAddress`) nhưng chưa driver nào phát ra `IEthernetChannel` → [`11` L2.7–L2.8](11-todo-roadmap.md) (`EthernetAdapter`) + driver L2 đầu SoftEther (V.4). |
+
+> **Ghi chú heuristic (giới hạn cố ý của demo, không phải của thư viện):** "Listen TCP/UDP" luôn báo ✗ kèm lý do
+> (không thử connect-back từ ngoài vì cần dịch vụ phản chiếu/IP public). LAN ảo chỉ ping **gateway nội bộ suy đoán**
+> (DNS nếu cùng `/24`, ngược lại `x.y.z.1`) chứ **không quét toàn subnet** (tránh chậm/ồn) — nên kết quả dừng ở
+> `Likely`/`Unknown`, đủ để thấy "có hub nội bộ" mà không khẳng định số host.

@@ -2,11 +2,12 @@
 
 Demo: kết nối VPN Gate (**MS-SSTP** / **L2TP/IPsec**) qua một URI `--vpn`, rồi chạy **một hành động** (subcommand): probe UDP-DNS qua tunnel (`dns`), dựng proxy local giữ tới khi nhấn Enter (`proxy-server`), hoặc GET một URL qua proxy rồi thoát (`http-request`).
 
-Luồng: **vpn → TcpIpStack → (dns | proxy-server | http-request)**
+Luồng: **vpn → TcpIpStack → panel "VPN hỗ trợ gì" → (dns | proxy-server | http-request)**
 
 ```
 [chung]         SstpConnection / L2tpIpsecConnection    (kết nối VPN từ --vpn, nhận IP ảo + DNS + PacketChannel)
    -> new TcpIpStack(channel, ip)                       (userspace TCP/IP trong tunnel)
+   -> VpnCapabilityProbe.RunAsync(tunnel).Print()       (panel "VPN hỗ trợ gì": probe UDP/LAN ảo + suy luận IPv6/listen — tự in sau connect)
 
 [dns]           -> UdpDnsProbe.ResolveAsync(...)         (DNS-over-UDP qua tunnel: VPN có hỗ trợ UDP? + IP của --resolve)
 
@@ -30,12 +31,16 @@ Vpn2ProxyDemo/
 ├── VpnProxySource.VpnUdpAssociateSource.cs   IUdpAssociateSource (nested): egress UDP đa đích qua UdpConnection (SOCKS5 UDP-ASSOCIATE); log associate/send/receive/unbind (ILogger?)
 ├── UdpDnsProbe.cs                    build/parse gói DNS (RFC 1035) trên VpnUdpClient: probe UDP + phân giải domain qua tunnel
 ├── UdpDnsProbeResult.cs              kết quả probe: UdpSupported + danh sách IPv4 + số lần thử/thời gian/lỗi
-├── VpnTunnel.cs                      bọc TcpIpStack + AssignedDns + vòng đời (IAsyncDisposable); hàm static ConnectSstpAsync(host,port)/ConnectL2tpAsync(host) (dựng driver -> VpnTunnel)
+├── CapabilityStatus.cs               enum trạng thái khả năng: Yes[✓]/No[✗]/Likely·Unlikely[~]/Unknown[?]
+├── VpnCapability.cs                  1 dòng khả năng: Name + CapabilityStatus + Detail (lý do/số đo)
+├── VpnCapabilityReport.cs            kết quả panel: Info (IP/DNS/MTU/transport/bảo mật/auth) + Capabilities; Print() in Console
+├── VpnCapabilityProbe.cs             static probe (mirror UdpDnsProbe): UDP (DNS-over-UDP) + LAN ảo (ICMP ping gateway) thật + năng lực driver + heuristic NAT/IPv6 -> VpnCapabilityReport
+├── VpnTunnel.cs                      bọc TcpIpStack + vòng đời (IAsyncDisposable); lộ AssignedAddress/AssignedDns/Mtu/Capabilities/ProtocolName cho panel; hàm static ConnectSstpAsync(host,port)/ConnectL2tpAsync(host) (dựng driver -> đọc Capabilities -> VpnTunnel)
 └── CommandModules/
     ├── Interfaces/ICommandModule.cs          hợp đồng: Command Command { get; }
     ├── Enums/VpnProtocol.cs                  enum giao thức: Sstp / L2tp (map từ scheme của --vpn)
     ├── Models/VpnTarget.cs                   parse URI --vpn (scheme://user:pass@host[:port][?psk=...]) -> Protocol/Host/Port/User/Pass/PreSharedKey (System.Uri); TryParse + thông báo lỗi
-    ├── CommandModuleBase.cs                  base abstract: option chung --vpn + parse target + header (Protocol) + connect VPN (giữ vòng đời) -> RunAsync (abstract); ConnectAsync dispatch theo VpnTarget.Protocol; ValidateOptions (virtual, fail-fast option riêng)
+    ├── CommandModuleBase.cs                  base abstract: option chung --vpn + parse target + header (Protocol) + connect VPN (giữ vòng đời) -> PrintCapabilitiesAsync (panel khả năng) -> RunAsync (abstract); ConnectAsync dispatch theo VpnTarget.Protocol; ValidateOptions (virtual, fail-fast option riêng)
     ├── ProbeUdpDnsCommandModule.cs           subcommand "dns": +--dns-server/--resolve; RunAsync -> ProbeUdpDnsAsync (probe UDP + phân giải domain qua tunnel)
     ├── ProxyServerCommandModule.cs           subcommand "proxy-server" (NOT sealed): +--proxy-host/--proxy-port (ValidateOptions fail-fast); RunAsync dựng ILoggerFactory console + VpnProxySource + ProxyServer (chung factory) rồi OnProxyReadyAsync (virtual, mặc định giữ tới khi nhấn Enter)
     └── HttpRequestProxyServerCommandModule.cs  subcommand "http-request" (kế thừa ProxyServerCommandModule): +--url; override OnProxyReadyAsync -> GET url qua proxy, in body rồi thoát luôn
@@ -87,6 +92,12 @@ CLI gồm 3 subcommand; target VPN gói trong `--vpn` (URI). Option:
 
 - **Cần mạng + server còn sống.** Host VPN Gate thay đổi liên tục; nếu `public-vpn-226` đã tắt, lấy host khác từ https://www.vpngate.net/ và đặt vào phần host của `--vpn` (vd `sstp://vpn:vpn@public-vpn-XXX.opengw.net`). Server phải bật đúng giao thức bạn chọn (cột MS-SSTP / L2TP trên trang VPN Gate).
 - **Không cần quyền admin** — toàn bộ stack là userspace (không TUN/TAP, không routing table).
+- **Panel "VPN này hỗ trợ gì" (tự in sau mọi connect, trước hành động):** liệt kê IPv4/IPv6/UDP/Listen TCP/Listen UDP/LAN ảo/MAC (L2)
+  kèm thông tin kết nối (IP ảo + public/private, DNS, MTU, transport, bảo mật, auth). **Probe thật**: UDP (DNS-over-UDP),
+  LAN ảo (ICMP ping gateway nội bộ — phát hiện được thì panel thêm dòng **Gateway nội bộ**). **Suy luận**: IPv6 = ✗ (chưa
+  có IPv6CP), Listen TCP/UDP = ✗ (sau NAT + stack chưa listen). Mỗi mục ✗ ghi rõ lý do; chi tiết phần thư viện chưa hỗ trợ
+  + roadmap ở [`.docs/12-demo-vpn2proxy.md`](../../.docs/12-demo-vpn2proxy.md) §6.
+  Panel tự bao timeout + nuốt lỗi nên không làm hỏng hành động chính (cộng ~5–10s probe vào mọi lệnh).
 - **Subcommand `dns` — kiểm tra UDP + DNS qua tunnel:** sau khi tunnel lên, gửi một truy vấn DNS (bản ghi A) qua **UDP xuyên tunnel** (`UdpDnsProbe` → `VpnUdpClient`, không dùng host DNS) tới `--dns-server` (mặc định: DNS do VPN cấp, fallback `8.8.8.8`). Nhận được phản hồi ⇒ in `VPN HỖ TRỢ UDP` + IPv4 của `--resolve`; timeout sau 3 lần thử ⇒ VPN có thể không định tuyến UDP (hoặc DNS server không reachable — thử `--dns-server` khác). Đây là kênh UDP đi thẳng IP stack.
 - **Subcommand `http-request`** — GET nhanh `--url` qua proxy (vd checkip ⇒ thấy IP công cộng của VPN server), in body rồi thoát; tiện kiểm đường đi HTTP qua VPN mà không phải giữ proxy thủ công.
 - **SOCKS5 UDP-ASSOCIATE:** proxy hỗ trợ UDP cho client SOCKS5 (`IsSupportUdp=true`). Client gửi datagram qua proxy, `VpnUdpAssociateSource` relay ra ngoài bằng UDP của tunnel rồi trả về (vd `curl --socks5 127.0.0.1:port --resolve ... ` hoặc một DNS client trỏ qua SOCKS5 UDP). Chỉ IPv4; **BIND không hỗ trợ** (stack active-open-only + địa chỉ tunnel private không routable từ internet).

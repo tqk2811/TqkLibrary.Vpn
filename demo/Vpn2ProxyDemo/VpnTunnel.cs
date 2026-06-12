@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using TqkLibrary.Vpn.Abstractions.Drivers.Models;
 using TqkLibrary.Vpn.Drivers.L2tpIpsec;
 using TqkLibrary.Vpn.Drivers.Sstp;
 using TqkLibrary.Vpn.IpStack.Tcp;
@@ -22,15 +23,32 @@ namespace Vpn2ProxyDemo
     {
         readonly Func<ValueTask> _disposeAsync;
 
-        public VpnTunnel(TcpIpStack stack, Func<ValueTask> disposeAsync, IPAddress? assignedDns = null)
+        public VpnTunnel(TcpIpStack stack, Func<ValueTask> disposeAsync,
+            IPAddress assignedAddress, int mtu, VpnDriverCapabilities capabilities, string protocolName, IPAddress? assignedDns = null)
         {
             Stack = stack ?? throw new ArgumentNullException(nameof(stack));
             _disposeAsync = disposeAsync ?? throw new ArgumentNullException(nameof(disposeAsync));
+            AssignedAddress = assignedAddress ?? throw new ArgumentNullException(nameof(assignedAddress));
+            Mtu = mtu;
+            Capabilities = capabilities ?? throw new ArgumentNullException(nameof(capabilities));
+            ProtocolName = protocolName ?? throw new ArgumentNullException(nameof(protocolName));
             AssignedDns = assignedDns;
         }
 
         /// <summary>Userspace TCP/IP stack chạy trong tunnel — dùng làm ctor của <c>VpnProxySource</c>.</summary>
         public TcpIpStack Stack { get; }
+
+        /// <summary>IP ảo do VPN cấp (IPv4) — dùng cho panel khả năng + suy luận NAT/subnet.</summary>
+        public IPAddress AssignedAddress { get; }
+
+        /// <summary>MTU của link tunnel (lấy từ <c>IPacketChannel.Mtu</c>) — hiển thị ở panel khả năng.</summary>
+        public int Mtu { get; }
+
+        /// <summary>Năng lực tĩnh của driver giao thức (transport/bảo mật/auth/cấp địa chỉ) — "hỏi năng lực" cho panel.</summary>
+        public VpnDriverCapabilities Capabilities { get; }
+
+        /// <summary>Tên giao thức/driver (vd "sstp", "l2tp-ipsec") — tiêu đề panel khả năng.</summary>
+        public string ProtocolName { get; }
 
         /// <summary>DNS server do VPN cấp (nếu có) — dùng làm đích mặc định cho probe DNS-over-UDP.</summary>
         public IPAddress? AssignedDns { get; }
@@ -52,7 +70,9 @@ namespace Vpn2ProxyDemo
                 Console.WriteLine($"[sstp] tunnel up. assigned IP = {vpn.AssignedAddress}, dns = {vpn.AssignedDns}");
 
                 var stack = new TcpIpStack(vpn.PacketChannel, vpn.AssignedAddress);
-                return new VpnTunnel(stack, () => { vpn.Dispose(); return ValueTask.CompletedTask; }, vpn.AssignedDns);
+                var driver = new SstpDriver();
+                return new VpnTunnel(stack, () => { vpn.Dispose(); return ValueTask.CompletedTask; },
+                    vpn.AssignedAddress, vpn.PacketChannel.Mtu, driver.Capabilities, driver.Name, vpn.AssignedDns);
             }
             catch
             {
@@ -77,7 +97,9 @@ namespace Vpn2ProxyDemo
                 Console.WriteLine($"[l2tp] tunnel up. assigned IP = {vpn.AssignedAddress}, dns = {vpn.AssignedDns}");
 
                 var stack = new TcpIpStack(vpn.PacketChannel, vpn.AssignedAddress);
-                return new VpnTunnel(stack, () => vpn.DisposeAsync(), vpn.AssignedDns);
+                var driver = new L2tpIpsecDriver();
+                return new VpnTunnel(stack, () => vpn.DisposeAsync(),
+                    vpn.AssignedAddress, vpn.PacketChannel.Mtu, driver.Capabilities, driver.Name, vpn.AssignedDns);
             }
             catch
             {

@@ -35,6 +35,7 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.V1
         byte[] _nonceResponder = Array.Empty<byte>();
         byte[] _saInitiatorBody = Array.Empty<byte>();
         byte[] _idInitiatorBody = Array.Empty<byte>();
+        byte[][] _responderNatD = Array.Empty<byte[]>();
 
         IkeV1KeyMaterial? _keys;
         IkeV1Cipher? _phase1Cipher;
@@ -129,17 +130,28 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.V1
             _keInitiator = _dhGroup.DerivePublicValue(_privateKey);
         }
 
-        /// <summary>MM3: KE + Ni + the two NAT-D payloads (source claims port 500 to force NAT-T).</summary>
+        /// <summary>
+        /// MM3 (forced NAT-T): KE + Ni + the two NAT-D payloads claiming source port 500 while the socket actually
+        /// sends from an ephemeral port, so the gateway concludes there is a NAT and floats to UDP/4500.
+        /// </summary>
         public byte[] BuildMainMode3(IPAddress localIp, IPAddress remoteIp)
+            => BuildMainMode3(localIp, 500, remoteIp, 500);
+
+        /// <summary>
+        /// MM3 (general): KE + Ni + NAT-D #1 (destination = <paramref name="remoteIp"/>:<paramref name="remotePort"/>)
+        /// and NAT-D #2 (source = <paramref name="localIp"/>:<paramref name="localPort"/>). Pass the real bound address
+        /// and port for an honest handshake, or the spoofed <c>(Any, 500)</c> source to force NAT-T.
+        /// </summary>
+        public byte[] BuildMainMode3(IPAddress localIp, ushort localPort, IPAddress remoteIp, ushort remotePort)
         {
             var message = NewMessage(IsakmpExchangeType.MainMode);
             message.Payloads.Add(new IsakmpRawPayload(IsakmpPayloadType.KeyExchange, _keInitiator));
             message.Payloads.Add(new IsakmpRawPayload(IsakmpPayloadType.Nonce, _nonceInitiator));
-            // NAT-D #1 = destination (responder); #2 = source (initiator), claiming the IKE port to provoke NAT-T.
+            // NAT-D #1 = destination (responder); #2 = source (initiator). RFC 3947: HASH(CKY-I | CKY-R | IP | Port).
             message.Payloads.Add(new IsakmpRawPayload(NatDiscoveryType,
-                IkeV1NatDetection.ComputeHash(_hash, InitiatorCookie, ResponderCookie, remoteIp, 500)));
+                IkeV1NatDetection.ComputeHash(_hash, InitiatorCookie, ResponderCookie, remoteIp, remotePort)));
             message.Payloads.Add(new IsakmpRawPayload(NatDiscoveryType,
-                IkeV1NatDetection.ComputeHash(_hash, InitiatorCookie, ResponderCookie, localIp, 500)));
+                IkeV1NatDetection.ComputeHash(_hash, InitiatorCookie, ResponderCookie, localIp, localPort)));
             return message.Encode();
         }
 
@@ -149,12 +161,35 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.V1
             IsakmpMessage message = IsakmpMessage.Decode(wire);
             _keResponder = message.FindRaw(IsakmpPayloadType.KeyExchange)!.Body;
             _nonceResponder = message.FindRaw(IsakmpPayloadType.Nonce)!.Body;
+            // Keep the responder's NAT-D hashes so an honest handshake can read its NAT verdict (see DetectNat).
+            _responderNatD = message.Payloads.OfType<IsakmpRawPayload>()
+                .Where(p => p.Type == NatDiscoveryType).Select(p => p.Body).ToArray();
 
             byte[] shared = _dhGroup.DeriveSharedSecret(_privateKey, _keResponder);
             _keys = IkeV1KeyMaterial.DeriveMainMode(
                 _hash, _preSharedKey, _nonceInitiator, _nonceResponder, shared,
                 InitiatorCookie, ResponderCookie, _keInitiator, _keResponder, _cipherKeyLength, blockSize: 16);
             _phase1Cipher = new IkeV1Cipher(_keys.CipherKey, _keys.InitialIv);
+        }
+
+        /// <summary>
+        /// Reads the NAT-Traversal verdict from the responder's MM4 NAT-D payloads (RFC 3947). Compares the hashes we
+        /// expect for our own bound address and for the gateway against what the gateway actually sent: a miss for our
+        /// address means a NAT sits in front of us (an honest handshake should float to UDP/4500), a hit means none
+        /// (the gateway saw us directly and expects native ESP). Pass the real bound
+        /// <paramref name="localIp"/>/<paramref name="localPort"/> and the gateway endpoint. Only meaningful after
+        /// <see cref="ProcessMainMode4"/>; returns <c>ServerSentNatD = false</c> if the gateway sent no NAT-D at all.
+        /// </summary>
+        public IkeV1NatDetectionResult DetectNat(IPAddress localIp, ushort localPort, IPAddress remoteIp, ushort remotePort)
+        {
+            if (_responderNatD.Length == 0)
+                return new IkeV1NatDetectionResult(serverSentNatD: false, localBehindNat: false, remoteBehindNat: false);
+
+            byte[] expectedLocal = IkeV1NatDetection.ComputeHash(_hash, InitiatorCookie, ResponderCookie, localIp, localPort);
+            byte[] expectedRemote = IkeV1NatDetection.ComputeHash(_hash, InitiatorCookie, ResponderCookie, remoteIp, remotePort);
+            bool localBehindNat = !IkeV1NatDetection.MatchesAny(_responderNatD, expectedLocal);
+            bool remoteBehindNat = !IkeV1NatDetection.MatchesAny(_responderNatD, expectedRemote);
+            return new IkeV1NatDetectionResult(serverSentNatD: true, localBehindNat, remoteBehindNat);
         }
 
         /// <summary>MM5: encrypted IDi + HASH_I.</summary>

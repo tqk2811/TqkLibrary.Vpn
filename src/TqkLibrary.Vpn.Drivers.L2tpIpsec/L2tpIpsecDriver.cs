@@ -1,6 +1,7 @@
 using TqkLibrary.Vpn.Abstractions.Drivers.Enums;
 using TqkLibrary.Vpn.Abstractions.Drivers.Interfaces;
 using TqkLibrary.Vpn.Abstractions.Drivers.Models;
+using TqkLibrary.Vpn.Drivers.L2tpIpsec.Enums;
 
 namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
 {
@@ -9,15 +10,19 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
     {
         readonly L2tpIpsecReconnectOptions? _reconnectOptions;
         readonly L2tpIpsecTimeoutOptions? _timeoutOptions;
+        readonly L2tpIpsecNatTraversalMode _natTraversalMode;
 
         /// <summary>
-        /// Creates the driver; <paramref name="reconnectOptions"/> tunes (or disables) auto-reconnect and
-        /// <paramref name="timeoutOptions"/> tunes the IKE/L2TP handshake timeouts and retransmit caps.
+        /// Creates the driver; <paramref name="reconnectOptions"/> tunes (or disables) auto-reconnect,
+        /// <paramref name="timeoutOptions"/> tunes the IKE/L2TP handshake timeouts and retransmit caps, and
+        /// <paramref name="natTraversalMode"/> selects how NAT-T is negotiated (default: always force NAT-T).
         /// </summary>
-        public L2tpIpsecDriver(L2tpIpsecReconnectOptions? reconnectOptions = null, L2tpIpsecTimeoutOptions? timeoutOptions = null)
+        public L2tpIpsecDriver(L2tpIpsecReconnectOptions? reconnectOptions = null, L2tpIpsecTimeoutOptions? timeoutOptions = null,
+            L2tpIpsecNatTraversalMode natTraversalMode = L2tpIpsecNatTraversalMode.ForcedNatT)
         {
             _reconnectOptions = reconnectOptions;
             _timeoutOptions = timeoutOptions;
+            _natTraversalMode = natTraversalMode;
         }
 
         /// <inheritdoc/>
@@ -44,7 +49,8 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
                     "L2TP/IPsec requires a pre-shared key. Set VpnCredentials.PreSharedKey (VPN Gate's group PSK is \"vpn\").",
                     nameof(credentials));
 
-            var connection = new L2tpIpsecConnection(endpoint.Host, psk, reconnectOptions: _reconnectOptions, timeoutOptions: _timeoutOptions);
+            var connection = new L2tpIpsecConnection(endpoint.Host, psk, reconnectOptions: _reconnectOptions,
+                timeoutOptions: _timeoutOptions, natTraversalMode: _natTraversalMode);
             try
             {
                 await connection.ConnectAsync(credentials.Username ?? string.Empty, credentials.Password ?? string.Empty, cancellationToken)

@@ -27,6 +27,24 @@ namespace TqkLibrary.Vpn.Ipsec.Nat
         /// <summary>The bound local UDP port.</summary>
         public int LocalPort => ((IPEndPoint)_client.Client.LocalEndPoint!).Port;
 
+        /// <summary>
+        /// The local source address the OS routes to this gateway through, found by connecting a throwaway UDP socket
+        /// (no datagram is sent). Used for the honest NAT-D source hash; falls back to Any if it cannot be determined.
+        /// </summary>
+        public IPAddress GetLocalAddress()
+        {
+            try
+            {
+                using var probe = new Socket(_remoteAddress.AddressFamily, SocketType.Dgram, ProtocolType.Udp);
+                probe.Connect(_remoteAddress, _remote.Port);
+                return ((IPEndPoint)probe.LocalEndPoint!).Address;
+            }
+            catch
+            {
+                return _remoteAddress.AddressFamily == AddressFamily.InterNetworkV6 ? IPAddress.IPv6Any : IPAddress.Any;
+            }
+        }
+
         /// <summary>The port currently targeted (500 before NAT-T, 4500 after).</summary>
         public int RemotePort => _remote.Port;
 

@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Globalization;
 using System.Net;
 using System.Security.Cryptography;
@@ -32,6 +33,27 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.V1
             data[offset] = (byte)(port >> 8);
             data[offset + 1] = (byte)port;
             return IkeV1KeyMaterial.HashBytes(hash, data);
+        }
+
+        /// <summary>
+        /// True if <paramref name="expected"/> equals any NAT-D hash the peer sent. RFC 3947 compares each received
+        /// NAT-D against the locally computed hash for an endpoint regardless of order; a hit means that endpoint is
+        /// NOT behind a NAT (the peer saw it at the address/port we expected), a miss means it is.
+        /// </summary>
+        public static bool MatchesAny(IEnumerable<byte[]> receivedHashes, byte[] expected)
+        {
+            foreach (byte[] hash in receivedHashes)
+                if (Equal(hash, expected)) return true;
+            return false;
+        }
+
+        // NAT-D hashes are public (not key material), so a plain byte compare is fine here.
+        static bool Equal(byte[] a, byte[] b)
+        {
+            if (a.Length != b.Length) return false;
+            for (int i = 0; i < a.Length; i++)
+                if (a[i] != b[i]) return false;
+            return true;
         }
 
         static byte[] FromHex(string hex)

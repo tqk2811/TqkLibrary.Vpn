@@ -38,6 +38,7 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
         readonly uint _magic;
         readonly L2tpIpsecReconnectOptions _opts;
         readonly L2tpIpsecTimeoutOptions _timeouts;
+        readonly L2tpIpsecNatTraversalMode _natMode;
         readonly SwappablePacketChannel _facade = new();
         readonly CancellationTokenSource _lifetimeCts = new();
         readonly Random _random = new();
@@ -74,13 +75,15 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
 
         /// <summary>Creates a connection to the given L2TP/IPsec gateway with the IPsec pre-shared key.</summary>
         public L2tpIpsecConnection(string host, byte[] preSharedKey, uint magic = 0x4D2A3B1C,
-            L2tpIpsecReconnectOptions? reconnectOptions = null, L2tpIpsecTimeoutOptions? timeoutOptions = null)
+            L2tpIpsecReconnectOptions? reconnectOptions = null, L2tpIpsecTimeoutOptions? timeoutOptions = null,
+            L2tpIpsecNatTraversalMode natTraversalMode = L2tpIpsecNatTraversalMode.ForcedNatT)
         {
             _host = host;
             _preSharedKey = preSharedKey;
             _magic = magic;
             _opts = reconnectOptions ?? new L2tpIpsecReconnectOptions();
             _timeouts = timeoutOptions ?? new L2tpIpsecTimeoutOptions();
+            _natMode = natTraversalMode;
         }
 
         /// <summary>The stable L3 packet channel (valid after a successful connect; survives reconnect).</summary>
@@ -127,21 +130,11 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
             _rekeyWaiter = null;
 
             IPAddress serverIp = await ResolveAsync(_host).ConfigureAwait(false);
-            var natt = new NatTraversalChannel(serverIp, NatTraversal.IkePort);
-            _natt = natt;
-            _loopCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token, cancellationToken);
-            CancellationToken loopToken = _loopCts.Token;
-            _ = Task.Run(() => ReceiveLoopAsync(natt, loopToken));
 
-            var ike = new IkeV1Client(_preSharedKey, IPAddress.Any, serverIp);
-            _ike = ike;
+            // Phase 1 Main Mode 1-4 + the NAT-T port decision (forced, or honest-first with a forced fallback).
+            (NatTraversalChannel natt, IkeV1Client ike) = await BringUpPhase1Async(serverIp, cancellationToken).ConfigureAwait(false);
 
-            // Phase 1 — Main Mode (messages 1-4 on UDP/500).
-            ike.ProcessMainMode2(await ExchangeIkeAsync(natt, ike.BuildMainMode1(), cancellationToken).ConfigureAwait(false));
-            ike.ProcessMainMode4(await ExchangeIkeAsync(natt, ike.BuildMainMode3(IPAddress.Any, serverIp), cancellationToken).ConfigureAwait(false));
-
-            // NAT-T detected → move to UDP/4500 for the encrypted MM5/MM6 and all of Quick Mode + ESP.
-            natt.SwitchToNatTPort();
+            // MM5/MM6 (encrypted IDi + HASH_I, then verify HASH_R) on the port Phase 1 settled on.
             if (!ike.ProcessMainMode6(await ExchangeIkeAsync(natt, ike.BuildMainMode5(), cancellationToken).ConfigureAwait(false)))
                 throw new VpnAuthenticationException("IKEv1 Phase 1 authentication failed (PSK / HASH_R mismatch).");
 
@@ -178,6 +171,87 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
             _ikeWaiter = null;
             _facade.SetInner(ppp.PacketChannel);
             StartKeepalive();
+        }
+
+        // ---- Phase 1 bring-up: pick the NAT-T strategy, run Main Mode 1-4, and settle on the data-plane port ----
+
+        // Returns the channel/client on the port the rest of the handshake will use. Forced mode always floats to
+        // UDP/4500; honest-first binds the real port 500 and lets the gateway's NAT-D verdict decide, falling back to
+        // forced when it cannot bind 500 or the gateway reports no NAT (it would want native ESP, which is not built).
+        async Task<(NatTraversalChannel Natt, IkeV1Client Ike)> BringUpPhase1Async(IPAddress serverIp, CancellationToken cancellationToken)
+        {
+            if (_natMode == L2tpIpsecNatTraversalMode.HonestFirst)
+            {
+                (NatTraversalChannel, IkeV1Client)? honest = await TryHonestPhase1Async(serverIp, cancellationToken).ConfigureAwait(false);
+                if (honest != null) return (honest.Value.Item1, honest.Value.Item2);
+            }
+            return await ForcedPhase1Async(serverIp, cancellationToken).ConfigureAwait(false);
+        }
+
+        // Forced NAT-T (the default, proven live): ephemeral source port, NAT-D claims port 500, always float to 4500.
+        async Task<(NatTraversalChannel, IkeV1Client)> ForcedPhase1Async(IPAddress serverIp, CancellationToken cancellationToken)
+        {
+            NatTraversalChannel natt = StartAttemptChannel(serverIp, localPort: 0, cancellationToken);
+            var ike = new IkeV1Client(_preSharedKey, IPAddress.Any, serverIp);
+            _ike = ike;
+
+            ike.ProcessMainMode2(await ExchangeIkeAsync(natt, ike.BuildMainMode1(), cancellationToken).ConfigureAwait(false));
+            ike.ProcessMainMode4(await ExchangeIkeAsync(natt, ike.BuildMainMode3(IPAddress.Any, serverIp), cancellationToken).ConfigureAwait(false));
+            natt.SwitchToNatTPort();
+            return (natt, ike);
+        }
+
+        // Honest-first: bind the real port 500, send truthful NAT-D, then read the gateway's MM4 verdict. A real NAT
+        // floats to 4500 (userspace ESP-in-UDP); no NAT means the gateway wants native ESP (not built) — tear down and
+        // return null so the caller retries forced. Returns null too if port 500 is unavailable (e.g. Windows IKEEXT).
+        async Task<(NatTraversalChannel, IkeV1Client)?> TryHonestPhase1Async(IPAddress serverIp, CancellationToken cancellationToken)
+        {
+            NatTraversalChannel natt;
+            try { natt = StartAttemptChannel(serverIp, localPort: NatTraversal.IkePort, cancellationToken); }
+            catch (System.Net.Sockets.SocketException) { return null; }
+
+            var ike = new IkeV1Client(_preSharedKey, IPAddress.Any, serverIp);
+            _ike = ike;
+            IPAddress localIp = natt.GetLocalAddress();
+            ushort localPort = (ushort)natt.LocalPort;
+
+            ike.ProcessMainMode2(await ExchangeIkeAsync(natt, ike.BuildMainMode1(), cancellationToken).ConfigureAwait(false));
+            ike.ProcessMainMode4(await ExchangeIkeAsync(natt,
+                ike.BuildMainMode3(localIp, localPort, serverIp, (ushort)NatTraversal.IkePort), cancellationToken).ConfigureAwait(false));
+
+            if (ike.DetectNat(localIp, localPort, serverIp, (ushort)NatTraversal.IkePort).ShouldFloatToNatT)
+            {
+                natt.SwitchToNatTPort();
+                return (natt, ike);
+            }
+
+            await TeardownPhase1AttemptAsync(natt).ConfigureAwait(false);
+            return null;
+        }
+
+        // Opens the attempt's NAT-T channel on the given local port, publishes it + a linked CTS, and starts its
+        // receive loop. May throw SocketException if the port is busy (the caller decides whether to fall back).
+        NatTraversalChannel StartAttemptChannel(IPAddress serverIp, int localPort, CancellationToken cancellationToken)
+        {
+            var natt = new NatTraversalChannel(serverIp, NatTraversal.IkePort, localPort);
+            _natt = natt;
+            _loopCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token, cancellationToken);
+            CancellationToken loopToken = _loopCts.Token;
+            _ = Task.Run(() => ReceiveLoopAsync(natt, loopToken));
+            return natt;
+        }
+
+        // Tears down a Phase 1 attempt mid-handshake (honest path declined) so a fresh forced attempt can rebind: cancel
+        // + drop the receive loop, null the shared fields (tripping the stale loop's identity guard), close the socket.
+        async Task TeardownPhase1AttemptAsync(NatTraversalChannel natt)
+        {
+            CancellationTokenSource? loop = _loopCts;
+            _loopCts = null;
+            try { loop?.Cancel(); } catch { }
+            loop?.Dispose();
+            _natt = null;
+            _ike = null;
+            try { await natt.DisposeAsync().ConfigureAwait(false); } catch { }
         }
 
         // Tears down the resources of the previous attempt before a fresh one (no-op on the very first attempt).
@@ -242,12 +316,14 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
         }
 
         // Diagnose a failed handshake exchange by the port it stalled on. Past the NAT-T float (UDP/4500) silence is the
-        // signature of a gateway that refuses forced NAT-T: it is not behind a NAT, so it expects native ESP on UDP/500 —
-        // which this userspace UDP client cannot send yet (the real-port / native-ESP fallbacks P0.8b/c are not built).
+        // signature of a gateway that refuses forced NAT-T: not behind a NAT, it expects native ESP — which this userspace
+        // client cannot send (native-ESP fallback P0.8c not built). An honest real-port handshake is available via
+        // L2tpIpsecNatTraversalMode.HonestFirst, but it only rescues a gateway that actually sees a NAT in front of us.
         static VpnNetworkTimeoutException IkeTimedOut(int targetPort)
             => new(targetPort == NatTraversal.NatTPort
                 ? "No IKE response on UDP/4500 after the NAT-T float. The gateway may refuse forced NAT-T (it is not "
-                  + "behind a NAT and rejects UDP-encapsulated IPsec); a real-port / native-ESP fallback is not yet implemented."
+                  + "behind a NAT and rejects UDP-encapsulated IPsec); native-ESP fallback is not yet implemented "
+                  + "(try L2tpIpsecNatTraversalMode.HonestFirst if UDP/500 can be bound)."
                 : "No IKE response from the gateway on UDP/500 (host unreachable, UDP blocked, or wrong address).");
 
         static VpnServerRejectedException IkeRejected(ushort notifyType, int targetPort)

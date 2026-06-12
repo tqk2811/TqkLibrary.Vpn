@@ -165,6 +165,68 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.Tests
             Assert.Throws<VpnServerRejectedException>(() => client.ProcessQuickMode2(qm2));
         }
 
+        [Fact]
+        public void DetectNat_WhenGatewaySeesTranslatedSource_ReportsNatAndFloats()
+        {
+            var client = new IkeV1Client(Psk, IPAddress.Loopback, IPAddress.Loopback);
+            var responder = new SimulatedResponderV1(Psk, client.InitiatorCookie);
+            client.ProcessMainMode2(responder.HandleMainMode1(client.BuildMainMode1()));
+
+            IPAddress localIp = IPAddress.Parse("198.51.100.10"), serverIp = IPAddress.Parse("203.0.113.5");
+            const ushort localPort = 500, serverPort = 500;
+
+            // The gateway reports it observed our source at port 61000 (a NAT rewrote 500) — its NAT-D for us won't
+            // match our honest claim of 500, so the client must conclude there is a NAT in front of it and float.
+            byte[] mm3 = client.BuildMainMode3(localIp, localPort, serverIp, serverPort);
+            client.ProcessMainMode4(responder.HandleMainMode3(mm3, responder.ResponderCookie,
+                observedInitiatorEndpoint: localIp, observedInitiatorPort: 61000,
+                responderEndpoint: serverIp, responderPort: serverPort));
+
+            IkeV1NatDetectionResult nat = client.DetectNat(localIp, localPort, serverIp, serverPort);
+            Assert.True(nat.ServerSentNatD);
+            Assert.True(nat.LocalBehindNat);
+            Assert.False(nat.RemoteBehindNat);
+            Assert.True(nat.ShouldFloatToNatT);
+        }
+
+        [Fact]
+        public void DetectNat_WhenGatewaySeesRealSource_ReportsNoNat()
+        {
+            var client = new IkeV1Client(Psk, IPAddress.Loopback, IPAddress.Loopback);
+            var responder = new SimulatedResponderV1(Psk, client.InitiatorCookie);
+            client.ProcessMainMode2(responder.HandleMainMode1(client.BuildMainMode1()));
+
+            IPAddress localIp = IPAddress.Parse("198.51.100.10"), serverIp = IPAddress.Parse("203.0.113.5");
+            const ushort localPort = 500, serverPort = 500;
+
+            // The gateway observed our source exactly as claimed (no NAT in the path) → no float; it expects native ESP.
+            byte[] mm3 = client.BuildMainMode3(localIp, localPort, serverIp, serverPort);
+            client.ProcessMainMode4(responder.HandleMainMode3(mm3, responder.ResponderCookie,
+                observedInitiatorEndpoint: localIp, observedInitiatorPort: localPort,
+                responderEndpoint: serverIp, responderPort: serverPort));
+
+            IkeV1NatDetectionResult nat = client.DetectNat(localIp, localPort, serverIp, serverPort);
+            Assert.True(nat.ServerSentNatD);
+            Assert.False(nat.LocalBehindNat);
+            Assert.False(nat.ShouldFloatToNatT);
+        }
+
+        [Fact]
+        public void DetectNat_WhenGatewaySendsNoNatD_ReportsServerSentNatDFalse()
+        {
+            var client = new IkeV1Client(Psk, IPAddress.Loopback, IPAddress.Loopback);
+            var responder = new SimulatedResponderV1(Psk, client.InitiatorCookie);
+            client.ProcessMainMode2(responder.HandleMainMode1(client.BuildMainMode1()));
+
+            // MM4 without any NAT-D (default) → the verdict reports the gateway does not do NAT-T.
+            client.ProcessMainMode4(responder.HandleMainMode3(
+                client.BuildMainMode3(IPAddress.Loopback, 500, IPAddress.Loopback, 500), responder.ResponderCookie));
+
+            IkeV1NatDetectionResult nat = client.DetectNat(IPAddress.Loopback, 500, IPAddress.Loopback, 500);
+            Assert.False(nat.ServerSentNatD);
+            Assert.False(nat.ShouldFloatToNatT);
+        }
+
         static void DriveToQuickModeComplete(IkeV1Client client, SimulatedResponderV1 responder)
         {
             client.ProcessMainMode2(responder.HandleMainMode1(client.BuildMainMode1()));
@@ -269,7 +331,14 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.Tests
             }
 
             /// <summary>MM4: read KE_i + Ni, then build KE_r + Nr, derive the key set, and arm the Phase-1 cipher.</summary>
-            public byte[] HandleMainMode3(byte[] mm4Input, byte[] cookieR)
+            /// <remarks>
+            /// When <paramref name="observedInitiatorEndpoint"/> is set, two RFC 3947 NAT-D payloads are appended:
+            /// #1 = the initiator endpoint as this responder claims to have observed it (drive a NAT verdict by passing
+            /// a port/address that differs from what the client claims), #2 = this responder's own endpoint.
+            /// </remarks>
+            public byte[] HandleMainMode3(byte[] mm4Input, byte[] cookieR,
+                IPAddress? observedInitiatorEndpoint = null, ushort observedInitiatorPort = 0,
+                IPAddress? responderEndpoint = null, ushort responderPort = 0)
             {
                 _ = cookieR; // the responder cookie is fixed at construction; the parameter only documents intent.
                 IsakmpMessage request = IsakmpMessage.Decode(mm4Input);
@@ -282,12 +351,19 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.Tests
                     _cookieI, _cookieR, _keInitiator, _keResponder, cipherKeyLength: 32, blockSize: 16);
                 _phase1Cipher = new IkeV1Cipher(_keys.CipherKey, _keys.InitialIv);
 
-                // The client's ProcessMainMode4 only reads KeyExchange + Nonce; NAT-D is optional.
+                // KE_r + Nr always; the NAT-D pair only when a test wants to exercise the NAT verdict.
                 var payloads = new List<IsakmpPayload>
                 {
                     new IsakmpRawPayload(IsakmpPayloadType.KeyExchange, _keResponder),
                     new IsakmpRawPayload(IsakmpPayloadType.Nonce, _nonceResponder),
                 };
+                if (observedInitiatorEndpoint != null)
+                {
+                    payloads.Add(new IsakmpRawPayload(IsakmpPayloadType.NatDiscovery,
+                        IkeV1NatDetection.ComputeHash(_hash, _cookieI, _cookieR, observedInitiatorEndpoint, observedInitiatorPort)));
+                    payloads.Add(new IsakmpRawPayload(IsakmpPayloadType.NatDiscovery,
+                        IkeV1NatDetection.ComputeHash(_hash, _cookieI, _cookieR, responderEndpoint ?? IPAddress.Loopback, responderPort)));
+                }
                 return EncodeClear(IsakmpExchangeType.MainMode, 0, payloads);
             }
 

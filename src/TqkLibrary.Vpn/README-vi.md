@@ -18,10 +18,9 @@ Vì sao tồn tại: tách "ai dùng giao thức nào" (ứng dụng) khỏi "gi
 - **Target frameworks:** `netstandard2.0; net8.0` (kế thừa từ [Directory.Build.props](../Directory.Build.props)). `record`/`init` khả dụng cả 2 TFM nhờ polyfill `TqkLibrary.CompilerServices` (`IsExternalInit`).
 - **Phụ thuộc (ProjectReference):**
   - [TqkLibrary.Vpn.Sockets](../TqkLibrary.Vpn.Sockets) — API socket chạy trong tunnel (re-export cho app).
-  - [TqkLibrary.Vpn.Crypto](../TqkLibrary.Vpn.Crypto) — primitive mã hóa.
   - [TqkLibrary.Vpn.Drivers.L2tpIpsec](../TqkLibrary.Vpn.Drivers.L2tpIpsec) — nơi `L2tpIpsecDriver` được khai báo.
   - [TqkLibrary.Vpn.Drivers.Sstp](../TqkLibrary.Vpn.Drivers.Sstp) — nơi `SstpDriver` được khai báo.
-  - Không có `PackageReference` đặc thù.
+  - Không có `PackageReference` đặc thù. Façade **không** ref `Crypto` trực tiếp (2 file `VpnClient`/`VpnClientBuilder` không chạm primitive nào — P0.2); `Crypto` vẫn có trong output theo **transitive** qua Drivers → Ipsec/Ppp.
 - **Được dùng bởi:** ứng dụng tiêu thụ (không project nào khác trong solution ref tới project này).
 
 ## Cấu trúc thư mục

@@ -18,7 +18,6 @@
 > tối đa, không viết lại tính năng có sẵn**), và mỗi mục xong phải cập nhật [`10`](10-codebase-architecture-and-flow.md)
 > + README project bị ảnh hưởng.
 
-- [ ] **P0.2 — Bỏ ref `Crypto` thừa ở façade**: xóa `ProjectReference` tại [TqkLibrary.Vpn.csproj:9](../src/TqkLibrary.Vpn/TqkLibrary.Vpn.csproj#L9) — façade (2 file `VpnClient`/`VpnClientBuilder`) không chạm primitive nào; `Crypto` vẫn theo transitive qua Drivers→Ipsec/Ppp. Verify build xanh 2 TFM; cập nhật README façade (mục Phụ thuộc).
 - [ ] **P0.3 — `VpnNetworkStream.WriteAsync`: backpressure + propagate lỗi** ([VpnNetworkStream.cs:33-37](../src/TqkLibrary.Vpn.Sockets/VpnNetworkStream.cs#L33-L37) hiện gọi `Send` rồi trả `Task.CompletedTask`, `FlushAsync` no-op — nuốt lỗi, không chờ cửa sổ): thêm đường gửi async có backpressure ở [`TcpConnection`](../src/TqkLibrary.Vpn.IpStack/Tcp/TcpConnection.cs) (await khi send buffer/cửa sổ gửi đầy — **tái dùng** hạ tầng retx/window/cwnd sẵn có, không viết lại), `WriteAsync` await đường đó; connection faulted/RST ⇒ ném `IOException` cho caller (`HttpClient` thấy lỗi). Test offline: write khi zero-window phải chặn; write sau RST phải throw.
 - [ ] **P0.4 — Bỏ PSK mặc định `"vpn"` khỏi driver** ([L2tpIpsecDriver.cs:11-12](../src/TqkLibrary.Vpn.Drivers.L2tpIpsec/L2tpIpsecDriver.cs#L11-L12)): default credential đặc thù VPN Gate không được nằm trong lib chung — `PreSharedKey` null ⇒ ném `ArgumentException` thông điệp rõ. Default `"vpn"` chuyển xuống demo ([VpnTunnel.ConnectL2tpAsync](../demo/Vpn2ProxyDemo/VpnTunnel.cs#L65) / [VpnTarget](../demo/Vpn2ProxyDemo/CommandModules/Models/VpnTarget.cs)) + test live. **Breaking change** — cập nhật README façade/driver + `10` §6.
 - [ ] **P0.5 — Thống nhất exception tra driver ở `VpnClient`**: [`GetCapabilities` @ :27](../src/TqkLibrary.Vpn/VpnClient.cs#L27) đang ném `KeyNotFoundException` (indexer) trong khi [`ConnectAsync` @ :18](../src/TqkLibrary.Vpn/VpnClient.cs#L18) ném `NotSupportedException` kèm danh sách protocol đã đăng ký — gom về **1 helper tra driver** dùng chung, cả 2 ném `NotSupportedException` cùng thông điệp.
@@ -131,7 +130,7 @@
 
 ## Gợi ý thứ tự
 
-0. **P0** — dọn kiến trúc & nợ review (P0.2 → P0.3 → … → P0.11, như §P0; **P0.1 đã xong** — `IByteStreamTransport`/`TlsByteStream` seam + xóa `ISecuritySession`/`IPacketEncapsulator`).
+0. **P0** — dọn kiến trúc & nợ review (P0.3 → … → P0.11, như §P0; **P0.1–P0.2 đã xong** — `IByteStreamTransport`/`TlsByteStream` seam + xóa `ISecuritySession`/`IPacketEncapsulator`; bỏ ref `Crypto` thừa ở façade).
 1. **P1** — SSTP + L2TP/IPsec đạt 100%: P1.1 IPV6CP → P1.2 outer IPv6 → P1.3 rekey Phase 1 in-place → P1.4/P1.5 retransmit/timeout → P1.6 test SSTP offline → P1.7 multi-session L2TP (best-effort). **Q.1 lab Docker dựng sớm** trong giai đoạn này (điều kiện test P1.1/P1.2/P1.7 + P0.8).
 2. **V.1 IKEv2-native** + F.7/F.8 (driver mới đầu tiên, chi phí thấp nhất — validate mô hình F + F.6 supervisor chung).
 3. **V.2 OpenVPN** (tun + UDP trước) + F.1/F.2/F.5 — driver "đinh" của hệ opensource, sinh consumer thật cho contracts F.2.

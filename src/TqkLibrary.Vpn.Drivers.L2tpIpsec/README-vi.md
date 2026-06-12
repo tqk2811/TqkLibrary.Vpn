@@ -125,6 +125,7 @@ Class hạ tầng `L2tpIpsecConnection` cũng public nếu cần điều khiển
 - **Hạn chế đã biết:**
   - UDP checksum của gói L2TP-trong-ESP gửi 0 (hợp lệ IPv4 sau NAT vì client không biết địa chỉ thật cho pseudo-header) — [UdpEncapsulation.cs:4-6](UdpEncapsulation.cs#L4-L6).
   - Mỗi connection chỉ một PPP session; `OpenSessionAsync` ném `NotSupportedException` — [L2tpIpsecVpnConnection.cs:22-23](L2tpIpsecVpnConnection.cs#L22-L23).
-  - `IkeV1Client.ProcessQuickMode2` **không** xác thực HASH(2) của responder (cố ý để interop rộng — xem roadmap).
+
+> Quick Mode QM2 nay **xác thực HASH(2)** của responder (`IkeV1Client.ProcessQuickMode2`/`ProcessRekeyQuickMode2`, RFC 2409 §5.5) — sai ⇒ `VpnServerRejectedException` (handshake chính) / giữ SA cũ (rekey). Chi tiết ở README project `Ipsec`.
 
 > Tài liệu as-built tổng thể: [.docs/10-codebase-architecture-and-flow.md](../../.docs/10-codebase-architecture-and-flow.md) §6/§6.1 · roadmap: [.docs/11-todo-roadmap.md](../../.docs/11-todo-roadmap.md).

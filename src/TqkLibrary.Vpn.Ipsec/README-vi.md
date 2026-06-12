@@ -99,7 +99,7 @@ TqkLibrary.Vpn.Ipsec/
 
 | Type | Vai trò | Vị trí |
 |------|---------|--------|
-| `IkeV1Client` | Client initiator: build/process từng MM/QM, rekey, DPD, Delete, Informational; `NegotiatedEsp`/`RekeyNegotiatedEsp` lộ suite ESP server chọn ở QM2 | [IkeV1Client.cs:17](Ike/V1/IkeV1Client.cs#L17) |
+| `IkeV1Client` | Client initiator: build/process từng MM/QM, rekey, DPD, Delete, Informational; QM2 **xác thực HASH(2)** responder (RFC 2409 §5.5, sai ⇒ `VpnServerRejectedException`); `NegotiatedEsp`/`RekeyNegotiatedEsp` lộ suite ESP server chọn ở QM2 | [IkeV1Client.cs:18](Ike/V1/IkeV1Client.cs#L18) |
 | `IkeV1KeyMaterial` | SKEYID + SKEYID_d/a/e + khóa Phase 1 + IV đầu; `ExpandKey` | [IkeV1KeyMaterial.cs:12](Ike/V1/IkeV1KeyMaterial.cs#L12) |
 | `IkeV1Auth` | `ComputeHashI` / `ComputeHashR` (xác thực Main Mode) | [IkeV1Auth.cs:10](Ike/V1/IkeV1Auth.cs#L10) |
 | `IkeV1QuickMode` | `ComputeHash1/2/3` (xác thực Quick Mode, keyed by SKEYID_a) | [IkeV1QuickMode.cs:10](Ike/V1/IkeV1QuickMode.cs#L10) |
@@ -174,7 +174,7 @@ var ike = new IkeV1Client(preSharedKey, IPAddress.Any, serverIp);
 Send(ike.BuildMainMode1());          ike.ProcessMainMode2(Recv());  // MM1/MM2
 Send(ike.BuildMainMode3(local, srv)); ike.ProcessMainMode4(Recv()); // MM3/MM4 → SKEYID
 Send(ike.BuildMainMode5());           ike.ProcessMainMode6(Recv()); // MM5/MM6 → verify HASH_R
-Send(ike.BuildQuickMode1());          ike.ProcessQuickMode2(Recv()); // QM1/QM2 → ESP SPI peer + NegotiatedEsp
+Send(ike.BuildQuickMode1());          ike.ProcessQuickMode2(Recv()); // QM1/QM2 → verify HASH(2) + ESP SPI peer + NegotiatedEsp
 Send(ike.BuildQuickMode3());                                         // QM3
 EspSuiteSelection esp = ike.NegotiatedEsp;   // suite server chọn (CBC/GCM)
 IkeV1Phase2Keys keys = ike.CreatePhase2Keys();
@@ -220,12 +220,12 @@ if (ike.ProcessAuthResponse(Recv())) { ChildSaKeys child = ike.ChildKeys!; EspSu
 
 ### IKEv1 Main + Quick Mode (initiator)
 
-1. **MM1/MM2** — gửi SA proposal + Vendor ID NAT-T; đọc responder cookie, transform được chọn, flavour NAT-T. [IkeV1Client.cs:92](Ike/V1/IkeV1Client.cs#L92), [IkeV1Client.cs:106](Ike/V1/IkeV1Client.cs#L106)
-2. **MM3/MM4** — gửi KE + Ni + 2 NAT-D (ép NAT-T); đọc KEr + Nr → tính `g^xy` → `DeriveMainMode` sinh SKEYID & khóa Phase 1. [IkeV1Client.cs:132](Ike/V1/IkeV1Client.cs#L132), [IkeV1Client.cs:146](Ike/V1/IkeV1Client.cs#L146), [IkeV1KeyMaterial.cs:38](Ike/V1/IkeV1KeyMaterial.cs#L38)
-3. **MM5/MM6** — gửi IDi + HASH_I (đã mã hóa); giải mã MM6, verify HASH_R, lưu IV cuối Phase 1. [IkeV1Client.cs:160](Ike/V1/IkeV1Client.cs#L160), [IkeV1Client.cs:175](Ike/V1/IkeV1Client.cs#L175), [IkeV1Auth.cs:13](Ike/V1/IkeV1Auth.cs#L13)
-4. **QM1/QM2/QM3** — IV Quick Mode dẫn từ IV Phase 1 cuối + message id; HASH(1)/(2)/(3) keyed by SKEYID_a; bắt ESP SPI của peer **và transform server chọn** → set `NegotiatedEsp` (AES-CBC hoặc AES-GCM-16; mặc định khoan dung về CBC+SHA1+256). [IkeV1Client.cs:191](Ike/V1/IkeV1Client.cs#L191), [IkeV1Cipher.cs:53](Ike/V1/IkeV1Cipher.cs#L53), [IkeV1QuickMode.cs:13](Ike/V1/IkeV1QuickMode.cs#L13)
-5. **Phase 2 keys** — `CreatePhase2Keys` → KEYMAT = prf+(SKEYID_d, proto\|SPI\|Ni\|Nr) → keymat ESP hai chiều, độ dài theo `NegotiatedEsp` (CBC: enc ‖ integ-key; GCM: enc ‖ salt 4B); driver gọi `NegotiatedEsp.BuildSuite(...)` để ra `EspCipherSuite`. [IkeV1Client.cs:263](Ike/V1/IkeV1Client.cs#L263), [IkeV1Phase2Keys.cs:30](Ike/V1/IkeV1Phase2Keys.cs#L30), [EspSuiteSelection.cs:14](Esp/EspSuiteSelection.cs#L14)
-6. **Hậu handshake (Informational)** — mọi datagram IKE sau handshake route qua `ProcessInformational`: phân loại DPD request/ack hoặc Delete; build DPD/Delete/rekey dưới message id mới với IV dẫn xuất riêng. [IkeV1Client.cs:376](Ike/V1/IkeV1Client.cs#L376), [IkeV1Client.cs:403](Ike/V1/IkeV1Client.cs#L403)
+1. **MM1/MM2** — gửi SA proposal + Vendor ID NAT-T; đọc responder cookie, transform được chọn, flavour NAT-T. [IkeV1Client.cs:93](Ike/V1/IkeV1Client.cs#L93), [IkeV1Client.cs:107](Ike/V1/IkeV1Client.cs#L107)
+2. **MM3/MM4** — gửi KE + Ni + 2 NAT-D (ép NAT-T); đọc KEr + Nr → tính `g^xy` → `DeriveMainMode` sinh SKEYID & khóa Phase 1. [IkeV1Client.cs:133](Ike/V1/IkeV1Client.cs#L133), [IkeV1Client.cs:147](Ike/V1/IkeV1Client.cs#L147), [IkeV1KeyMaterial.cs:38](Ike/V1/IkeV1KeyMaterial.cs#L38)
+3. **MM5/MM6** — gửi IDi + HASH_I (đã mã hóa); giải mã MM6, verify HASH_R, lưu IV cuối Phase 1. [IkeV1Client.cs:161](Ike/V1/IkeV1Client.cs#L161), [IkeV1Client.cs:176](Ike/V1/IkeV1Client.cs#L176), [IkeV1Auth.cs:13](Ike/V1/IkeV1Auth.cs#L13)
+4. **QM1/QM2/QM3** — IV Quick Mode dẫn từ IV Phase 1 cuối + message id; HASH(1)/(2)/(3) keyed by SKEYID_a; QM2 **xác thực HASH(2)** responder (`prf(SKEYID_a, M-ID‖Ni_b‖payload-sau-HASH)`, hash trên byte gốc nhận — mismatch ⇒ `VpnServerRejectedException`) rồi bắt ESP SPI của peer **và transform server chọn** → set `NegotiatedEsp` (AES-CBC hoặc AES-GCM-16; mặc định khoan dung về CBC+SHA1+256). [IkeV1Client.cs:192](Ike/V1/IkeV1Client.cs#L192), [IkeV1Cipher.cs:53](Ike/V1/IkeV1Cipher.cs#L53), [IkeV1QuickMode.cs:13](Ike/V1/IkeV1QuickMode.cs#L13)
+5. **Phase 2 keys** — `CreatePhase2Keys` → KEYMAT = prf+(SKEYID_d, proto\|SPI\|Ni\|Nr) → keymat ESP hai chiều, độ dài theo `NegotiatedEsp` (CBC: enc ‖ integ-key; GCM: enc ‖ salt 4B); driver gọi `NegotiatedEsp.BuildSuite(...)` để ra `EspCipherSuite`. [IkeV1Client.cs:267](Ike/V1/IkeV1Client.cs#L267), [IkeV1Phase2Keys.cs:30](Ike/V1/IkeV1Phase2Keys.cs#L30), [EspSuiteSelection.cs:14](Esp/EspSuiteSelection.cs#L14)
+6. **Hậu handshake (Informational)** — mọi datagram IKE sau handshake route qua `ProcessInformational`: phân loại DPD request/ack hoặc Delete; build DPD/Delete/rekey dưới message id mới với IV dẫn xuất riêng. [IkeV1Client.cs:386](Ike/V1/IkeV1Client.cs#L386), [IkeV1Client.cs:413](Ike/V1/IkeV1Client.cs#L413)
 
 ### ESP `Protect` / `TryUnprotect`
 

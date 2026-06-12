@@ -1,5 +1,6 @@
 using System.Net;
 using System.Security.Cryptography;
+using TqkLibrary.Vpn.Abstractions.Drivers;
 using TqkLibrary.Vpn.Crypto;
 using TqkLibrary.Vpn.Ipsec.Esp;
 using TqkLibrary.Vpn.Ipsec.Esp.Enums;
@@ -16,10 +17,10 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.Tests
     /// then Quick Mode QM1→QM3 against a hand-written <see cref="SimulatedResponderV1"/>, then both sides build
     /// <see cref="EspSession"/>s from the Phase-2 keys and exchange a protected packet each direction. This pins the
     /// IKEv1 encrypted-exchange math (Main Mode HASH_I/HASH_R auth, the CBC IV chain, the Quick-Mode derived IV,
-    /// the client's HASH(1) and its HASH(3) verified by the responder, SKEYID_d → ESP keymat) offline — previously
-    /// only live-tested against VPN Gate. The DPD and Delete round-trips at the end pin the derived-IV Informational
-    /// cipher. Note: the client does NOT authenticate the responder's QM2 HASH(2) (a production interop choice — see
-    /// <see cref="IkeV1Client.ProcessQuickMode2"/>), so the responder computes HASH(2) for fidelity but it is not pinned here.
+    /// the client's HASH(1) and its HASH(3) verified by the responder, the responder's HASH(2) now verified by the
+    /// client — see <see cref="IkeV1Client.ProcessQuickMode2"/>, SKEYID_d → ESP keymat) offline — previously only
+    /// live-tested against VPN Gate. <see cref="QuickMode_ResponderHash2Tampered_ProcessQuickMode2Throws"/> pins the
+    /// rejection path. The DPD and Delete round-trips at the end pin the derived-IV Informational cipher.
     ///
     /// The responder hand-rolls the tiny ISAKMP framing (28-byte header + TLV payload chain) so no production-code
     /// change (e.g. InternalsVisibleTo) is needed: <c>IsakmpMessage.EncodePayloadChain/WriteHeader/...</c> are internal.
@@ -49,8 +50,8 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.Tests
 
             // --- Quick Mode ---
             byte[] qm1 = client.BuildQuickMode1();
-            byte[] qm2 = responder.HandleQuickMode1(qm1); // captures client SPI + Ni; builds SA + Nr (+ HASH(2), which the client does not verify)
-            Assert.True(client.ProcessQuickMode2(qm2));    // accepts the responder's ESP SPI; HASH(2) is not authenticated
+            byte[] qm2 = responder.HandleQuickMode1(qm1); // captures client SPI + Ni; builds SA + Nr + HASH(2)
+            Assert.True(client.ProcessQuickMode2(qm2));    // authenticates HASH(2), then accepts the responder's ESP SPI
 
             byte[] qm3 = client.BuildQuickMode3();
             responder.HandleQuickMode3(qm3); // verifies HASH(3) internally
@@ -149,6 +150,21 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.Tests
             Assert.Equal(IkeV1Constants.Protocol.Esp, responder.ReadDeleteProtocol(delete));
         }
 
+        [Fact]
+        public void QuickMode_ResponderHash2Tampered_ProcessQuickMode2Throws()
+        {
+            var client = new IkeV1Client(Psk, IPAddress.Loopback, IPAddress.Loopback);
+            var responder = new SimulatedResponderV1(Psk, client.InitiatorCookie, corruptQuickModeHash2: true);
+
+            // Main Mode succeeds; the responder then replies to QM1 with a deliberately wrong HASH(2).
+            client.ProcessMainMode2(responder.HandleMainMode1(client.BuildMainMode1()));
+            client.ProcessMainMode4(responder.HandleMainMode3(client.BuildMainMode3(IPAddress.Any, IPAddress.Loopback), responder.ResponderCookie));
+            Assert.True(client.ProcessMainMode6(responder.HandleMainMode5(client.BuildMainMode5())));
+
+            byte[] qm2 = responder.HandleQuickMode1(client.BuildQuickMode1());
+            Assert.Throws<VpnServerRejectedException>(() => client.ProcessQuickMode2(qm2));
+        }
+
         static void DriveToQuickModeComplete(IkeV1Client client, SimulatedResponderV1 responder)
         {
             client.ProcessMainMode2(responder.HandleMainMode1(client.BuildMainMode1()));
@@ -178,6 +194,7 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.Tests
 
             readonly byte[] _psk;
             readonly EspSuiteSelection _esp; // the ESP transform this responder selects in Quick Mode
+            readonly bool _corruptHash2;     // when set, send a deliberately wrong QM2 HASH(2) to drive the rejection path
             readonly HashAlgorithmName _hash = HashAlgorithmName.SHA1;
             readonly HmacPrf _prf = new(HashAlgorithmName.SHA1);
             readonly ModpDhGroup _dh = ModpDhGroup.Group14(); // MM2 echoes MODP-2048 → the client uses group 14
@@ -198,10 +215,11 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.Tests
             IkeV1Cipher? _quickModeCipher;
             byte[] _quickModeNonceInitiator = Array.Empty<byte>();
 
-            public SimulatedResponderV1(byte[] psk, byte[] initiatorCookie, EspSuiteSelection? esp = null)
+            public SimulatedResponderV1(byte[] psk, byte[] initiatorCookie, EspSuiteSelection? esp = null, bool corruptQuickModeHash2 = false)
             {
                 _psk = psk;
                 _esp = esp ?? EspSuiteSelection.AesCbcHmacSha1();
+                _corruptHash2 = corruptQuickModeHash2;
                 _cookieI = initiatorCookie;
                 _privateKey = _dh.GeneratePrivateKey();
                 _keResponder = _dh.DerivePublicValue(_privateKey);
@@ -320,6 +338,7 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.Tests
                 byte[] afterHashBytes = EncodeChain(afterHash);
                 byte[] hash2 = IkeV1QuickMode.ComputeHash2(
                     _prf, _keys!.SkeyidA, _quickModeId, _quickModeNonceInitiator, afterHashBytes);
+                if (_corruptHash2) hash2[0] ^= 0xFF; // flip a byte → the client must reject this QM2
 
                 var inner = new List<IsakmpPayload> { new IsakmpRawPayload(IsakmpPayloadType.Hash, hash2) };
                 inner.AddRange(afterHash);

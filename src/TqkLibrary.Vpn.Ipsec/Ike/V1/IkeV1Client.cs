@@ -1,5 +1,6 @@
 using System.Net;
 using System.Security.Cryptography;
+using TqkLibrary.Vpn.Abstractions.Drivers;
 using TqkLibrary.Vpn.Crypto;
 using TqkLibrary.Vpn.Crypto.Abstractions.Interfaces;
 using TqkLibrary.Vpn.Ipsec.Esp;
@@ -174,7 +175,7 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.V1
         /// <summary>MM6: decrypt, then verify HASH_R against the responder's identity.</summary>
         public bool ProcessMainMode6(byte[] wire)
         {
-            List<IsakmpPayload> payloads = DecryptMessage(wire, out _);
+            List<IsakmpPayload> payloads = DecryptMessage(wire, out _, out _);
             IsakmpRawPayload? idR = payloads.OfType<IsakmpRawPayload>().FirstOrDefault(p => p.Type == IsakmpPayloadType.Identification);
             IsakmpRawPayload? hashR = payloads.OfType<IsakmpRawPayload>().FirstOrDefault(p => p.Type == IsakmpPayloadType.Hash);
             if (idR is null || hashR is null) return false;
@@ -210,12 +211,15 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.V1
         }
 
         /// <summary>
-        /// QM2: decrypt and capture the responder's ESP SPI, nonce, and selected transform (which sets
-        /// <see cref="NegotiatedEsp"/>). HASH(2) is not verified — broad gateway interop.
+        /// QM2: decrypt, authenticate the responder's HASH(2) (RFC 2409 §5.5 — throws
+        /// <see cref="VpnServerRejectedException"/> on mismatch), then capture its ESP SPI, nonce, and selected
+        /// transform (which sets <see cref="NegotiatedEsp"/>).
         /// </summary>
         public bool ProcessQuickMode2(byte[] wire)
         {
-            List<IsakmpPayload> payloads = DecryptMessage(wire, out _);
+            List<IsakmpPayload> payloads = DecryptMessage(wire, out _, out byte[] plaintext);
+            VerifyQuickModeHash2(plaintext, payloads, _quickModeId, _quickModeNonce);
+
             IsakmpSaPayload? sa = payloads.OfType<IsakmpSaPayload>().FirstOrDefault();
             IsakmpRawPayload? nr = payloads.OfType<IsakmpRawPayload>().FirstOrDefault(p => p.Type == IsakmpPayloadType.Nonce);
             if (sa is null || nr is null || sa.Proposals.Count == 0 || sa.Proposals[0].Transforms.Count == 0) return false;
@@ -297,10 +301,16 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.V1
             return EncodeEncrypted(_rekeyCipher, IsakmpExchangeType.QuickMode, _rekeyMessageId, inner);
         }
 
-        /// <summary>Rekey QM2: capture the responder's replacement ESP SPI, nonce, and selected transform.</summary>
+        /// <summary>
+        /// Rekey QM2: authenticate the responder's HASH(2) (RFC 2409 §5.5 — throws
+        /// <see cref="VpnServerRejectedException"/> on mismatch), then capture its replacement ESP SPI, nonce,
+        /// and selected transform.
+        /// </summary>
         public bool ProcessRekeyQuickMode2(byte[] wire)
         {
-            List<IsakmpPayload> payloads = DecryptWith(_rekeyCipher!, wire);
+            List<IsakmpPayload> payloads = DecryptWith(_rekeyCipher!, wire, out byte[] plaintext);
+            VerifyQuickModeHash2(plaintext, payloads, _rekeyMessageId, _rekeyNonceInitiator);
+
             IsakmpSaPayload? sa = payloads.OfType<IsakmpSaPayload>().FirstOrDefault();
             IsakmpRawPayload? nr = payloads.OfType<IsakmpRawPayload>().FirstOrDefault(p => p.Type == IsakmpPayloadType.Nonce);
             if (sa is null || nr is null || sa.Proposals.Count == 0 || sa.Proposals[0].Transforms.Count == 0) return false;
@@ -379,7 +389,7 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.V1
             if (peek.ExchangeType != IsakmpExchangeType.Informational)
                 return new IkeV1InformationalResult(IkeV1InformationalKind.Unknown, 0);
 
-            List<IsakmpPayload> payloads = DecryptWith(NewDerivedIvCipher(peek.MessageId), wire);
+            List<IsakmpPayload> payloads = DecryptWith(NewDerivedIvCipher(peek.MessageId), wire, out _);
 
             foreach (IsakmpRawPayload payload in payloads.OfType<IsakmpRawPayload>())
             {
@@ -413,15 +423,15 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.V1
             return EncodeEncrypted(NewDerivedIvCipher(messageId), IsakmpExchangeType.Informational, messageId, inner);
         }
 
-        List<IsakmpPayload> DecryptWith(IkeV1Cipher cipher, byte[] wire)
+        List<IsakmpPayload> DecryptWith(IkeV1Cipher cipher, byte[] wire, out byte[] plaintext)
         {
             IsakmpMessage.ReadHeader(wire, out IsakmpPayloadType first);
             byte[] ciphertext = new byte[wire.Length - IsakmpMessage.HeaderSize];
             Buffer.BlockCopy(wire, IsakmpMessage.HeaderSize, ciphertext, 0, ciphertext.Length);
-            byte[] plain = cipher.Decrypt(ciphertext);
+            plaintext = cipher.Decrypt(ciphertext);
 
             var payloads = new List<IsakmpPayload>();
-            IsakmpMessage.ParsePayloadChain(plain, first, payloads);
+            IsakmpMessage.ParsePayloadChain(plaintext, first, payloads);
             return payloads;
         }
 
@@ -483,7 +493,7 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.V1
             return _quickModeCipher;
         }
 
-        List<IsakmpPayload> DecryptMessage(byte[] wire, out IsakmpMessage header)
+        List<IsakmpPayload> DecryptMessage(byte[] wire, out IsakmpMessage header, out byte[] plaintext)
         {
             header = IsakmpMessage.ReadHeader(wire, out IsakmpPayloadType first);
             IkeV1Cipher cipher = header.ExchangeType == IsakmpExchangeType.QuickMode
@@ -492,11 +502,48 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.V1
 
             byte[] ciphertext = new byte[wire.Length - IsakmpMessage.HeaderSize];
             Buffer.BlockCopy(wire, IsakmpMessage.HeaderSize, ciphertext, 0, ciphertext.Length);
-            byte[] plain = cipher.Decrypt(ciphertext);
+            plaintext = cipher.Decrypt(ciphertext);
 
             var payloads = new List<IsakmpPayload>();
-            IsakmpMessage.ParsePayloadChain(plain, first, payloads);
+            IsakmpMessage.ParsePayloadChain(plaintext, first, payloads);
             return payloads;
+        }
+
+        // Verifies the responder's Quick Mode HASH(2) = prf(SKEYID_a, M-ID | Ni_b | <payloads after the HASH payload>)
+        // (RFC 2409 §5.5). The "after-hash" bytes are sliced straight from the decrypted wire (PayloadChainAfterFirst),
+        // never re-encoded from the parsed payloads, so a faithful gateway never trips on a codec round-trip difference —
+        // only a genuinely wrong HASH(2) (tampering, or a SKEYID_a from the wrong PSK) fails.
+        void VerifyQuickModeHash2(byte[] plaintext, List<IsakmpPayload> payloads, uint messageId, byte[] nonceInitiator)
+        {
+            IsakmpRawPayload? hash = payloads.OfType<IsakmpRawPayload>().FirstOrDefault(p => p.Type == IsakmpPayloadType.Hash);
+            byte[] afterHash = PayloadChainAfterFirst(plaintext, IsakmpPayloadType.Hash);
+            byte[] expected = IkeV1QuickMode.ComputeHash2(_prf, _keys!.SkeyidA, messageId, nonceInitiator, afterHash);
+            if (hash is null || !FixedTimeEquals(expected, hash.Body))
+                throw new VpnServerRejectedException("IKEv1 Quick Mode HASH(2) authentication failed (wrong PSK or tampered reply).");
+        }
+
+        // Returns the wire bytes of the payload chain that FOLLOW the first payload (the HASH payload), excluding the
+        // zero-padding the CBC cipher leaves on the decrypted plaintext. Mirrors ParsePayloadChain's length walk: the
+        // first payload's generic header carries its own length; everything from there to the end of the last declared
+        // payload is the "message after hash" that HASH(1)/HASH(2) authenticate.
+        static byte[] PayloadChainAfterFirst(byte[] plaintext, IsakmpPayloadType firstType)
+        {
+            int offset = 0;
+            int afterFirst = -1;
+            IsakmpPayloadType current = firstType;
+            while (current != IsakmpPayloadType.None && offset + 4 <= plaintext.Length)
+            {
+                IsakmpPayloadType next = (IsakmpPayloadType)plaintext[offset];
+                int length = (plaintext[offset + 2] << 8) | plaintext[offset + 3];
+                if (length < 4 || offset + length > plaintext.Length) break;
+                offset += length;
+                if (afterFirst < 0) afterFirst = offset; // end of the first (HASH) payload
+                current = next;
+            }
+            if (afterFirst < 0 || offset <= afterFirst) return Array.Empty<byte>();
+            byte[] slice = new byte[offset - afterFirst];
+            Buffer.BlockCopy(plaintext, afterFirst, slice, 0, slice.Length);
+            return slice;
         }
 
         static byte[] IdBody(byte idType, byte protocol, ushort port, byte[] address)

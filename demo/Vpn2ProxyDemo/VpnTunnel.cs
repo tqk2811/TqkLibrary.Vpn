@@ -61,12 +61,12 @@ namespace Vpn2ProxyDemo
             }
         }
 
-        /// <summary>Connect VPN Gate qua L2TP/IPsec (IKEv1 PSK "vpn", NAT-T) bằng host/user/pass; trả tunnel đã lên (đang sống).</summary>
-        public static async Task<VpnTunnel> ConnectL2tpAsync(string host, string user, string pass, CancellationToken ct)
+        /// <summary>Connect VPN Gate qua L2TP/IPsec (IKEv1 PSK, NAT-T) bằng host/user/pass + group PSK; trả tunnel đã lên (đang sống).</summary>
+        public static async Task<VpnTunnel> ConnectL2tpAsync(string host, string user, string pass, string preSharedKey, CancellationToken ct)
         {
             Console.WriteLine("=== [L2TP/IPsec] ===");
-            // VPN Gate dùng group PSK = "vpn" (giống mặc định của L2tpIpsecDriver).
-            var vpn = new L2tpIpsecConnection(host, Encoding.ASCII.GetBytes("vpn"));
+            // PSK do caller cấp (VpnTarget mặc định "vpn" của VPN Gate). Driver không còn nhét PSK mặc định (P0.4).
+            var vpn = new L2tpIpsecConnection(host, Encoding.ASCII.GetBytes(preSharedKey));
             try
             {
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);

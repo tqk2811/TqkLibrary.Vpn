@@ -34,7 +34,7 @@ Vpn2ProxyDemo/
 └── CommandModules/
     ├── Interfaces/ICommandModule.cs          hợp đồng: Command Command { get; }
     ├── Enums/VpnProtocol.cs                  enum giao thức: Sstp / L2tp (map từ scheme của --vpn)
-    ├── Models/VpnTarget.cs                   parse URI --vpn (scheme://user:pass@host[:port]) -> Protocol/Host/Port/User/Pass (System.Uri); TryParse + thông báo lỗi
+    ├── Models/VpnTarget.cs                   parse URI --vpn (scheme://user:pass@host[:port][?psk=...]) -> Protocol/Host/Port/User/Pass/PreSharedKey (System.Uri); TryParse + thông báo lỗi
     ├── CommandModuleBase.cs                  base abstract: option chung --vpn + parse target + header (Protocol) + connect VPN (giữ vòng đời) -> RunAsync (abstract); ConnectAsync dispatch theo VpnTarget.Protocol; ValidateOptions (virtual, fail-fast option riêng)
     ├── ProbeUdpDnsCommandModule.cs           subcommand "dns": +--dns-server/--resolve; RunAsync -> ProbeUdpDnsAsync (probe UDP + phân giải domain qua tunnel)
     ├── ProxyServerCommandModule.cs           subcommand "proxy-server" (NOT sealed): +--proxy-host/--proxy-port (ValidateOptions fail-fast); RunAsync dựng ILoggerFactory console + VpnProxySource + ProxyServer (chung factory) rồi OnProxyReadyAsync (virtual, mặc định giữ tới khi nhấn Enter)
@@ -43,7 +43,7 @@ Vpn2ProxyDemo/
 
 Phân tầng (base + subcommand theo **hành động**):
 
-- `CommandModuleBase` (abstract): phần dùng chung — chỉ option `--vpn` (`scheme://user:pass@host[:port]`, parse bằng `VpnTarget.TryParse`), in header (Protocol), **connect VPN** (giữ vòng đời tunnel), bắt lỗi; rồi gọi `RunAsync` (abstract) của subclass. `ConnectAsync` chỉ `switch` theo `VpnTarget.Protocol`.
+- `CommandModuleBase` (abstract): phần dùng chung — chỉ option `--vpn` (`scheme://user:pass@host[:port][?psk=...]`, parse bằng `VpnTarget.TryParse`), in header (Protocol), **connect VPN** (giữ vòng đời tunnel), bắt lỗi; rồi gọi `RunAsync` (abstract) của subclass. `ConnectAsync` chỉ `switch` theo `VpnTarget.Protocol`.
 - Subcommand = một subclass: `ProbeUdpDnsCommandModule` (`dns`) probe UDP-DNS; `ProxyServerCommandModule` (`proxy-server`) dựng proxy + giữ tới khi nhấn Enter, tách điểm-mở-rộng `OnProxyReadyAsync` (virtual); `HttpRequestProxyServerCommandModule` (`http-request`) **kế thừa** `proxy-server`, override `OnProxyReadyAsync` để GET `--url` qua proxy rồi thoát. Mỗi subclass tự khai option riêng + (tùy chọn) override `ValidateOptions` để fail-fast trước khi connect.
 - Phần connect riêng từng giao thức là **hàm static của `VpnTunnel`** (`ConnectSstpAsync` / `ConnectL2tpAsync`) — dựng driver tương ứng, trả **`VpnTunnel`** (bọc `TcpIpStack` + vòng đời, sống tới hết `await using`).
 - **Thêm action mới:** thêm một subclass `CommandModuleBase` (hoặc `ProxyServerCommandModule` nếu cần proxy) + đăng ký `Command` trong `Program`. **Thêm giao thức mới:** thêm hàm static `ConnectXxxAsync` trong `VpnTunnel` + giá trị `VpnProtocol` (scheme) + một nhánh `switch`.
@@ -75,7 +75,7 @@ CLI gồm 3 subcommand; target VPN gói trong `--vpn` (URI). Option:
 
 | Option | Mặc định | Ý nghĩa |
 | --- | --- | --- |
-| `--vpn` | `sstp://vpn:vpn@public-vpn-226.opengw.net` | target VPN dạng URI `scheme://user:pass@host[:port]`. `scheme` = `sstp` (MS-SSTP/TLS, default port 443) hoặc `l2tp` (L2TP/IPsec IKEv1 PSK "vpn", NAT-T 500/4500 — bỏ qua port). Thiếu `user:pass` ⇒ mặc định `vpn:vpn` |
+| `--vpn` | `sstp://vpn:vpn@public-vpn-226.opengw.net` | target VPN dạng URI `scheme://user:pass@host[:port][?psk=...]`. `scheme` = `sstp` (MS-SSTP/TLS, default port 443) hoặc `l2tp` (L2TP/IPsec IKEv1, NAT-T 500/4500 — bỏ qua port; PSK qua `?psk=`). Thiếu `user:pass` ⇒ mặc định `vpn:vpn`; L2TP thiếu `?psk=` ⇒ PSK `vpn` (group PSK VPN Gate) |
 
 **`dns`** thêm `--dns-server` (DNS IPv4 cho probe UDP; rỗng = DNS VPN cấp, fallback `8.8.8.8`) và `--resolve` (`google.com`; tên miền phân giải DNS-over-UDP qua tunnel).
 

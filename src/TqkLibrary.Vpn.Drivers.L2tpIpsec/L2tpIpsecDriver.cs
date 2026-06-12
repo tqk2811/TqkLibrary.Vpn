@@ -1,4 +1,3 @@
-using System.Text;
 using TqkLibrary.Vpn.Abstractions.Drivers.Enums;
 using TqkLibrary.Vpn.Abstractions.Drivers.Interfaces;
 using TqkLibrary.Vpn.Abstractions.Drivers.Models;
@@ -8,9 +7,6 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
     /// <summary>The L2TP/IPsec protocol driver (IKEv1 PSK over NAT-T, ESP transport mode, L2TP, PPP/MS-CHAPv2).</summary>
     public sealed class L2tpIpsecDriver : IVpnProtocolDriver
     {
-        /// <summary>The pre-shared key used when credentials do not carry one (VPN Gate's group PSK).</summary>
-        public const string DefaultPreSharedKey = "vpn";
-
         readonly L2tpIpsecReconnectOptions? _reconnectOptions;
         readonly L2tpIpsecTimeoutOptions? _timeoutOptions;
 
@@ -42,7 +38,12 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
         /// <inheritdoc/>
         public async Task<IVpnConnection> ConnectAsync(VpnEndpoint endpoint, VpnCredentials credentials, CancellationToken cancellationToken = default)
         {
-            byte[] psk = credentials.PreSharedKey ?? Encoding.ASCII.GetBytes(DefaultPreSharedKey);
+            byte[]? psk = credentials.PreSharedKey;
+            if (psk is null || psk.Length == 0)
+                throw new ArgumentException(
+                    "L2TP/IPsec requires a pre-shared key. Set VpnCredentials.PreSharedKey (VPN Gate's group PSK is \"vpn\").",
+                    nameof(credentials));
+
             var connection = new L2tpIpsecConnection(endpoint.Host, psk, reconnectOptions: _reconnectOptions, timeoutOptions: _timeoutOptions);
             try
             {

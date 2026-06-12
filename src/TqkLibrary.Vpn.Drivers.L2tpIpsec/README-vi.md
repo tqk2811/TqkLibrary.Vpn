@@ -6,7 +6,7 @@
 
 Project này là **một driver của tầng DRIVER** — điểm điều phối control plane cho giao thức L2TP/IPsec. Nó lấy các khối giao thức rời rạc (IKE, ESP, L2TP, PPP, NAT-T transport) và **lắp ráp chúng thành một đường hầm hoàn chỉnh**, rồi bọc lại sau interface trung lập `IVpnConnection` để tầng `TqkLibrary.Vpn` ở trên tiêu thụ mà không cần biết giao thức cụ thể.
 
-Driver L2TP/IPsec ([L2tpIpsecDriver.cs:9](L2tpIpsecDriver.cs#L9)) gồm: IKEv1 PSK (Main Mode + Quick Mode) qua NAT-T (UDP 500→4500), ESP transport mode làm data plane, L2TPv2 trên UDP/1701, và PPP/MS-CHAPv2 để nhận IP. Kèm **vòng đời đầy đủ**: keepalive (L2TP HELLO + IKE DPD), rekey ESP CHILD SA (make-before-break), teardown sạch (IKE Delete + L2TP CDN/StopCCN), và auto-reconnect (exponential backoff) sau một facade kênh ổn định.
+Driver L2TP/IPsec ([L2tpIpsecDriver.cs:8](L2tpIpsecDriver.cs#L8)) gồm: IKEv1 PSK (Main Mode + Quick Mode) qua NAT-T (UDP 500→4500), ESP transport mode làm data plane, L2TPv2 trên UDP/1701, và PPP/MS-CHAPv2 để nhận IP. Kèm **vòng đời đầy đủ**: keepalive (L2TP HELLO + IKE DPD), rekey ESP CHILD SA (make-before-break), teardown sạch (IKE Delete + L2TP CDN/StopCCN), và auto-reconnect (exponential backoff) sau một facade kênh ổn định.
 
 Vấn đề được giải quyết: tách phần "biết cách nói chuyện với gateway L2TP/IPsec" ra khỏi phần "biết cách dùng đường hầm" (sockets/IP stack ở trên), nhờ đảo ngược phụ thuộc qua `IVpnProtocolDriver`/`IVpnConnection` trong `Abstractions`.
 
@@ -47,7 +47,7 @@ TqkLibrary.Vpn.Drivers.L2tpIpsec/
 
 | Type | Vai trò | Vị trí |
 |------|---------|--------|
-| `L2tpIpsecDriver` | `IVpnProtocolDriver`: khai báo capabilities, `ConnectAsync` dựng `L2tpIpsecConnection` → trả `IVpnConnection`; wire `Reconnected`→`ApplyReconnect` | [L2tpIpsecDriver.cs:9](L2tpIpsecDriver.cs#L9) |
+| `L2tpIpsecDriver` | `IVpnProtocolDriver`: khai báo capabilities, `ConnectAsync` dựng `L2tpIpsecConnection` → trả `IVpnConnection`; wire `Reconnected`→`ApplyReconnect` | [L2tpIpsecDriver.cs:8](L2tpIpsecDriver.cs#L8) |
 | `L2tpIpsecConnection` | Bộ điều phối control plane: chạy handshake IKE/L2TP/PPP, keepalive, rekey, teardown, supervisor reconnect | [L2tpIpsecConnection.cs:25](L2tpIpsecConnection.cs#L25) |
 | `IpsecL2tpTransport` | `IL2tpTransport`: ESP data plane — bọc L2TP-trong-UDP/1701-trong-ESP; giữ SA cũ tạm thời khi rekey | [IpsecL2tpTransport.cs:11](IpsecL2tpTransport.cs#L11) |
 | `UdpEncapsulation` | Build/parse UDP header (1701, checksum 0) mà ESP transport mode bảo vệ | [UdpEncapsulation.cs:8](UdpEncapsulation.cs#L8) |
@@ -83,13 +83,15 @@ TqkLibrary.Vpn.Drivers.L2tpIpsec/
 var driver = new L2tpIpsecDriver(); // hoặc new L2tpIpsecDriver(new L2tpIpsecReconnectOptions { Enabled = false })
 IVpnConnection conn = await driver.ConnectAsync(
     new VpnEndpoint("vpn.example.com", 0),
-    new VpnCredentials { Username = "user", Password = "pass" /*, PreSharedKey = ... */ });
+    new VpnCredentials { Username = "user", Password = "pass", PreSharedKey = Encoding.ASCII.GetBytes("vpn") }); // PSK bắt buộc (P0.4)
 
 IVpnSession session = conn.Sessions[0];
 IPacketChannel channel = session.PacketChannel;   // kênh L3 ổn định, sống qua reconnect
 IPAddress myIp = session.Config.AssignedAddress;
 await conn.DisposeAsync();                          // teardown sạch: IKE Delete + L2TP CDN/StopCCN
 ```
+
+**PSK bắt buộc (P0.4):** driver **không** nhét PSK mặc định — `VpnCredentials.PreSharedKey` null/rỗng ⇒ ném `ArgumentException` ngay trước khi mở mạng ([L2tpIpsecDriver.cs:41-45](L2tpIpsecDriver.cs#L41-L45)). Default credential đặc thù VPN Gate (group PSK `"vpn"`) **không** thuộc lib chung; caller (vd demo) tự cấp.
 
 Class hạ tầng `L2tpIpsecConnection` cũng public nếu cần điều khiển chi tiết (sự kiện `StateChanged`/`Reconnected`, `DisconnectAsync`...). Lỗi kết nối ném typed exception (`VpnAuthenticationException` / `VpnServerRejectedException` / `VpnNetworkTimeoutException` — đều kế thừa `VpnConnectionException`).
 

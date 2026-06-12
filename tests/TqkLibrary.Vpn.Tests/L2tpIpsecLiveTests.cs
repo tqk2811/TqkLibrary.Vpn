@@ -27,6 +27,31 @@ namespace TqkLibrary.Vpn.Tests
         }
 
         [Fact]
+        public async Task ConnectAsync_WithoutPreSharedKey_ThrowsArgumentException()
+        {
+            VpnClient client = new VpnClientBuilder().UseL2tpIpsec().Build();
+
+            // No PreSharedKey ⇒ driver must reject before any network I/O (P0.4: no silent "vpn" default).
+            ArgumentException ex = await Assert.ThrowsAsync<ArgumentException>(() => client.ConnectAsync(
+                "l2tp-ipsec",
+                new VpnEndpoint("public-vpn-227.opengw.net", 500),
+                new VpnCredentials { Username = "vpn", Password = "vpn" }));
+
+            Assert.Equal("credentials", ex.ParamName);
+        }
+
+        [Fact]
+        public async Task ConnectAsync_EmptyPreSharedKey_ThrowsArgumentException()
+        {
+            VpnClient client = new VpnClientBuilder().UseL2tpIpsec().Build();
+
+            await Assert.ThrowsAsync<ArgumentException>(() => client.ConnectAsync(
+                "l2tp-ipsec",
+                new VpnEndpoint("public-vpn-227.opengw.net", 500),
+                new VpnCredentials { Username = "vpn", Password = "vpn", PreSharedKey = Array.Empty<byte>() }));
+        }
+
+        [Fact]
         [Trait("Category", "Integration")]
         public async Task ConnectViaL2tpIpsec_ThenHttpGet_ThroughTunnel()
         {

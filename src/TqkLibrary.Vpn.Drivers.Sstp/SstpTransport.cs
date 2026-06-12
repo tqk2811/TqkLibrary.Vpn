@@ -1,48 +1,46 @@
-using System.Net.Security;
-using System.Net.Sockets;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using TqkLibrary.Vpn.Drivers.Sstp.Enums;
 using TqkLibrary.Vpn.Drivers.Sstp.Models;
+using TqkLibrary.Vpn.Drivers.Sstp.Transport;
 
 namespace TqkLibrary.Vpn.Drivers.Sstp
 {
     /// <summary>
-    /// The SSTP transport: a TLS connection to the server, the SSTP_DUPLEX_POST HTTP handshake, and framing
-    /// of SSTP control/data packets over the TLS stream ([MS-SSTP] §2.2.1, §3).
+    /// The SSTP transport: the SSTP_DUPLEX_POST HTTP handshake and framing of SSTP control/data packets over a TLS
+    /// byte stream ([MS-SSTP] §2.2.1, §3). The TLS connection itself is an injected <see cref="ITlsByteStream"/>
+    /// (default <see cref="TlsByteStream"/>), so the framing logic can be exercised offline over a fake stream
+    /// (roadmap P1.6) and the TLS layer can later be shared (roadmap F.1).
     /// </summary>
     public sealed class SstpTransport : IDisposable
     {
+        readonly ITlsByteStream _stream;
         readonly string _host;
-        readonly int _port;
         readonly SemaphoreSlim _writeLock = new(1, 1);
-        TcpClient? _tcp;
-        SslStream? _ssl;
 
-        /// <summary>Creates a transport for the given server.</summary>
-        public SstpTransport(string host, int port = 443)
+        /// <summary>
+        /// Creates a transport over an explicit byte stream (the test/composition seam). <paramref name="host"/> is the
+        /// value sent in the HTTP <c>Host:</c> header of the SSTP_DUPLEX_POST handshake.
+        /// </summary>
+        public SstpTransport(ITlsByteStream stream, string host = "")
         {
-            _host = host;
-            _port = port;
+            _stream = stream ?? throw new ArgumentNullException(nameof(stream));
+            _host = host ?? string.Empty;
         }
 
-        /// <summary>The server's TLS certificate (needed for the SSTP crypto binding).</summary>
-        public X509Certificate2? ServerCertificate { get; private set; }
+        /// <summary>Creates a transport over a real TLS connection to the given server.</summary>
+        public SstpTransport(string host, int port = 443)
+            : this(new TlsByteStream(host, port), host)
+        {
+        }
 
-        /// <summary>Connects TCP+TLS and performs the SSTP_DUPLEX_POST handshake.</summary>
+        /// <summary>The server's TLS certificate (needed for the SSTP crypto binding); valid after <see cref="ConnectAsync"/>.</summary>
+        public X509Certificate2? ServerCertificate => _stream.RemoteCertificate;
+
+        /// <summary>Connects the byte stream and performs the SSTP_DUPLEX_POST handshake.</summary>
         public async Task ConnectAsync(CancellationToken cancellationToken = default)
         {
-            _tcp = new TcpClient();
-            await _tcp.ConnectAsync(_host, _port).ConfigureAwait(false);
-
-            // The TLS cert is authenticated by the SSTP crypto binding, not PKI, so accept it and capture it.
-            _ssl = new SslStream(_tcp.GetStream(), leaveInnerStreamOpen: false, (_, certificate, _, _) =>
-            {
-                if (certificate != null) ServerCertificate = new X509Certificate2(certificate);
-                return true;
-            });
-            await _ssl.AuthenticateAsClientAsync(_host).ConfigureAwait(false);
-
+            await _stream.ConnectAsync(cancellationToken).ConfigureAwait(false);
             await PerformHttpHandshakeAsync(cancellationToken).ConfigureAwait(false);
         }
 
@@ -55,7 +53,7 @@ namespace TqkLibrary.Vpn.Drivers.Sstp
                 "Content-Length: 18446744073709551615\r\n" +
                 "\r\n";
             byte[] requestBytes = Encoding.ASCII.GetBytes(request);
-            await _ssl!.WriteAsync(requestBytes, 0, requestBytes.Length, cancellationToken).ConfigureAwait(false);
+            await _stream.WriteAsync(requestBytes, cancellationToken).ConfigureAwait(false);
 
             string statusLine = await ReadHttpHeadersAsync(cancellationToken).ConfigureAwait(false);
             if (statusLine.IndexOf(" 200", StringComparison.Ordinal) < 0)
@@ -68,7 +66,7 @@ namespace TqkLibrary.Vpn.Drivers.Sstp
             byte[] one = new byte[1];
             while (true)
             {
-                int read = await _ssl!.ReadAsync(one, 0, 1, cancellationToken).ConfigureAwait(false);
+                int read = await _stream.ReadAsync(one, cancellationToken).ConfigureAwait(false);
                 if (read == 0) throw new IOException("Connection closed during SSTP HTTP handshake.");
                 buffer.Add(one[0]);
                 int n = buffer.Count;
@@ -87,7 +85,7 @@ namespace TqkLibrary.Vpn.Drivers.Sstp
             return SendPacketAsync(control: true, body, cancellationToken);
         }
 
-        /// <summary>Sends an SSTP data packet carrying <paramref name="payload"/> (e.g. HDLC-framed PPP bytes).</summary>
+        /// <summary>Sends an SSTP data packet carrying <paramref name="payload"/> (e.g. RAW PPP bytes).</summary>
         public Task SendDataAsync(ReadOnlyMemory<byte> payload, CancellationToken cancellationToken = default)
             => SendPacketAsync(control: false, payload, cancellationToken);
 
@@ -104,7 +102,7 @@ namespace TqkLibrary.Vpn.Drivers.Sstp
             await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                await _ssl!.WriteAsync(packet, 0, packet.Length, cancellationToken).ConfigureAwait(false);
+                await _stream.WriteAsync(packet, cancellationToken).ConfigureAwait(false);
             }
             finally
             {
@@ -129,7 +127,7 @@ namespace TqkLibrary.Vpn.Drivers.Sstp
             int offset = 0;
             while (offset < count)
             {
-                int read = await _ssl!.ReadAsync(buffer, offset, count - offset, cancellationToken).ConfigureAwait(false);
+                int read = await _stream.ReadAsync(buffer.AsMemory(offset, count - offset), cancellationToken).ConfigureAwait(false);
                 if (read == 0) throw new IOException("Connection closed while reading an SSTP packet.");
                 offset += read;
             }
@@ -139,9 +137,7 @@ namespace TqkLibrary.Vpn.Drivers.Sstp
         /// <inheritdoc/>
         public void Dispose()
         {
-            _ssl?.Dispose();
-            _tcp?.Dispose();
-            ServerCertificate?.Dispose();
+            (_stream as IDisposable)?.Dispose();
             _writeLock.Dispose();
         }
     }

@@ -17,7 +17,7 @@ Driver MS-SSTP ([SstpDriver.cs:8](SstpDriver.cs#L8)) gồm: TLS trên 443 (chấ
 - **Phụ thuộc (ProjectReference) — CHỈ 2 project:**
   - [TqkLibrary.Vpn.Abstractions](../TqkLibrary.Vpn.Abstractions) — interface/model/enum (`IVpnProtocolDriver`, `IVpnConnection`, `IPacketChannel`, `SwappablePacketChannel`, `TunnelConfig`, typed exception...).
   - [TqkLibrary.Vpn.Ppp](../TqkLibrary.Vpn.Ppp) — `PppEngine`, `MsChapV2Authenticator` (+ `DeriveHlak`), `IPppFrameChannel`.
-  - **Không** ref `Ipsec` / `L2tp` — SSTP tự cuộn TLS bằng BCL (`TcpClient` + `SslStream`, `HMACSHA256`, `SHA256`) trong `SstpTransport`.
+  - **Không** ref `Ipsec` / `L2tp` — SSTP tự cuộn TLS bằng BCL (`TcpClient` + `SslStream`, `HMACSHA256`, `SHA256`); TLS-over-TCP tách vào [`TlsByteStream`](Transport/TlsByteStream.cs#L20) sau seam [`ITlsByteStream`](Transport/ITlsByteStream.cs#L14) (impl đầu tiên của `IByteStreamTransport` — P0.1), `SstpTransport` chỉ còn handshake + framing.
 - **Được dùng bởi:** [TqkLibrary.Vpn](../TqkLibrary.Vpn) (entry point — `VpnClientBuilder.UseSstp()` / `UseSstp(SstpReconnectOptions)` đăng ký driver này).
 
 ## Cấu trúc thư mục
@@ -28,7 +28,7 @@ Driver MS-SSTP ([SstpDriver.cs:8](SstpDriver.cs#L8)) gồm: TLS trên 443 (chấ
 TqkLibrary.Vpn.Drivers.Sstp/
 ├── SstpDriver.cs                IVpnProtocolDriver: capabilities + ConnectAsync → IVpnConnection
 ├── SstpConnection.cs            Bộ điều phối: TLS + control + PPP + crypto binding + keepalive + teardown + reconnect
-├── SstpTransport.cs             TLS + SSTP_DUPLEX_POST handshake + framing gói SSTP 4-byte header
+├── SstpTransport.cs             SSTP_DUPLEX_POST handshake + framing gói SSTP 4-byte header (trên ITlsByteStream)
 ├── SstpControlCodec.cs          Encode/decode body control message ([MS-SSTP] §2.2.2–2.2.3)
 ├── SstpCryptoBinding.cs         CMK/Compound-MAC (HMAC-SHA256) cho Call Connected
 ├── SstpPppChannel.cs            Cầu nối SSTP data ↔ PPP (RAW PPP, không HDLC) + dispatch control
@@ -36,6 +36,7 @@ TqkLibrary.Vpn.Drivers.Sstp/
 ├── SstpReconnectOptions.cs      Chính sách auto-reconnect (backoff/jitter/max attempts)
 ├── SstpVpnConnection.cs         Adapter sang IVpnConnection (một session)
 ├── SstpVpnSession.cs            IVpnSession: facade ổn định + áp dụng reconnect vào TunnelConfig
+├── Transport/                   Seam byte-stream TLS: ITlsByteStream + TlsByteStream (TcpClient+SslStream)
 ├── Enums/                       SstpMessageType, SstpAttributeId, SstpConnectionState
 └── Models/                      SstpAttribute, SstpControlMessage, SstpReconnectInfo
 ```
@@ -45,8 +46,10 @@ TqkLibrary.Vpn.Drivers.Sstp/
 | Type | Vai trò | Vị trí |
 |------|---------|--------|
 | `SstpDriver` | `IVpnProtocolDriver`: capabilities + `ConnectAsync` → `IVpnConnection`; ctor nhận `SstpReconnectOptions`; wire `Reconnected`→`ApplyReconnect` | [SstpDriver.cs:8](SstpDriver.cs#L8) |
-| `SstpConnection` | Bộ điều phối: TLS + control + PPP + crypto binding + active Echo keepalive + teardown + supervisor reconnect | [SstpConnection.cs:22](SstpConnection.cs#L22) |
-| `SstpTransport` | TLS + `SSTP_DUPLEX_POST` handshake + framing gói SSTP 4-byte header | [SstpTransport.cs:14](SstpTransport.cs#L14) |
+| `SstpConnection` | Bộ điều phối: TLS + control + PPP + crypto binding + active Echo keepalive + teardown + supervisor reconnect; nhận `Func<ITlsByteStream>` factory (seam test offline) | [SstpConnection.cs:23](SstpConnection.cs#L23) |
+| `SstpTransport` | `SSTP_DUPLEX_POST` handshake + framing gói SSTP 4-byte header trên `ITlsByteStream` (ctor seam + ctor back-compat `(host, port)`) | [SstpTransport.cs:15](SstpTransport.cs#L15) |
+| `ITlsByteStream` | Seam: `IByteStreamTransport` + `RemoteCertificate` (cert cho crypto binding) — cho phép fake stream test offline | [Transport/ITlsByteStream.cs:14](Transport/ITlsByteStream.cs#L14) |
+| `TlsByteStream` | Hiện thực TLS-over-TCP (`TcpClient`+`SslStream`), bắt cert, honor `CancellationToken` cả 2 TFM — impl đầu tiên của `IByteStreamTransport` | [Transport/TlsByteStream.cs:20](Transport/TlsByteStream.cs#L20) |
 | `SstpControlCodec` | Build/parse body control message (type + attributes) | [SstpControlCodec.cs:7](SstpControlCodec.cs#L7) |
 | `SstpCryptoBinding` | Dựng attribute Crypto Binding (CMK + Compound-MAC) cho Call Connected | [SstpCryptoBinding.cs:13](SstpCryptoBinding.cs#L13) |
 | `SstpPppChannel` | `IPppFrameChannel`: RAW PPP frame trong SSTP data packet + dispatch control | [SstpPppChannel.cs:11](SstpPppChannel.cs#L11) |
@@ -60,20 +63,20 @@ TqkLibrary.Vpn.Drivers.Sstp/
 
 | Chuẩn | Class/Namespace áp dụng | Vị trí (link code) | Ghi chú |
 |-------|-------------------------|--------------------|---------|
-| `[MS-SSTP]` §2.2.1, §3 (transport + framing) | `SstpTransport` | [SstpTransport.cs:12](SstpTransport.cs#L12) | Comment dẫn rõ tiết diện |
+| `[MS-SSTP]` §2.2.1, §3 (transport + framing) | `SstpTransport` | [SstpTransport.cs:11](SstpTransport.cs#L11) | Comment dẫn rõ tiết diện; TLS bên dưới là `ITlsByteStream` |
 | `[MS-SSTP]` §2.2.2–2.2.3 (control message + attributes) | `SstpControlCodec` | [SstpControlCodec.cs:6](SstpControlCodec.cs#L6) | Comment dẫn rõ |
 | `[MS-SSTP]` §2.2.2 (message types) | `SstpMessageType` | [Enums/SstpMessageType.cs:3](Enums/SstpMessageType.cs#L3) | Gồm Echo-Request/Response, Call-Disconnect/Abort... |
 | `[MS-SSTP]` §2.2.3 (attribute ids) | `SstpAttributeId` | [Enums/SstpAttributeId.cs:3](Enums/SstpAttributeId.cs#L3) | Comment dẫn rõ |
 | `[MS-SSTP]` §2.2.7, §3.2.5.2 (Crypto Binding) | `SstpCryptoBinding` | [SstpCryptoBinding.cs:9](SstpCryptoBinding.cs#L9) | CMK = HMAC-SHA256(HLAK, seed) |
 | `[MS-SSTP]` (hằng số chung) | `SstpConstants` | [SstpConstants.cs:3](SstpConstants.cs#L3) | Version 0x10, DuplexUri |
 | `[MS-SSTP]` (RAW PPP per packet, không HDLC) | `SstpPppChannel` | [SstpPppChannel.cs:6](SstpPppChannel.cs#L6) | Comment dẫn rõ |
-| `[MS-SSTP]` (Echo keepalive + Call-Disconnect teardown) | `SstpConnection` (active Echo + clean teardown + reconnect) | [SstpConnection.cs:264](SstpConnection.cs#L264) | Echo-Request 30s, chết sau 3 lần thiếu Echo-Response; teardown gửi Call-Disconnect |
+| `[MS-SSTP]` (Echo keepalive + Call-Disconnect teardown) | `SstpConnection` (active Echo + clean teardown + reconnect) | [SstpConnection.cs:272](SstpConnection.cs#L272) | Echo-Request 30s, chết sau 3 lần thiếu Echo-Response; teardown gửi Call-Disconnect |
 | FIPS PUB 198-1 / RFC 6234 (HMAC-SHA-256) | `SstpCryptoBinding` (`HMACSHA256` BCL) | [SstpCryptoBinding.cs:44](SstpCryptoBinding.cs#L44) | (suy luận) — dùng `System.Security.Cryptography.HMACSHA256` |
-| FIPS PUB 180-4 (SHA-256, hash cert TLS) | `SstpConnection` (`SHA256.Create()`) | [SstpConnection.cs:170](SstpConnection.cs#L170) | (suy luận) |
-| RFC 8446 / 5246 (TLS, qua `SslStream`) | `SstpTransport` | [SstpTransport.cs:44](SstpTransport.cs#L44) | (suy luận) — BCL `SslStream.AuthenticateAsClientAsync` |
-| RFC 2759 (MS-CHAPv2) | `MsChapV2Authenticator` (dùng từ `Ppp`) | [SstpConnection.cs:158](SstpConnection.cs#L158) | (suy luận) — hiện thực nằm ở project `Ppp` |
-| RFC 3079 (MPPE/HLAK key derivation) + `[MS-SSTP]` crypto binding | `MsChapV2Authenticator.DeriveHlak` (từ `Ppp`) | [SstpConnection.cs:168](SstpConnection.cs#L168) | (suy luận) — derive ở `Ppp`, dùng tại đây |
-| RFC 1661 / 1332 (PPP LCP + IPCP) | `PppEngine` (từ `Ppp`) | [SstpConnection.cs:159](SstpConnection.cs#L159) | (suy luận) — hiện thực ở `Ppp` |
+| FIPS PUB 180-4 (SHA-256, hash cert TLS) | `SstpConnection` (`SHA256.Create()`) | [SstpConnection.cs:178](SstpConnection.cs#L178) | (suy luận) |
+| RFC 8446 / 5246 (TLS, qua `SslStream`) | `TlsByteStream` (seam `ITlsByteStream`) | [Transport/TlsByteStream.cs:62](Transport/TlsByteStream.cs#L62) | (suy luận) — BCL `SslStream.AuthenticateAsClientAsync`; net8.0 dùng overload có `CancellationToken` |
+| RFC 2759 (MS-CHAPv2) | `MsChapV2Authenticator` (dùng từ `Ppp`) | [SstpConnection.cs:166](SstpConnection.cs#L166) | (suy luận) — hiện thực nằm ở project `Ppp` |
+| RFC 3079 (MPPE/HLAK key derivation) + `[MS-SSTP]` crypto binding | `MsChapV2Authenticator.DeriveHlak` (từ `Ppp`) | [SstpConnection.cs:176](SstpConnection.cs#L176) | (suy luận) — derive ở `Ppp`, dùng tại đây |
+| RFC 1661 / 1332 (PPP LCP + IPCP) | `PppEngine` (từ `Ppp`) | [SstpConnection.cs:167](SstpConnection.cs#L167) | (suy luận) — hiện thực ở `Ppp` |
 
 > Lưu ý: chuẩn được **hiện thực trực tiếp** trong project này là toàn bộ `[MS-SSTP]` (TLS handshake, control codec, crypto binding, framing, Echo keepalive, Call-Disconnect teardown); MS-CHAPv2/PPP/HLAK derive là **gọi** sang project `Ppp`.
 
@@ -100,27 +103,27 @@ Class hạ tầng `SstpConnection` cũng public nếu cần điều khiển chi 
 
 ### Handshake (trong `SstpConnection.EstablishAsync` — clean-slate, dùng chung cho connect đầu và mọi reconnect)
 
-1. `SstpTransport.ConnectAsync`: TCP+TLS, nhận cert, `SSTP_DUPLEX_POST` HTTP handshake — [SstpTransport.cs:33-47](SstpTransport.cs#L33-L47); gọi qua [SstpConnection.cs:109](SstpConnection.cs#L109). Lỗi transport được tái phân loại thành typed exception (non-200 ⇒ reject; socket/TLS/IO ⇒ timeout; caller-cancel giữ nguyên) — [SstpConnection.cs:111-134](SstpConnection.cs#L111-L134).
-2. Gửi `CallConnectRequest` (Encapsulated Protocol = PPP) → nhận `CallConnectAck`, lấy 32-byte nonce trong Crypto Binding Req; Nak / sai loại / crypto-binding thiếu-hoặc-ngắn ⇒ `VpnServerRejectedException` — [SstpConnection.cs:136-152](SstpConnection.cs#L136-L152).
-3. `PppEngine` chạy trên `SstpPppChannel`; khi `AuthSucceeded`: lấy HLAK + SHA-256(cert) → dựng Crypto Binding → gửi `CallConnected` (auth fail ⇒ `VpnAuthenticationException`) — [SstpConnection.cs:158-178](SstpConnection.cs#L158-L178).
-4. `LinkUp` (IPCP đã cấp IP) ⇒ cắm kênh PPP vào facade `SwappablePacketChannel` và bật keepalive — [SstpConnection.cs:192-197](SstpConnection.cs#L192-L197).
+1. `SstpTransport.ConnectAsync` (transport do `_transportFactory` cấp **mỗi attempt** — [SstpConnection.cs:69](SstpConnection.cs#L69), dựng tại [SstpConnection.cs:111](SstpConnection.cs#L111)): [`TlsByteStream.ConnectAsync`](Transport/TlsByteStream.cs#L38) làm TCP+TLS + bắt cert, rồi `SSTP_DUPLEX_POST` HTTP handshake — [SstpTransport.cs:40-79](SstpTransport.cs#L40-L79); gọi qua [SstpConnection.cs:117](SstpConnection.cs#L117). Lỗi transport tái phân loại thành typed exception (non-200 ⇒ reject; socket/TLS/IO ⇒ timeout; caller-cancel giữ nguyên) — [SstpConnection.cs:115-142](SstpConnection.cs#L115-L142).
+2. Gửi `CallConnectRequest` (Encapsulated Protocol = PPP) → nhận `CallConnectAck`, lấy 32-byte nonce trong Crypto Binding Req; Nak / sai loại / crypto-binding thiếu-hoặc-ngắn ⇒ `VpnServerRejectedException` — [SstpConnection.cs:144-160](SstpConnection.cs#L144-L160).
+3. `PppEngine` chạy trên `SstpPppChannel`; khi `AuthSucceeded`: lấy HLAK + SHA-256(cert) → dựng Crypto Binding → gửi `CallConnected` (auth fail ⇒ `VpnAuthenticationException`) — [SstpConnection.cs:166-186](SstpConnection.cs#L166-L186).
+4. `LinkUp` (IPCP đã cấp IP) ⇒ cắm kênh PPP vào facade `SwappablePacketChannel` và bật keepalive — [SstpConnection.cs:200-205](SstpConnection.cs#L200-L205).
 
 ### Keepalive · teardown · reconnect (mirror L2TP/IPsec)
 
-- **Active keepalive:** gửi **SSTP Echo-Request mỗi 30s**, coi peer chết sau **3 lần liên tiếp** thiếu Echo-Response (reset khi có bất kỳ control inbound); vẫn trả lời Echo-Request của server — [SstpConnection.cs:264-299](SstpConnection.cs#L264-L299) · [OnControlReceived @ :233](SstpConnection.cs#L233).
-- **Phát hiện peer-dead (3 nguồn):** vòng đọc SSTP kết thúc (**chính**, lọc qua [`OnReadLoopEnded` @ :255](SstpConnection.cs#L255) — double-guard `_attemptId` + cancel vòng đọc chống vòng đọc cũ báo rớt giả), thiếu Echo-Response, và inbound **Call-Disconnect / Call-Abort** → tất cả gọi [`OnLinkLost` @ :304](SstpConnection.cs#L304).
-- **Auto-reconnect:** `OnLinkLost` → [`ReconnectLoopAsync` @ :331](SstpConnection.cs#L331) exponential backoff + jitter (bật mặc định, cấu hình qua `SstpReconnectOptions`); thành công thì raise `Reconnected` (cập nhật `TunnelConfig` qua `SstpVpnSession.ApplyReconnect`). Tunnel mới chui sau facade ⇒ flow same-address sống sót không re-bind.
-- **Teardown:** [`DisconnectAsync` @ :400](SstpConnection.cs#L400) hủy reconnect, gửi **SSTP Call-Disconnect** (best-effort, timeout 2s), rồi đóng transport.
+- **Active keepalive:** gửi **SSTP Echo-Request mỗi 30s**, coi peer chết sau **3 lần liên tiếp** thiếu Echo-Response (reset khi có bất kỳ control inbound); vẫn trả lời Echo-Request của server — [SstpConnection.cs:272-307](SstpConnection.cs#L272-L307) · [OnControlReceived @ :241](SstpConnection.cs#L241).
+- **Phát hiện peer-dead (3 nguồn):** vòng đọc SSTP kết thúc (**chính**, lọc qua [`OnReadLoopEnded` @ :263](SstpConnection.cs#L263) — double-guard `_attemptId` + cancel vòng đọc chống vòng đọc cũ báo rớt giả), thiếu Echo-Response, và inbound **Call-Disconnect / Call-Abort** → tất cả gọi [`OnLinkLost` @ :312](SstpConnection.cs#L312).
+- **Auto-reconnect:** `OnLinkLost` → [`ReconnectLoopAsync` @ :339](SstpConnection.cs#L339) exponential backoff + jitter (bật mặc định, cấu hình qua `SstpReconnectOptions`); thành công thì raise `Reconnected` (cập nhật `TunnelConfig` qua `SstpVpnSession.ApplyReconnect`). Tunnel mới chui sau facade ⇒ flow same-address sống sót không re-bind.
+- **Teardown:** [`DisconnectAsync` @ :408](SstpConnection.cs#L408) hủy reconnect, gửi **SSTP Call-Disconnect** (best-effort, timeout 2s), rồi đóng transport.
 - **Facade ổn định:** `SwappablePacketChannel` ([từ Abstractions](../TqkLibrary.Vpn.Abstractions)) cho phép tráo kênh PPP bên dưới khi reconnect mà socket trong tunnel ở tầng trên không bị đứt (nếu địa chỉ giữ nguyên).
 
 ## Trạng thái & ghi chú
 
 - **Đã hiện thực đầy đủ:** handshake + crypto binding + **active keepalive + teardown sạch + auto-reconnect** (mirror mô hình L2TP/IPsec đã verify live). SSTP **không** rekey SA (phiên TLS sống dài), nên không có rekey timer như L2TP/IPsec.
-- **netstandard2.0 vs net8.0:** code tránh `record`/`init`; dùng API BCL chung (`SslStream`, `HMACSHA256`, `SHA256`, `Timer`) khả dụng trên cả hai target.
+- **netstandard2.0 vs net8.0:** `record`/`init` khả dụng cả 2 TFM nhờ polyfill `TqkLibrary.CompilerServices` (`IsExternalInit`); dùng API BCL chung (`SslStream`, `HMACSHA256`, `SHA256`, `Timer`) khả dụng trên cả hai target.
+- **Seam byte-stream (P0.1):** TLS-over-TCP tách vào [`TlsByteStream`](Transport/TlsByteStream.cs#L20) sau [`ITlsByteStream`](Transport/ITlsByteStream.cs#L14) (impl đầu tiên của `IByteStreamTransport`), inject qua `Func<ITlsByteStream>` ở `SstpConnection`; framing chạy offline qua fake stream trong [SstpTransportSeamTests](../../tests/TqkLibrary.Vpn.Sstp.Tests/SstpTransportSeamTests.cs). `ConnectAsync` nay **honor `CancellationToken`** cả 2 TFM (overload native net8.0; cancel-by-dispose netstandard2.0).
 - **Hạn chế đã biết:**
-  - SSTP chấp nhận mọi cert TLS (xác thực bằng crypto binding, không qua PKI) — [SstpTransport.cs:38-43](SstpTransport.cs#L38-L43).
-  - `SstpTransport.ConnectAsync` chưa honor `CancellationToken` trong lúc TCP connect / TLS auth — caller hủy giữa chừng hiện ra dưới dạng `VpnConnectionException` bọc thay vì `OperationCanceledException` (nhỏ, pre-existing — xem roadmap).
-  - Supervisor/keepalive/reconnect của SSTP hiện chỉ phủ qua **live integration test** + mirror mô hình L2TP đã kiểm chứng; test offline cần một transport seam (`ISstpTransport` factory) — xem roadmap.
+  - SSTP chấp nhận mọi cert TLS (xác thực bằng crypto binding, không qua PKI) — [Transport/TlsByteStream.cs:54-59](Transport/TlsByteStream.cs#L54-L59). Callback xác thực cert tùy chọn là roadmap P0.6.
+  - Supervisor/keepalive/reconnect của SSTP hiện mới phủ ở mức transport (seam trên) + **live integration test**; test offline đầy đủ supervisor (chèn fake stream + cert giả) là roadmap P1.6.
   - Mỗi connection chỉ một PPP session; `OpenSessionAsync` ném `NotSupportedException` — [SstpVpnConnection.cs:22-23](SstpVpnConnection.cs#L22-L23).
 
 > Tài liệu as-built tổng thể: [.docs/10-codebase-architecture-and-flow.md](../../.docs/10-codebase-architecture-and-flow.md) §7/§7.1 · roadmap: [.docs/11-todo-roadmap.md](../../.docs/11-todo-roadmap.md).

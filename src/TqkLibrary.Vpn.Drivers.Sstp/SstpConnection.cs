@@ -8,6 +8,7 @@ using TqkLibrary.Vpn.Abstractions.Channels.Interfaces;
 using TqkLibrary.Vpn.Abstractions.Drivers;
 using TqkLibrary.Vpn.Drivers.Sstp.Enums;
 using TqkLibrary.Vpn.Drivers.Sstp.Models;
+using TqkLibrary.Vpn.Drivers.Sstp.Transport;
 using TqkLibrary.Vpn.Ppp;
 using TqkLibrary.Vpn.Ppp.Auth;
 
@@ -28,6 +29,7 @@ namespace TqkLibrary.Vpn.Drivers.Sstp
         readonly int _port;
         readonly uint _magic;
         readonly SstpReconnectOptions _opts;
+        readonly Func<ITlsByteStream> _transportFactory;
         readonly SwappablePacketChannel _facade = new();
         readonly CancellationTokenSource _lifetimeCts = new();
         readonly Random _random = new();
@@ -52,13 +54,19 @@ namespace TqkLibrary.Vpn.Drivers.Sstp
         Task? _supervisor;
         SstpConnectionState _state = SstpConnectionState.Disconnected;
 
-        /// <summary>Creates a connection to the given SSTP server.</summary>
-        public SstpConnection(string host, int port = 443, uint magic = 0x1A2B3C4D, SstpReconnectOptions? reconnectOptions = null)
+        /// <summary>
+        /// Creates a connection to the given SSTP server. <paramref name="transportFactory"/> supplies the TLS byte
+        /// stream for each attempt (default: a real <see cref="TlsByteStream"/>); an offline test injects a fake stream
+        /// here to exercise the handshake/keepalive/reconnect supervisor without a live server (roadmap P1.6).
+        /// </summary>
+        public SstpConnection(string host, int port = 443, uint magic = 0x1A2B3C4D, SstpReconnectOptions? reconnectOptions = null,
+            Func<ITlsByteStream>? transportFactory = null)
         {
             _host = host;
             _port = port;
             _magic = magic;
             _opts = reconnectOptions ?? new SstpReconnectOptions();
+            _transportFactory = transportFactory ?? (() => new TlsByteStream(_host, _port));
         }
 
         /// <summary>The stable L3 packet channel (valid after a successful connect; survives reconnect).</summary>
@@ -100,7 +108,7 @@ namespace TqkLibrary.Vpn.Drivers.Sstp
             int attemptId = Interlocked.Increment(ref _attemptId); // bump BEFORE the new read loop starts
             Interlocked.Exchange(ref _echoMissed, 0);
 
-            var transport = new SstpTransport(_host, _port);
+            var transport = new SstpTransport(_transportFactory(), _host);
             _transport = transport;
 
             // TLS + SSTP_DUPLEX_POST handshake. Reclassify the transport's generic failures into typed VPN errors.

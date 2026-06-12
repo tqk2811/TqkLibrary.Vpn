@@ -27,6 +27,27 @@ namespace TqkLibrary.Vpn.Tests
         }
 
         [Fact]
+        public void GetCapabilities_UnknownProtocol_ThrowsNotSupported()
+        {
+            VpnClient client = new VpnClientBuilder().UseSstp().Build();
+            var ex = Assert.Throws<NotSupportedException>(() => client.GetCapabilities("nope"));
+            Assert.Contains("No VPN driver registered for protocol 'nope'", ex.Message);
+            Assert.Contains("sstp", ex.Message);
+        }
+
+        [Fact]
+        public async Task ConnectAsync_UnknownProtocol_ThrowsNotSupported()
+        {
+            VpnClient client = new VpnClientBuilder().UseSstp().Build();
+            var ex = await Assert.ThrowsAsync<NotSupportedException>(() => client.ConnectAsync(
+                "nope",
+                new VpnEndpoint("example.com", 443),
+                new VpnCredentials { Username = "vpn", Password = "vpn" }));
+            Assert.Contains("No VPN driver registered for protocol 'nope'", ex.Message);
+            Assert.Contains("sstp", ex.Message);
+        }
+
+        [Fact]
         [Trait("Category", "Integration")]
         public async Task ConnectViaFacade_ThenHttpGet_ThroughTunnel()
         {

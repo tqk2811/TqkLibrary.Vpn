@@ -42,9 +42,10 @@ Project chỉ gồm 2 type — toàn bộ "logic" thực sự nằm ở các pro
 | `VpnClientBuilder.UseSstp` | Đăng ký `SstpDriver` (key `"sstp"`), auto-reconnect bật mặc định; overload nhận `SstpReconnectOptions` | [VpnClientBuilder.cs:20-23](VpnClientBuilder.cs#L20-L23) |
 | `VpnClientBuilder.UseL2tpIpsec` | Đăng ký `L2tpIpsecDriver` (key `"l2tp-ipsec"`), auto-reconnect bật mặc định; overload nhận `L2tpIpsecReconnectOptions` và `(reconnect, L2tpIpsecTimeoutOptions)` | [VpnClientBuilder.cs:26-33](VpnClientBuilder.cs#L26-L33) |
 | `VpnClient` | Client đã build: giữ `IReadOnlyDictionary<string, IVpnProtocolDriver>` các driver | [VpnClient.cs:8](VpnClient.cs#L8) |
-| `VpnClient.ConnectAsync` | Tra driver theo tên giao thức rồi ủy thác `driver.ConnectAsync(endpoint, credentials, ct)`; ném `NotSupportedException` nếu chưa đăng ký | [VpnClient.cs:18](VpnClient.cs#L18) |
+| `VpnClient.ConnectAsync` | Tra driver theo tên giao thức (qua helper `ResolveDriver`) rồi ủy thác `driver.ConnectAsync(endpoint, credentials, ct)` | [VpnClient.cs:18](VpnClient.cs#L18) |
 | `VpnClient.Protocols` | Liệt kê tên các giao thức đã đăng ký | [VpnClient.cs:15](VpnClient.cs#L15) |
-| `VpnClient.GetCapabilities` | Trả `VpnDriverCapabilities` của một driver đã đăng ký | [VpnClient.cs:27](VpnClient.cs#L27) |
+| `VpnClient.GetCapabilities` | Trả `VpnDriverCapabilities` của một driver đã đăng ký (qua helper `ResolveDriver`) | [VpnClient.cs:22](VpnClient.cs#L22) |
+| `VpnClient.ResolveDriver` | Helper private tra driver theo tên; ném `NotSupportedException` (kèm danh sách protocol đã đăng ký) nếu chưa đăng ký — dùng chung cho `ConnectAsync`+`GetCapabilities` (P0.5) | [VpnClient.cs:25](VpnClient.cs#L25) |
 
 Các hợp đồng/model mà façade thao tác (định nghĩa ở Abstractions):
 
@@ -118,7 +119,7 @@ var vpn = new VpnClientBuilder()
 Façade rất mỏng, gồm hai bước:
 
 1. **Đăng ký (build-time).** `UseSstp()`/`UseL2tpIpsec()` tạo driver cụ thể và gọi `AddDriver` để nạp vào `Dictionary<string, IVpnProtocolDriver>` keyed theo `driver.Name` (`"sstp"`, `"l2tp-ipsec"`) — [VpnClientBuilder.cs:13-33](VpnClientBuilder.cs#L13-L33). `Build()` đóng gói dictionary đó vào `VpnClient` — [VpnClientBuilder.cs:36](VpnClientBuilder.cs#L36).
-2. **Kết nối (run-time).** `ConnectAsync` tra driver theo `protocol`: nếu không có → `NotSupportedException` kèm danh sách giao thức đã đăng ký; nếu có → ủy thác thẳng `driver.ConnectAsync(endpoint, credentials, ct)` và trả `IVpnConnection` — [VpnClient.cs:18-24](VpnClient.cs#L18-L24).
+2. **Kết nối (run-time).** `ConnectAsync` và `GetCapabilities` đều tra driver qua helper chung `ResolveDriver`: nếu không có → `NotSupportedException` kèm danh sách giao thức đã đăng ký (P0.5, đồng nhất 2 đường); nếu có → `ConnectAsync` ủy thác thẳng `driver.ConnectAsync(endpoint, credentials, ct)` và trả `IVpnConnection` — [VpnClient.cs:18-31](VpnClient.cs#L18-L31).
 
 Toàn bộ việc lắp ráp stack (IKE → ESP → L2TP → PPP → IP) diễn ra **bên trong driver**, không nằm ở project này. Hai driver nằm ở hai project anh em: [TqkLibrary.Vpn.Drivers.L2tpIpsec](../TqkLibrary.Vpn.Drivers.L2tpIpsec) và [TqkLibrary.Vpn.Drivers.Sstp](../TqkLibrary.Vpn.Drivers.Sstp). Ví dụ điều phối L2TP/IPsec: `L2tpIpsecDriver.ConnectAsync` dựng `L2tpIpsecConnection` rồi gọi `ConnectAsync` của nó — [L2tpIpsecDriver.cs:43-57](../TqkLibrary.Vpn.Drivers.L2tpIpsec/L2tpIpsecDriver.cs#L43-L57). Chi tiết luồng handshake xem [.docs/10 §6](../../.docs/10-codebase-architecture-and-flow.md).
 

@@ -16,14 +16,18 @@ namespace TqkLibrary.Vpn
 
         /// <summary>Connects using the named protocol's driver.</summary>
         public Task<IVpnConnection> ConnectAsync(string protocol, VpnEndpoint endpoint, VpnCredentials credentials, CancellationToken cancellationToken = default)
+            => ResolveDriver(protocol).ConnectAsync(endpoint, credentials, cancellationToken);
+
+        /// <summary>The capabilities of a registered driver.</summary>
+        public VpnDriverCapabilities GetCapabilities(string protocol) => ResolveDriver(protocol).Capabilities;
+
+        /// <summary>Looks up a registered driver; throws a uniform <see cref="NotSupportedException"/> (listing the registered protocols) when none matches.</summary>
+        IVpnProtocolDriver ResolveDriver(string protocol)
         {
             if (!_drivers.TryGetValue(protocol, out IVpnProtocolDriver? driver))
                 throw new NotSupportedException($"No VPN driver registered for protocol '{protocol}'. Registered: {string.Join(", ", _drivers.Keys)}.");
 
-            return driver.ConnectAsync(endpoint, credentials, cancellationToken);
+            return driver;
         }
-
-        /// <summary>The capabilities of a registered driver.</summary>
-        public VpnDriverCapabilities GetCapabilities(string protocol) => _drivers[protocol].Capabilities;
     }
 }

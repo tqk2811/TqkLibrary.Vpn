@@ -16,21 +16,26 @@ namespace TqkLibrary.Vpn.Drivers.Sstp
     {
         readonly ITlsByteStream _stream;
         readonly string _host;
+        readonly TimeSpan _readTimeout;
         readonly SemaphoreSlim _writeLock = new(1, 1);
 
         /// <summary>
         /// Creates a transport over an explicit byte stream (the test/composition seam). <paramref name="host"/> is the
-        /// value sent in the HTTP <c>Host:</c> header of the SSTP_DUPLEX_POST handshake.
+        /// value sent in the HTTP <c>Host:</c> header of the SSTP_DUPLEX_POST handshake. <paramref name="readTimeout"/>
+        /// caps how long any single read may block without progress before a <see cref="TimeoutException"/> is raised
+        /// (a hung server mid-handshake/data, roadmap P1.5); <c>null</c> or <see cref="Timeout.InfiniteTimeSpan"/>
+        /// disables it (the default, so the framing seam tests are unaffected).
         /// </summary>
-        public SstpTransport(ITlsByteStream stream, string host = "")
+        public SstpTransport(ITlsByteStream stream, string host = "", TimeSpan? readTimeout = null)
         {
             _stream = stream ?? throw new ArgumentNullException(nameof(stream));
             _host = host ?? string.Empty;
+            _readTimeout = readTimeout ?? Timeout.InfiniteTimeSpan;
         }
 
         /// <summary>Creates a transport over a real TLS connection to the given server.</summary>
-        public SstpTransport(string host, int port = 443)
-            : this(new TlsByteStream(host, port), host)
+        public SstpTransport(string host, int port = 443, TimeSpan? readTimeout = null)
+            : this(new TlsByteStream(host, port), host, readTimeout)
         {
         }
 
@@ -66,7 +71,7 @@ namespace TqkLibrary.Vpn.Drivers.Sstp
             byte[] one = new byte[1];
             while (true)
             {
-                int read = await _stream.ReadAsync(one, cancellationToken).ConfigureAwait(false);
+                int read = await ReadWithTimeoutAsync(one, cancellationToken).ConfigureAwait(false);
                 if (read == 0) throw new IOException("Connection closed during SSTP HTTP handshake.");
                 buffer.Add(one[0]);
                 int n = buffer.Count;
@@ -127,11 +132,32 @@ namespace TqkLibrary.Vpn.Drivers.Sstp
             int offset = 0;
             while (offset < count)
             {
-                int read = await _stream.ReadAsync(buffer.AsMemory(offset, count - offset), cancellationToken).ConfigureAwait(false);
+                int read = await ReadWithTimeoutAsync(buffer.AsMemory(offset, count - offset), cancellationToken).ConfigureAwait(false);
                 if (read == 0) throw new IOException("Connection closed while reading an SSTP packet.");
                 offset += read;
             }
             return buffer;
+        }
+
+        // Reads from the stream, capping a single no-progress wait at _readTimeout. The clock resets on every call, so
+        // a multi-segment packet is bounded by "no bytes for _readTimeout" rather than "whole packet in _readTimeout".
+        // A timeout is surfaced as TimeoutException so the caller can tell it apart from caller-driven cancellation
+        // (which propagates unchanged) and from a clean EOF (which still returns 0).
+        async ValueTask<int> ReadWithTimeoutAsync(Memory<byte> buffer, CancellationToken cancellationToken)
+        {
+            if (_readTimeout == Timeout.InfiniteTimeSpan)
+                return await _stream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(_readTimeout);
+            try
+            {
+                return await _stream.ReadAsync(buffer, timeoutCts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            {
+                throw new TimeoutException($"No SSTP data received within {_readTimeout}.");
+            }
         }
 
         /// <inheritdoc/>

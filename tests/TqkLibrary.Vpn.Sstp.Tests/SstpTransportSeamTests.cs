@@ -97,6 +97,45 @@ namespace TqkLibrary.Vpn.Sstp.Tests
             Assert.Same(cert, transport.ServerCertificate);
         }
 
+        [Fact]
+        public async Task ReadPacket_WhenServerHangs_ThrowsTimeoutException()
+        {
+            // A server that accepts the connection but never sends a byte: the read-timeout (P1.5) must surface this
+            // instead of blocking forever, so the supervisor can treat it as a drop and reconnect.
+            using var transport = new SstpTransport(new BlockingTlsByteStream(), readTimeout: TimeSpan.FromMilliseconds(50));
+
+            await Assert.ThrowsAsync<TimeoutException>(() => transport.ReadPacketAsync());
+        }
+
+        [Fact]
+        public async Task ReadPacket_WhenCallerCancels_PropagatesCancellation_NotTimeout()
+        {
+            // Caller-driven cancellation must stay an OperationCanceledException — never be remapped to a timeout —
+            // so teardown is not misreported as a hung server.
+            using var transport = new SstpTransport(new BlockingTlsByteStream(), readTimeout: TimeSpan.FromSeconds(30));
+            using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => transport.ReadPacketAsync(cts.Token));
+        }
+
+        [Fact]
+        public async Task ReadPacket_WithTimeoutEnabled_StillRoundTripsPromptData()
+        {
+            // The timeout wrapper must be transparent when data arrives in time.
+            var writeStream = new FakeTlsByteStream();
+            using (var writer = new SstpTransport(writeStream))
+                await writer.SendDataAsync(new byte[] { 5, 4, 3 });
+
+            var readStream = new FakeTlsByteStream();
+            readStream.EnqueueInbound(writeStream.Outbound.ToArray());
+            using var reader = new SstpTransport(readStream, readTimeout: TimeSpan.FromSeconds(30));
+
+            (bool isControl, byte[] body) = await reader.ReadPacketAsync();
+
+            Assert.False(isControl);
+            Assert.Equal(new byte[] { 5, 4, 3 }, body);
+        }
+
         static X509Certificate2 SelfSigned()
         {
             using var rsa = System.Security.Cryptography.RSA.Create(2048);
@@ -138,6 +177,26 @@ namespace TqkLibrary.Vpn.Sstp.Tests
                 Outbound.AddRange(buffer.ToArray());
                 return default;
             }
+
+            public ValueTask DisposeAsync() => default;
+        }
+
+        /// <summary>An <see cref="ITlsByteStream"/> that connects but never produces inbound data; a read completes only
+        /// when its <see cref="CancellationToken"/> fires (the read-timeout or caller cancellation), modelling a hung server.</summary>
+        sealed class BlockingTlsByteStream : ITlsByteStream
+        {
+            public X509Certificate2? RemoteCertificate => null;
+
+            public ValueTask ConnectAsync(CancellationToken cancellationToken = default) => default;
+
+            public async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+            {
+                var tcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+                using (cancellationToken.Register(() => tcs.TrySetCanceled(cancellationToken)))
+                    return await tcs.Task.ConfigureAwait(false);
+            }
+
+            public ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default) => default;
 
             public ValueTask DisposeAsync() => default;
         }

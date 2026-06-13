@@ -111,7 +111,7 @@ namespace TqkLibrary.Vpn.Drivers.Sstp
             int attemptId = Interlocked.Increment(ref _attemptId); // bump BEFORE the new read loop starts
             Interlocked.Exchange(ref _echoMissed, 0);
 
-            var transport = new SstpTransport(_transportFactory(), _host);
+            var transport = new SstpTransport(_transportFactory(), _host, _opts.ReadTimeout);
             _transport = transport;
 
             // TLS + SSTP_DUPLEX_POST handshake. Reclassify the transport's generic failures into typed VPN errors.
@@ -135,6 +135,10 @@ namespace TqkLibrary.Vpn.Drivers.Sstp
             {
                 throw new VpnNetworkTimeoutException("The SSTP TLS handshake did not complete.", ex);
             }
+            catch (TimeoutException ex)
+            {
+                throw new VpnNetworkTimeoutException("The SSTP gateway went silent during the HTTP handshake.", ex);
+            }
             catch (IOException ex)
             {
                 throw new VpnNetworkTimeoutException("The SSTP TLS connection closed during the handshake.", ex);
@@ -148,7 +152,15 @@ namespace TqkLibrary.Vpn.Drivers.Sstp
             var encapsulatedProtocol = new SstpAttribute((byte)SstpAttributeId.EncapsulatedProtocolId, new byte[] { 0x00, 0x01 });
             await transport.SendControlAsync(SstpMessageType.CallConnectRequest, new[] { encapsulatedProtocol }, cancellationToken).ConfigureAwait(false);
 
-            (bool _, byte[] ackBody) = await transport.ReadPacketAsync(cancellationToken).ConfigureAwait(false);
+            byte[] ackBody;
+            try
+            {
+                (_, ackBody) = await transport.ReadPacketAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (TimeoutException ex)
+            {
+                throw new VpnNetworkTimeoutException("The SSTP gateway did not return a Call-Connect-Ack in time.", ex);
+            }
             SstpControlMessage ack = SstpControlCodec.Parse(ackBody);
             if (ack.MessageType == SstpMessageType.CallConnectNak)
                 throw new VpnServerRejectedException("The SSTP server returned Call-Connect-Nak.");

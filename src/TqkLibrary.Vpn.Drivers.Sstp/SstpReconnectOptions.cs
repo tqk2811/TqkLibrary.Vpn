@@ -25,6 +25,13 @@ namespace TqkLibrary.Vpn.Drivers.Sstp
         /// <summary>Random jitter applied to each delay as ±(fraction × delay); 0 disables jitter.</summary>
         public double JitterFraction { get; set; } = 0.2;
 
+        /// <summary>
+        /// Caps how long a single SSTP read may block without progress before the tunnel is treated as dropped (a server
+        /// that hangs mid-handshake or mid-data — roadmap P1.5). Set to <see cref="Timeout.InfiniteTimeSpan"/> to disable.
+        /// The default (60 s) sits above the 30 s keepalive interval so steady-state silence between Echoes never trips it.
+        /// </summary>
+        public TimeSpan ReadTimeout { get; set; } = TimeSpan.FromSeconds(60);
+
         /// <summary>The next backoff in the geometric sequence, capped at <see cref="MaxBackoff"/> (jitter applied separately).</summary>
         public TimeSpan NextBackoff(TimeSpan current)
             => TimeSpan.FromMilliseconds(Math.Min(MaxBackoff.TotalMilliseconds, current.TotalMilliseconds * BackoffMultiplier));

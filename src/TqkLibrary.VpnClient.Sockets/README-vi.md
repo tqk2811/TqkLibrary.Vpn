@@ -13,7 +13,7 @@ Project này là **tầng tiêu thụ** của VPN client: sau khi một `IVpnSes
 - `VpnTcpClient` — mở kết nối TCP qua tunnel và trả về một `Stream` chuẩn (`VpnNetworkStream`) để **cắm thẳng vào `HttpClient`** hoặc bất kỳ code nào nhận `Stream`.
 - `VpnUdpClient` — UDP client kết nối tới một remote endpoint cố định (ví dụ gửi truy vấn DNS tới `<dns-server>:53` qua tunnel).
 - `VpnNetworkStream` — adapter `Stream` duplex trên một `TcpConnection` userspace.
-- `VpnSessionSocketsExtensions.CreateTcpStack` — helper lắp `TcpIpStack` từ `IVpnSession` (lấy `PacketChannel` + `AssignedAddress`).
+- `VpnSessionSocketsExtensions.CreateTcpStack` — helper lắp `TcpIpStack` từ `IVpnSession` (lấy `PacketChannel` + `AssignedAddress`, và `AssignedAddressV6` nếu session bật IPv6 → stack **dual-stack**).
 
 Toàn bộ là lớp mỏng (thin wrapper) đặt API quen thuộc lên trên `TqkLibrary.VpnClient.IpStack`; logic IP/TCP/UDP thực sự nằm ở IpStack.
 
@@ -61,7 +61,7 @@ TqkLibrary.VpnClient.Sockets/
 | `VpnNetworkStream` | `Stream` duplex trên `TcpConnection`: `ReadAsync` -> `TcpConnection.ReadAsync`, `Write`/`WriteAsync` -> `TcpConnection.SendAsync` (**backpressure** theo cửa sổ peer + ném `IOException` khi connection fault — P0.3), `FlushAsync` surfaces fault, `Dispose` -> `CloseSend` (gửi FIN). Non-seekable. | [VpnNetworkStream.cs:7](VpnNetworkStream.cs#L7) |
 | `VpnUdpClient` | UDP client "connected" (remote endpoint cố định): `Send` / `ReceiveAsync`; bọc một `UdpConnection`. | [VpnUdpClient.cs:11](VpnUdpClient.cs#L11) |
 | `VpnUdpClient.ReceiveAsync` | Lọc datagram: chỉ trả về gói từ đúng `remoteAddress`:`remotePort`, bỏ qua nguồn khác. | [VpnUdpClient.cs:35](VpnUdpClient.cs#L35) |
-| `VpnSessionSocketsExtensions.CreateTcpStack` | Extension trên `IVpnSession`: dựng `TcpIpStack` từ `PacketChannel` + `Config.AssignedAddress` (ném `InvalidOperationException` nếu chưa có IP). | [VpnSessionSocketsExtensions.cs:10](Extensions/VpnSessionSocketsExtensions.cs#L10) |
+| `VpnSessionSocketsExtensions.CreateTcpStack` | Extension trên `IVpnSession`: dựng `TcpIpStack` từ `PacketChannel` + `Config.AssignedAddress` (+ `Config.AssignedAddressV6` khi bật IPv6 → overload dual-stack); ném `InvalidOperationException` nếu **cả hai** địa chỉ đều null. | [VpnSessionSocketsExtensions.cs:10](Extensions/VpnSessionSocketsExtensions.cs#L10) |
 
 Các kiểu nền (ở project IpStack, không thuộc Sockets) mà API trên dựa vào:
 

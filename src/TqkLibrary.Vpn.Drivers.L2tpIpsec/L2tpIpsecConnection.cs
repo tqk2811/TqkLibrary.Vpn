@@ -48,6 +48,8 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
         readonly CancellationTokenSource _lifetimeCts = new();
         readonly Random _random = new();
         readonly object _stateLock = new();
+        readonly object _extraSessionsLock = new();
+        readonly List<L2tpSession> _extraSessions = new(); // additional L2TP sessions opened on the live tunnel (best-effort)
 
         string? _userName;
         string? _password;
@@ -127,6 +129,36 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
         }
 
         /// <summary>
+        /// Opens an additional PPP session on the live tunnel (RFC 2661 multi-session — best-effort; most remote-access
+        /// servers permit only one and answer the ICRQ with a CDN, surfaced here as an exception). A fresh L2TP session,
+        /// PPP/MS-CHAPv2 negotiation and IPCP run over the same IKE/IPsec SA and L2TP control channel, yielding a second
+        /// independent address/channel. Additional sessions live with the current tunnel instance: an auto-reconnect
+        /// rebuilds only the primary session, so a dropped tunnel does not re-establish them.
+        /// </summary>
+        public async Task<L2tpIpsecAdditionalSession> OpenAdditionalSessionAsync(CancellationToken cancellationToken = default)
+        {
+            L2tpClient? l2tp = _l2tp;
+            if (l2tp == null || !_keepaliveRunning)
+                throw new InvalidOperationException("The L2TP/IPsec tunnel is not connected.");
+
+            L2tpSession session = await l2tp.OpenSessionAsync(cancellationToken).ConfigureAwait(false);
+            lock (_extraSessionsLock) _extraSessions.Add(session);
+
+            var pppChannel = new L2tpPppFrameChannel(session);
+            var authenticator = new MsChapV2Authenticator(_userName ?? string.Empty, _password ?? string.Empty);
+            var ppp = new PppEngine(pppChannel, _magic, IPAddress.Any, authenticator: authenticator);
+
+            var linkUp = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            ppp.LinkUp += () => linkUp.TrySetResult(true);
+            ppp.AuthFailed += () => linkUp.TrySetException(new VpnAuthenticationException("PPP MS-CHAPv2 authentication failed on the additional session."));
+            session.Disconnected += reason => linkUp.TrySetException(new VpnServerRejectedException(reason));
+            ppp.Start();
+
+            await WaitAsync(linkUp.Task, cancellationToken).ConfigureAwait(false);
+            return new L2tpIpsecAdditionalSession(ppp.PacketChannel, ppp.AssignedAddress, ppp.AssignedDns);
+        }
+
+        /// <summary>
         /// Brings up one full tunnel attempt from scratch: a clean-slate factory reused by the first connect and by
         /// every reconnect. On success the fresh PPP channel is installed behind the stable facade and keepalive starts.
         /// </summary>
@@ -169,7 +201,7 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
             l2tp.Disconnected += OnLinkLost;
             await l2tp.ConnectAsync(cancellationToken).ConfigureAwait(false);
 
-            var pppChannel = new L2tpPppFrameChannel(l2tp);
+            var pppChannel = new L2tpPppFrameChannel(l2tp.PrimarySession);
             var authenticator = new MsChapV2Authenticator(_userName ?? string.Empty, _password ?? string.Empty);
             var ppp = new PppEngine(pppChannel, _magic, IPAddress.Any, authenticator: authenticator);
             _ppp = ppp;
@@ -295,6 +327,9 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
             _ike = null;
             _dataTransport = null;
             _espActive = false;
+
+            // Additional sessions belong to the tunnel instance just torn down; a reconnect rebuilds only the primary.
+            lock (_extraSessionsLock) _extraSessions.Clear();
         }
 
         // Builds the bidirectional ESP session from the negotiated suite. For AES-CBC the per-direction key material
@@ -785,12 +820,16 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
             L2tpClient? l2tp = _l2tp;
             IkeV1Client? ike = _ike;
             NatTraversalChannel? natt = _natt;
+            L2tpSession[] extras;
+            lock (_extraSessionsLock) extras = _extraSessions.ToArray();
 
             // Notify the peer so it releases the SAs immediately instead of waiting for them to time out.
             Task teardown = Task.Run(async () =>
             {
                 if (l2tp != null)
                 {
+                    foreach (L2tpSession extra in extras)
+                        await Swallow(() => extra.SendCallDisconnectAsync()).ConfigureAwait(false);
                     await Swallow(() => l2tp.SendCallDisconnectAsync()).ConfigureAwait(false);
                     await Swallow(() => l2tp.SendStopControlConnectionAsync()).ConfigureAwait(false);
                 }

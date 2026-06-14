@@ -3,16 +3,16 @@ using TqkLibrary.Vpn.Ppp.Interfaces;
 
 namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
 {
-    /// <summary>Bridges the L2TP data channel to the PPP engine: PPP frames ride in L2TP data messages.</summary>
+    /// <summary>Bridges one L2TP session's data channel to a PPP engine: PPP frames ride in L2TP data messages.</summary>
     public sealed class L2tpPppFrameChannel : IPppFrameChannel
     {
-        readonly L2tpClient _l2tp;
+        readonly L2tpSession _session;
 
-        /// <summary>Creates the channel over a connected <see cref="L2tpClient"/>.</summary>
-        public L2tpPppFrameChannel(L2tpClient l2tp)
+        /// <summary>Creates the channel over an established <see cref="L2tpSession"/>.</summary>
+        public L2tpPppFrameChannel(L2tpSession session)
         {
-            _l2tp = l2tp;
-            _l2tp.DataReceived += frame => FrameReceived?.Invoke(frame);
+            _session = session;
+            _session.DataReceived += frame => FrameReceived?.Invoke(frame);
         }
 
         /// <inheritdoc/>
@@ -22,7 +22,7 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
         public ValueTask SendAsync(ReadOnlyMemory<byte> frame, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return new ValueTask(_l2tp.SendDataAsync(frame));
+            return new ValueTask(_session.SendDataAsync(frame));
         }
     }
 }

@@ -39,6 +39,7 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
         readonly string _host;
         readonly byte[] _preSharedKey;
         readonly uint _magic;
+        readonly bool _enableIpv6;
         readonly L2tpIpsecReconnectOptions _opts;
         readonly L2tpIpsecTimeoutOptions _timeouts;
         readonly L2tpIpsecNatTraversalMode _natMode;
@@ -87,11 +88,13 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
         public L2tpIpsecConnection(string host, byte[] preSharedKey, uint magic = 0x4D2A3B1C,
             L2tpIpsecReconnectOptions? reconnectOptions = null, L2tpIpsecTimeoutOptions? timeoutOptions = null,
             L2tpIpsecNatTraversalMode natTraversalMode = L2tpIpsecNatTraversalMode.ForcedNatT,
-            AddressFamilyPreference addressFamilyPreference = AddressFamilyPreference.Auto, IHostResolver? hostResolver = null)
+            AddressFamilyPreference addressFamilyPreference = AddressFamilyPreference.Auto, IHostResolver? hostResolver = null,
+            bool enableIpv6 = false)
         {
             _host = host;
             _preSharedKey = preSharedKey;
             _magic = magic;
+            _enableIpv6 = enableIpv6;
             _opts = reconnectOptions ?? new L2tpIpsecReconnectOptions();
             _timeouts = timeoutOptions ?? new L2tpIpsecTimeoutOptions();
             _natMode = natTraversalMode;
@@ -107,6 +110,9 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
 
         /// <summary>The DNS server pushed by IPCP, if any (tracks the latest attempt).</summary>
         public IPAddress? AssignedDns => _ppp!.AssignedDns;
+
+        /// <summary>The link-local IPv6 address negotiated via IPV6CP, or null (IPv6 disabled / server has no IPV6CP).</summary>
+        public IPAddress? AssignedAddressV6 => _ppp?.AssignedAddressV6;
 
         /// <summary>Raised whenever the connection state changes (handshake progress, drop, reconnect).</summary>
         public event Action<L2tpIpsecConnectionState>? StateChanged;
@@ -203,20 +209,35 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
 
             var pppChannel = new L2tpPppFrameChannel(l2tp.PrimarySession);
             var authenticator = new MsChapV2Authenticator(_userName ?? string.Empty, _password ?? string.Empty);
-            var ppp = new PppEngine(pppChannel, _magic, IPAddress.Any, authenticator: authenticator);
+            var ppp = new PppEngine(pppChannel, _magic, IPAddress.Any, authenticator: authenticator, enableIpv6: _enableIpv6);
             _ppp = ppp;
 
             var linkUp = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var ipv6Up = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             ppp.LinkUp += () => linkUp.TrySetResult(true);
+            ppp.Ipv6Up += () => ipv6Up.TrySetResult(true);
             ppp.AuthFailed += () => linkUp.TrySetException(new VpnAuthenticationException("PPP MS-CHAPv2 authentication failed."));
             ppp.Start();
 
             await WaitAsync(linkUp.Task, cancellationToken).ConfigureAwait(false);
+            await AwaitIpv6GraceAsync(ppp, ipv6Up.Task, cancellationToken).ConfigureAwait(false);
 
             // Handshake done: stop steering IKE to the handshake waiter, publish the new plane, start keepalive.
             _ikeWaiter = null;
             _facade.SetInner(ppp.PacketChannel);
             StartKeepalive();
+        }
+
+        // IPV6CP runs in parallel with IPCP and usually opens around the same time; give it a short grace after IPv4
+        // link-up so the link-local address is surfaced in TunnelConfig. A server without IPv6 never opens IPV6CP — we
+        // never fail on it (IPv6 is best-effort), and a no-op when disabled or already up keeps the IPv4 path unchanged.
+        async Task AwaitIpv6GraceAsync(PppEngine ppp, Task<bool> ipv6Up, CancellationToken cancellationToken)
+        {
+            if (!_enableIpv6 || ppp.IsIpv6Up) return;
+            using var grace = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            grace.CancelAfter(TimeSpan.FromSeconds(2));
+            try { await Task.WhenAny(ipv6Up, Task.Delay(Timeout.Infinite, grace.Token)).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { } // grace elapsed, no IPv6
         }
 
         // ---- Phase 1 bring-up: pick the NAT-T strategy, run Main Mode 1-4, and settle on the data-plane port ----

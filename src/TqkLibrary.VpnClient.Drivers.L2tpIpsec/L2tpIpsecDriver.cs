@@ -11,18 +11,21 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
         readonly L2tpIpsecReconnectOptions? _reconnectOptions;
         readonly L2tpIpsecTimeoutOptions? _timeoutOptions;
         readonly L2tpIpsecNatTraversalMode _natTraversalMode;
+        readonly bool _enableIpv6;
 
         /// <summary>
         /// Creates the driver; <paramref name="reconnectOptions"/> tunes (or disables) auto-reconnect,
-        /// <paramref name="timeoutOptions"/> tunes the IKE/L2TP handshake timeouts and retransmit caps, and
-        /// <paramref name="natTraversalMode"/> selects how NAT-T is negotiated (default: always force NAT-T).
+        /// <paramref name="timeoutOptions"/> tunes the IKE/L2TP handshake timeouts and retransmit caps,
+        /// <paramref name="natTraversalMode"/> selects how NAT-T is negotiated (default: always force NAT-T), and
+        /// <paramref name="enableIpv6"/> also runs IPV6CP for a link-local IPv6 address (best-effort; IPv4 unaffected).
         /// </summary>
         public L2tpIpsecDriver(L2tpIpsecReconnectOptions? reconnectOptions = null, L2tpIpsecTimeoutOptions? timeoutOptions = null,
-            L2tpIpsecNatTraversalMode natTraversalMode = L2tpIpsecNatTraversalMode.ForcedNatT)
+            L2tpIpsecNatTraversalMode natTraversalMode = L2tpIpsecNatTraversalMode.ForcedNatT, bool enableIpv6 = false)
         {
             _reconnectOptions = reconnectOptions;
             _timeoutOptions = timeoutOptions;
             _natTraversalMode = natTraversalMode;
+            _enableIpv6 = enableIpv6;
         }
 
         /// <inheritdoc/>
@@ -51,13 +54,13 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
 
             var connection = new L2tpIpsecConnection(endpoint.Host, psk, reconnectOptions: _reconnectOptions,
                 timeoutOptions: _timeoutOptions, natTraversalMode: _natTraversalMode,
-                addressFamilyPreference: endpoint.AddressFamilyPreference);
+                addressFamilyPreference: endpoint.AddressFamilyPreference, enableIpv6: _enableIpv6);
             try
             {
                 await connection.ConnectAsync(credentials.Username ?? string.Empty, credentials.Password ?? string.Empty, cancellationToken)
                     .ConfigureAwait(false);
 
-                var config = new TunnelConfig { AssignedAddress = connection.AssignedAddress };
+                var config = new TunnelConfig { AssignedAddress = connection.AssignedAddress, AssignedAddressV6 = connection.AssignedAddressV6 };
                 if (connection.AssignedDns != null) config.DnsServers.Add(connection.AssignedDns);
 
                 var session = new L2tpIpsecVpnSession(connection.PacketChannel, config);

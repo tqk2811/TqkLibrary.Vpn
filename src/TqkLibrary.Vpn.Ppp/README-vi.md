@@ -1,6 +1,6 @@
 # TqkLibrary.Vpn.Ppp
 
-> PPP: HDLC framing (`Framing/`), engine LCP/IPCP, và các authenticator (`Auth/`: MS-CHAPv2 trên CHAP).
+> PPP: HDLC framing (`Framing/`), engine LCP/IPCP/IPV6CP, và các authenticator (`Auth/`: MS-CHAPv2 trên CHAP).
 
 ## Mục đích
 
@@ -11,6 +11,7 @@ Cụ thể nó giải quyết:
 - **Thương lượng liên kết (LCP)** — MRU, Magic-Number, và chấp nhận yêu cầu xác thực MS-CHAPv2 của server.
 - **Xác thực (MS-CHAPv2 trên CHAP)** — tính NT-Response 24 byte từ username/password, báo Success/Failure; đồng thời dẫn xuất HLAK 32 byte để SSTP làm crypto binding.
 - **Cấu hình IP (IPCP)** — xin địa chỉ IP và DNS từ server, học lại giá trị server gán qua Configure-Nak.
+- **Cấu hình IPv6 (IPV6CP, RFC 5072) — opt-in** — thương lượng Interface-Identifier 8 byte → địa chỉ link-local `fe80::/64`, chạy song song IPCP và không ảnh hưởng link-up IPv4. Địa chỉ IPv6 global (SLAAC/DHCPv6) chưa làm — chờ tầng L2 NDISC.
 - **Đóng/mở khung (HDLC framing)** — khung hoá / giải khung byte-stuffed kèm FCS-16 cho transport dạng byte-stream (SSTP). L2TP dùng packet-mode nên không cần lớp HDLC này.
 - **Cầu nối lên tầng L3** — sau khi link up, lộ ra một [`IPacketChannel`](../TqkLibrary.Vpn.Abstractions/Channels/Interfaces/IPacketChannel.cs#L6) để các tầng trên gửi/nhận gói IP qua tunnel.
 
@@ -35,6 +36,7 @@ TqkLibrary.Vpn.Ppp/
 ├─ PppNegotiator.cs        # State machine thương lượng option dùng chung cho LCP & IPCP
 ├─ LcpNegotiator.cs        # LCP: MRU + Magic-Number, phát hiện server đòi MS-CHAPv2
 ├─ IpcpNegotiator.cs       # IPCP: xin IP/DNS (client) hoặc gán IP cho peer (server)
+├─ Ipv6cpNegotiator.cs     # IPV6CP (RFC 5072): thương lượng Interface-Identifier -> link-local fe80::/64
 ├─ PppControlCodec.cs      # Encode/decode gói control + TLV option
 ├─ Auth/
 │  ├─ MsChapV2.cs              # Crypto MS-CHAPv2 (NT hash, challenge hash, NT-Response) + dẫn xuất HLAK/MPPE
@@ -48,6 +50,7 @@ TqkLibrary.Vpn.Ppp/
 │  ├─ PppCode.cs              # Mã gói control (Configure-Request/Ack/Nak/Reject, Echo, Terminate...)
 │  ├─ LcpOptionType.cs        # Loại option LCP (MRU, Auth-Protocol, Magic-Number...)
 │  ├─ IpcpOptionType.cs       # Loại option IPCP (IP-Address, Primary/Secondary DNS/NBNS)
+│  ├─ Ipv6cpOptionType.cs     # Loại option IPV6CP (Interface-Identifier, Compression)
 │  ├─ PppNegotiationState.cs  # Trạng thái rút gọn của negotiator (Closed/RequestSent/Opened)
 │  └─ PppAuthStatus.cs        # Kết quả xử lý gói auth (Pending/Success/Failure)
 ├─ Models/
@@ -62,11 +65,12 @@ TqkLibrary.Vpn.Ppp/
 
 | Type | Vai trò | Vị trí |
 |------|---------|--------|
-| `PppEngine` | Điều phối toàn phiên: chạy LCP → (auth) → IPCP, demux khung vào theo trường Protocol, lộ `IPacketChannel`, raise `LinkUp`/`AuthSucceeded`/`AuthFailed` | [PppEngine.cs:14](PppEngine.cs#L14) |
+| `PppEngine` | Điều phối toàn phiên: chạy LCP → (auth) → IPCP (+ IPV6CP nếu bật), demux khung vào theo trường Protocol, lộ `IPacketChannel`, raise `LinkUp`/`Ipv6Up`/`AuthSucceeded`/`AuthFailed` | [PppEngine.cs:14](PppEngine.cs#L14) |
 | `PppPacketChannel` | `IPacketChannel` tầng L3 (LinkMedium.Ip, MaxHeaderLength=0, không ARP); ghi gói IP ra khung PPP, raise gói IP vào | [PppPacketChannel.cs:10](PppPacketChannel.cs#L10) |
 | `PppNegotiator` | State machine thương lượng option dùng chung (RFC 1661 rút gọn); Opened khi cả hai chiều đã Ack | [PppNegotiator.cs:11](PppNegotiator.cs#L11) |
 | `LcpNegotiator` | LCP cụ thể: yêu cầu MRU + Magic-Number, chấp nhận Auth-Protocol = MS-CHAPv2 (C223+algo 0x81), reject phần còn lại | [LcpNegotiator.cs:10](LcpNegotiator.cs#L10) |
 | `IpcpNegotiator` | IPCP cụ thể: client xin IP (0.0.0.0) + DNS rồi học giá trị Nak; server gán IP cho peer | [IpcpNegotiator.cs:12](IpcpNegotiator.cs#L12) |
+| `Ipv6cpNegotiator` | IPV6CP cụ thể (RFC 5072): thương lượng Interface-Identifier 8 byte (client xin/học Nak, server gán), reject Compression; lộ `LinkLocalAddress` fe80::/64 | [Ipv6cpNegotiator.cs:14](Ipv6cpNegotiator.cs#L14) |
 | `PppControlCodec` | Encode/decode gói control (Code/Id/Length) và TLV option | [PppControlCodec.cs:9](PppControlCodec.cs#L9) |
 | `MsChapV2` | Crypto MS-CHAPv2 client-side: NT hash (MD4), challenge hash (SHA-1), NT-Response (3×DES) + dẫn xuất HLAK/MPPE | [Auth/MsChapV2.cs:11](Auth/MsChapV2.cs#L11) |
 | `MsChapV2Authenticator` | Authenticator client trên CHAP: nhận Challenge → trả Response 49 byte, báo Success/Failure, giữ NtResponse cho HLAK | [Auth/MsChapV2Authenticator.cs:12](Auth/MsChapV2Authenticator.cs#L12) |
@@ -84,8 +88,9 @@ TqkLibrary.Vpn.Ppp/
 | **RFC 1661 §5–6** (control packet + TLV option) | `PppControlCodec`, `PppOption` | [PppControlCodec.cs:7](PppControlCodec.cs#L7), [Models/PppOption.cs:3](Models/PppOption.cs#L3) | Code/Id/Length + TLV |
 | **RFC 1661 §5** (mã gói control) | `PppCode` | [Enums/PppCode.cs:3](Enums/PppCode.cs#L3) | Configure/Terminate/Echo... |
 | **RFC 1661 §6** + **RFC 1570** (LCP option) | `LcpOptionType` | [Enums/LcpOptionType.cs:3](Enums/LcpOptionType.cs#L3) | MRU, Auth-Protocol, Magic-Number, PFC/ACFC |
-| **RFC 1661 / IANA** (trường Protocol) | `PppProtocol` | [Framing/Enums/PppProtocol.cs:3](Framing/Enums/PppProtocol.cs#L3) | IP=0x0021, LCP=0xC021, CHAP=0xC223, IPCP=0x8021 |
+| **RFC 1661 / IANA** (trường Protocol) | `PppProtocol` | [Framing/Enums/PppProtocol.cs:3](Framing/Enums/PppProtocol.cs#L3) | IP=0x0021, IPv6=0x0057, LCP=0xC021, CHAP=0xC223, IPCP=0x8021, IPV6CP=0x8057 |
 | **RFC 1332** (IPCP) + **RFC 1877** (DNS/NBNS) | `IpcpNegotiator`, `IpcpOptionType` | [IpcpNegotiator.cs:8](IpcpNegotiator.cs#L8), [Enums/IpcpOptionType.cs:3](Enums/IpcpOptionType.cs#L3) | IP-Address, Primary/Secondary DNS/NBNS |
+| **RFC 5072** (IPV6CP) | `Ipv6cpNegotiator`, `Ipv6cpOptionType` | [Ipv6cpNegotiator.cs:14](Ipv6cpNegotiator.cs#L14), [Enums/Ipv6cpOptionType.cs:3](Enums/Ipv6cpOptionType.cs#L3) | Interface-Identifier §4.1 → link-local fe80::/64; Compression §4.2 reject |
 | **RFC 1662** (PPP trong HDLC-like framing) | `HdlcFramer`, `HdlcDecoder` | [Framing/HdlcFramer.cs:4](Framing/HdlcFramer.cs#L4), [Framing/HdlcDecoder.cs:4](Framing/HdlcDecoder.cs#L4) | Cờ 0x7E, escape 0x7D, ACCM C0 |
 | **RFC 1662** (FCS-16, CRC-CCITT poly 0x8408) | `Fcs16` | [Framing/Fcs16.cs:3](Framing/Fcs16.cs#L3) | `GoodFcs=0xF0B8` (§C.2) tại [Framing/Fcs16.cs:6](Framing/Fcs16.cs#L6) |
 | **RFC 1994** (PPP CHAP) | `MsChapV2Authenticator` | [Auth/MsChapV2Authenticator.cs:9](Auth/MsChapV2Authenticator.cs#L9) | Khung Challenge/Response/Success/Failure |
@@ -102,10 +107,10 @@ TqkLibrary.Vpn.Ppp/
 
 Các điểm vào public chính:
 
-- `PppEngine(IPppFrameChannel channel, uint magic, IPAddress localAddress, IPAddress? assignPeerAddress = null, IPAddress? assignPeerDns = null, IPppAuthenticator? authenticator = null, int mtu = 1400)` — [PppEngine.cs:28](PppEngine.cs#L28).
-- `PppEngine.Start()` — bắt đầu thương lượng (gửi LCP Configure-Request) — [PppEngine.cs:72](PppEngine.cs#L72).
-- Sự kiện `PppEngine.LinkUp` / `AuthSucceeded` / `AuthFailed` — [PppEngine.cs:48-54](PppEngine.cs#L48-L54).
-- `PppEngine.PacketChannel` (`IPacketChannel`), `AssignedAddress`, `AssignedDns`, `IsLinkUp`, `IsAuthenticated` — [PppEngine.cs:57-69](PppEngine.cs#L57-L69).
+- `PppEngine(IPppFrameChannel channel, uint magic, IPAddress localAddress, IPAddress? assignPeerAddress = null, IPAddress? assignPeerDns = null, IPppAuthenticator? authenticator = null, int mtu = 1400, bool enableIpv6 = false, byte[]? interfaceId = null, byte[]? assignPeerInterfaceId = null)` — [PppEngine.cs:36](PppEngine.cs#L36). `enableIpv6` bật IPV6CP (mặc định tắt → không đổi hành vi IPv4).
+- `PppEngine.Start()` — bắt đầu thương lượng (gửi LCP Configure-Request) — [PppEngine.cs:80](PppEngine.cs#L80).
+- Sự kiện `PppEngine.LinkUp` / `Ipv6Up` / `AuthSucceeded` / `AuthFailed` — [PppEngine.cs:61-70](PppEngine.cs#L61-L70).
+- `PppEngine.PacketChannel` (`IPacketChannel`), `AssignedAddress`, `AssignedDns`, `AssignedAddressV6` (link-local, null nếu chưa bật IPv6), `IsLinkUp`, `IsIpv6Up`, `IsAuthenticated` — [PppEngine.cs:73-91](PppEngine.cs#L73-L91).
 - `MsChapV2Authenticator(string userName, string password)` + `DeriveHlak()` cho SSTP — [Auth/MsChapV2Authenticator.cs:23](Auth/MsChapV2Authenticator.cs#L23), [Auth/MsChapV2Authenticator.cs:42](Auth/MsChapV2Authenticator.cs#L42).
 - Framing độc lập: `HdlcFramer.Encode(...)`, `new HdlcDecoder().Push(...)` + sự kiện `FrameReceived` — [Framing/HdlcFramer.cs:21](Framing/HdlcFramer.cs#L21), [Framing/HdlcDecoder.cs:16](Framing/HdlcDecoder.cs#L16).
 
@@ -129,26 +134,28 @@ ppp.Start();
 
 ## Luồng nội bộ
 
-Vòng đời một phiên (client) — `LCP → (MS-CHAPv2) → IPCP → LinkUp`:
+Vòng đời một phiên (client) — `LCP → (MS-CHAPv2) → IPCP (+ IPV6CP) → LinkUp`:
 
-1. **Khởi động.** `Start()` gọi `_lcp.Start()` → gửi LCP Configure-Request (MRU + Magic-Number) — [PppEngine.cs:72](PppEngine.cs#L72), [LcpNegotiator.cs:29](LcpNegotiator.cs#L29), [PppNegotiator.cs:32](PppNegotiator.cs#L32).
-2. **Demux khung vào.** `OnFrame` bỏ qua Address/Control (FF 03 nếu có), đọc trường Protocol 2 byte rồi route tới LCP / CHAP / IPCP / IP — [PppEngine.cs:111-132](PppEngine.cs#L111-L132).
+1. **Khởi động.** `Start()` gọi `_lcp.Start()` → gửi LCP Configure-Request (MRU + Magic-Number) — [PppEngine.cs:94](PppEngine.cs#L94), [LcpNegotiator.cs:29](LcpNegotiator.cs#L29), [PppNegotiator.cs:32](PppNegotiator.cs#L32).
+2. **Demux khung vào.** `OnFrame` bỏ qua Address/Control (FF 03 nếu có), đọc trường Protocol 2 byte rồi route tới LCP / CHAP / IPCP / IPV6CP / IP — [PppEngine.cs:146-167](PppEngine.cs#L146-L167).
 3. **LCP thương lượng.** `PppNegotiator.HandlePacket` xử lý Configure-Request/Ack/Nak/Reject; LCP chấp nhận Auth-Protocol = MS-CHAPv2, đặt `RequiresMsChapV2`, reject option lạ — [PppNegotiator.cs:39](PppNegotiator.cs#L39), [LcpNegotiator.cs:46](LcpNegotiator.cs#L46). Khi cả hai chiều Ack → `Opened` — [PppNegotiator.cs:84](PppNegotiator.cs#L84).
-4. **Rẽ nhánh sau LCP.** `OnLcpOpened`: nếu server đòi MS-CHAPv2 và có authenticator → chờ Challenge; nếu không → đánh dấu đã xác thực và `_ipcp.Start()` ngay — [PppEngine.cs:77-84](PppEngine.cs#L77-L84).
-5. **Xác thực MS-CHAPv2.** Khung CHAP vào → `HandleAuth` → `authenticator.Handle(...)`; với Challenge thì `BuildResponse` tạo PeerChallenge ngẫu nhiên, `GenerateNTResponse` (challenge hash SHA-1 → NT hash MD4 → 3×DES) và đóng gói Response 49 byte; Success → `_ipcp.Start()`, Failure → `AuthFailed` — [PppEngine.cs:92-109](PppEngine.cs#L92-L109), [Auth/MsChapV2Authenticator.cs:49](Auth/MsChapV2Authenticator.cs#L49), [Auth/MsChapV2Authenticator.cs:71](Auth/MsChapV2Authenticator.cs#L71), [Auth/MsChapV2.cs:50](Auth/MsChapV2.cs#L50).
+4. **Rẽ nhánh sau LCP.** `OnLcpOpened`: nếu server đòi MS-CHAPv2 và có authenticator → chờ Challenge; nếu không → đánh dấu đã xác thực và gọi `StartNetworkLayer()` ngay (chạy IPCP, và IPV6CP nếu bật) — [PppEngine.cs:99-113](PppEngine.cs#L99-L113).
+5. **Xác thực MS-CHAPv2.** Khung CHAP vào → `HandleAuth` → `authenticator.Handle(...)`; với Challenge thì `BuildResponse` tạo PeerChallenge ngẫu nhiên, `GenerateNTResponse` (challenge hash SHA-1 → NT hash MD4 → 3×DES) và đóng gói Response 49 byte; Success → `StartNetworkLayer()`, Failure → `AuthFailed` — [PppEngine.cs:127-144](PppEngine.cs#L127-L144), [Auth/MsChapV2Authenticator.cs:49](Auth/MsChapV2Authenticator.cs#L49), [Auth/MsChapV2Authenticator.cs:71](Auth/MsChapV2Authenticator.cs#L71), [Auth/MsChapV2.cs:50](Auth/MsChapV2.cs#L50).
 6. **IPCP.** Client xin IP-Address (0.0.0.0) + Primary-DNS; server gán giá trị qua Configure-Nak, `OnNak` cập nhật `_localAddress`/`_dns` rồi gửi lại request — [IpcpNegotiator.cs:40](IpcpNegotiator.cs#L40), [IpcpNegotiator.cs:81](IpcpNegotiator.cs#L81).
-7. **LinkUp.** IPCP `Opened` → `OnIpcpOpened` đặt `IsLinkUp = true` và raise `LinkUp`; từ đây `PppPacketChannel` chuyển gói IP hai chiều — [PppEngine.cs:86-90](PppEngine.cs#L86-L90), [PppPacketChannel.cs:36](PppPacketChannel.cs#L36).
+7. **IPV6CP (nếu `enableIpv6`).** Song song IPCP: client xin Interface-Identifier; server gán qua Configure-Nak, `OnNak` cập nhật rồi gửi lại; `Opened` → `OnIpv6cpOpened` đặt `IsIpv6Up` + raise `Ipv6Up`, lộ `AssignedAddressV6` = fe80::/64 + IID — [Ipv6cpNegotiator.cs:14](Ipv6cpNegotiator.cs#L14), [PppEngine.cs:121-125](PppEngine.cs#L121-L125).
+8. **LinkUp (IPv4).** IPCP `Opened` → `OnIpcpOpened` đặt `IsLinkUp = true` và raise `LinkUp` (không phụ thuộc IPV6CP); từ đây `PppPacketChannel` chuyển gói IP hai chiều — [PppEngine.cs:115-119](PppEngine.cs#L115-L119), [PppPacketChannel.cs:36](PppPacketChannel.cs#L36).
 
-Data plane sau khi up: ghi IP → `SendIpAsync` đóng khung Protocol=0x0021 — [PppEngine.cs:136](PppEngine.cs#L136); IP vào → `RaiseInbound` → sự kiện `InboundIpPacket` — [PppEngine.cs:129](PppEngine.cs#L129), [PppPacketChannel.cs:39](PppPacketChannel.cs#L39).
+Data plane sau khi up: ghi IP → `SendIpAsync` đóng khung Protocol=0x0021 — [PppEngine.cs:172](PppEngine.cs#L172); IP vào → `RaiseInbound` → sự kiện `InboundIpPacket` — [PppEngine.cs:165](PppEngine.cs#L165), [PppPacketChannel.cs:39](PppPacketChannel.cs#L39).
 
 HDLC framing (chỉ dùng cho transport byte-stream như SSTP): `HdlcFramer.Encode` gắn FCS rồi byte-stuff giữa hai cờ 0x7E — [Framing/HdlcFramer.cs:21](Framing/HdlcFramer.cs#L21); `HdlcDecoder.Push` un-stuff, tách theo cờ, kiểm FCS rồi raise frame — [Framing/HdlcDecoder.cs:16](Framing/HdlcDecoder.cs#L16), [Framing/HdlcDecoder.cs:40](Framing/HdlcDecoder.cs#L40).
 
 ## Trạng thái & ghi chú
 
 - **Đã hiện thực và chạy live:** LCP + IPCP (client), MS-CHAPv2 trên CHAP, HDLC framing với FCS-16, dẫn xuất HLAK cho SSTP crypto binding. Đường L2TP/IPsec đã xác minh hoạt động trên VPN Gate.
+- **IPV6CP (RFC 5072) — opt-in, mới, chưa test live:** `Ipv6cpNegotiator` thương lượng Interface-Identifier → link-local `fe80::/64`, bật qua `PppEngine(enableIpv6: true)`; chạy song song IPCP, không đổi đường IPv4 (mặc định tắt). Đã phủ test offline qua loopback. Chưa wire vào `TunnelConfig`/driver/`TcpIpStack` dual-stack và chưa cấp địa chỉ IPv6 global (cần SLAAC/RA tầng L2 — roadmap P1.1/L2.4).
 - **Vai trò transport theo driver:** SSTP dùng `HdlcFramer`/`HdlcDecoder` (PPP đóng trong HDLC trên byte-stream); L2TP dùng packet-mode nên cấp `IPppFrameChannel` riêng, không qua lớp HDLC — xem ghi chú tại [Framing/HdlcFramer.cs:5](Framing/HdlcFramer.cs#L5).
-- **Hỗ trợ vai trò server (một phần):** `IpcpNegotiator` có nhánh server (gán IP/DNS cho peer qua Nak) và `PppEngine` nhận `assignPeerAddress` — nhưng các driver trong project hiện chỉ dùng vai trò **client**; nhánh server là khung mở rộng — [IpcpNegotiator.cs:52-78](IpcpNegotiator.cs#L52-L78), [PppEngine.cs:28-35](PppEngine.cs#L28-L35).
-- **Phạm vi hẹp có chủ đích:** chỉ thương lượng MRU/Magic-Number/Auth/IP/DNS; chưa làm PAP, PFC/ACFC, Van Jacobson compression, Echo/Terminate keepalive, hay IPv6CP (các enum giá trị có nhưng negotiator không xử lý). State machine là tập con đơn giản của RFC 1661, không có retransmit timer — [Enums/PppNegotiationState.cs:3](Enums/PppNegotiationState.cs#L3).
+- **Hỗ trợ vai trò server (một phần):** `IpcpNegotiator`/`Ipv6cpNegotiator` có nhánh server (gán IP/DNS/Interface-Identifier cho peer qua Nak) và `PppEngine` nhận `assignPeerAddress`/`assignPeerInterfaceId` — nhưng các driver trong project hiện chỉ dùng vai trò **client**; nhánh server là khung mở rộng (chỉ dùng cho loopback test) — [IpcpNegotiator.cs:52-78](IpcpNegotiator.cs#L52-L78), [PppEngine.cs:33-58](PppEngine.cs#L33-L58).
+- **Phạm vi hẹp có chủ đích:** chỉ thương lượng MRU/Magic-Number/Auth/IP/DNS + Interface-Identifier (IPV6CP); chưa làm PAP, PFC/ACFC, Van Jacobson compression, Echo/Terminate keepalive, hay IPV6CP-Compression. State machine là tập con đơn giản của RFC 1661, không có retransmit timer — [Enums/PppNegotiationState.cs:3](Enums/PppNegotiationState.cs#L3).
 - **Auth mở rộng được:** đi qua interface `IPppAuthenticator`; hiện chỉ có một hiện thực `MsChapV2Authenticator` (Description .csproj còn nhắc PAP/CHAP nhưng code thực tế mới có MS-CHAPv2) — [Interfaces/IPppAuthenticator.cs:9](Interfaces/IPppAuthenticator.cs#L9).
 - **netstandard2.0 vs net8.0:** code không rẽ nhánh theo framework; `record`/`init` khả dụng cả 2 TFM nhờ polyfill `TqkLibrary.CompilerServices` (`IsExternalInit`). Trên netstandard2.0 thừa hưởng polyfill `System.Memory`/`Microsoft.Bcl.AsyncInterfaces` từ [Directory.Build.props:16-25](../Directory.Build.props#L16-L25). Crypto MS-CHAPv2 dựa vào `Md4`/`Des` của [`TqkLibrary.Vpn.Crypto`](../TqkLibrary.Vpn.Crypto), `SHA1`/`RandomNumberGenerator` của BCL.
 

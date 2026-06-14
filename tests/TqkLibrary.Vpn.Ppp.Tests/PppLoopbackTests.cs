@@ -33,6 +33,32 @@ namespace TqkLibrary.Vpn.Ppp.Tests
         }
 
         [Fact]
+        public void TwoEngines_DualStack_ClientGetsIpv4AndLinkLocalIpv6()
+        {
+            var (ca, cb) = LoopbackPppChannel.CreatePair();
+            byte[] assignedIid = { 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x42 };
+
+            var client = new PppEngine(ca, magic: 0x11111111, localAddress: IPAddress.Any, enableIpv6: true);
+            var server = new PppEngine(cb, magic: 0x22222222, localAddress: ServerIp,
+                assignPeerAddress: ClientIp, assignPeerDns: Dns,
+                enableIpv6: true, assignPeerInterfaceId: assignedIid);
+
+            bool v4 = false, v6 = false;
+            client.LinkUp += () => v4 = true;
+            client.Ipv6Up += () => v6 = true;
+
+            client.Start();
+            server.Start();
+            LoopbackPppChannel.Pump(ca, cb);
+
+            Assert.True(v4);                                       // IPCP unaffected by enabling IPv6
+            Assert.True(v6);
+            Assert.Equal(ClientIp, client.AssignedAddress);
+            Assert.Equal(IPAddress.Parse("fe80::200:0:0:42"), client.AssignedAddressV6);
+            Assert.True(server.IsIpv6Up);
+        }
+
+        [Fact]
         public void AfterLinkUp_IpPacketIsRelayed()
         {
             var (ca, cb) = LoopbackPppChannel.CreatePair();

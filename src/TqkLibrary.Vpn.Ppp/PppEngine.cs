@@ -16,6 +16,7 @@ namespace TqkLibrary.Vpn.Ppp
         readonly IPppFrameChannel _channel;
         readonly LcpNegotiator _lcp;
         readonly IpcpNegotiator _ipcp;
+        readonly Ipv6cpNegotiator? _ipv6cp;
         readonly PppPacketChannel _packetChannel;
         readonly IPppAuthenticator? _authenticator;
         readonly object _sync = new();
@@ -23,7 +24,11 @@ namespace TqkLibrary.Vpn.Ppp
         /// <summary>
         /// Creates an engine. <paramref name="localAddress"/> is the IP we request (0.0.0.0 for a client).
         /// Pass <paramref name="assignPeerAddress"/> to act as the server. Pass <paramref name="authenticator"/>
-        /// to satisfy a server that demands authentication.
+        /// to satisfy a server that demands authentication. Set <paramref name="enableIpv6"/> to also run IPV6CP
+        /// (RFC 5072) alongside IPCP: it negotiates an Interface-Identifier → link-local fe80::/64 address without
+        /// affecting the IPv4 link-up (IPCP stays the trigger for <see cref="LinkUp"/>). <paramref name="interfaceId"/>
+        /// is the 8-byte identifier we request (default: derived from <paramref name="magic"/>);
+        /// <paramref name="assignPeerInterfaceId"/> forces one onto the peer when acting as a server.
         /// </summary>
         public PppEngine(
             IPppFrameChannel channel,
@@ -32,7 +37,10 @@ namespace TqkLibrary.Vpn.Ppp
             IPAddress? assignPeerAddress = null,
             IPAddress? assignPeerDns = null,
             IPppAuthenticator? authenticator = null,
-            int mtu = 1400)
+            int mtu = 1400,
+            bool enableIpv6 = false,
+            byte[]? interfaceId = null,
+            byte[]? assignPeerInterfaceId = null)
         {
             _channel = channel;
             _channel.FrameReceived += OnFrame;
@@ -42,10 +50,18 @@ namespace TqkLibrary.Vpn.Ppp
             _packetChannel = new PppPacketChannel(SendIpAsync, mtu);
             _lcp.Opened += OnLcpOpened;
             _ipcp.Opened += OnIpcpOpened;
+            if (enableIpv6)
+            {
+                _ipv6cp = new Ipv6cpNegotiator(p => SendControl(PppProtocol.Ipv6cp, p), interfaceId ?? DeriveInterfaceId(magic), assignPeerInterfaceId);
+                _ipv6cp.Opened += OnIpv6cpOpened;
+            }
         }
 
-        /// <summary>Raised once IPCP is open and the link can carry IP traffic.</summary>
+        /// <summary>Raised once IPCP is open and the link can carry IPv4 traffic.</summary>
         public event Action? LinkUp;
+
+        /// <summary>Raised once IPV6CP is open and a link-local IPv6 address has been negotiated (only when IPv6 is enabled).</summary>
+        public event Action? Ipv6Up;
 
         /// <summary>Raised when authentication succeeds.</summary>
         public event Action? AuthSucceeded;
@@ -62,8 +78,14 @@ namespace TqkLibrary.Vpn.Ppp
         /// <summary>DNS server learned via IPCP, if any.</summary>
         public IPAddress? AssignedDns => _ipcp.AssignedDns;
 
+        /// <summary>Our negotiated link-local IPv6 address (fe80::/64 + Interface-Identifier), or null if IPv6 is not enabled.</summary>
+        public IPAddress? AssignedAddressV6 => _ipv6cp?.LinkLocalAddress;
+
         /// <summary>True once the link is up (IPCP opened).</summary>
         public bool IsLinkUp { get; private set; }
+
+        /// <summary>True once IPV6CP has opened and a link-local IPv6 address is available.</summary>
+        public bool IsIpv6Up { get; private set; }
 
         /// <summary>True once authentication has succeeded (or none was required).</summary>
         public bool IsAuthenticated { get; private set; }
@@ -77,16 +99,29 @@ namespace TqkLibrary.Vpn.Ppp
         void OnLcpOpened()
         {
             if (_lcp.RequiresMsChapV2 && _authenticator != null)
-                return; // wait for the server's CHAP Challenge; IPCP starts after auth succeeds.
+                return; // wait for the server's CHAP Challenge; the network layer starts after auth succeeds.
 
             IsAuthenticated = true; // no auth required
+            StartNetworkLayer();
+        }
+
+        // Starts the network-control protocols once the link (and any auth) is up: IPCP always, IPV6CP when enabled.
+        void StartNetworkLayer()
+        {
             _ipcp.Start();
+            _ipv6cp?.Start();
         }
 
         void OnIpcpOpened()
         {
             IsLinkUp = true;
             LinkUp?.Invoke();
+        }
+
+        void OnIpv6cpOpened()
+        {
+            IsIpv6Up = true;
+            Ipv6Up?.Invoke();
         }
 
         void HandleAuth(ReadOnlySpan<byte> packet)
@@ -100,7 +135,7 @@ namespace TqkLibrary.Vpn.Ppp
                 case PppAuthStatus.Success:
                     IsAuthenticated = true;
                     AuthSucceeded?.Invoke();
-                    _ipcp.Start();
+                    StartNetworkLayer();
                     break;
                 case PppAuthStatus.Failure:
                     AuthFailed?.Invoke();
@@ -126,6 +161,7 @@ namespace TqkLibrary.Vpn.Ppp
                         if (_authenticator != null) HandleAuth(info.Span);
                         break;
                     case PppProtocol.Ipcp: _ipcp.HandlePacket(info.Span); break;
+                    case PppProtocol.Ipv6cp: _ipv6cp?.HandlePacket(info.Span); break;
                     case PppProtocol.Ip: _packetChannel.RaiseInbound(info); break;
                 }
             }
@@ -134,6 +170,16 @@ namespace TqkLibrary.Vpn.Ppp
         void SendControl(PppProtocol proto, byte[] payload) => _ = _channel.SendAsync(BuildFrame((ushort)proto, payload));
 
         ValueTask SendIpAsync(ReadOnlyMemory<byte> ipPacket) => _channel.SendAsync(BuildFrame((ushort)PppProtocol.Ip, ipPacket.Span));
+
+        // A deterministic, non-zero, locally-administered 8-byte Interface-Identifier derived from the PPP magic
+        // number (EUI-64 layout with the fffe fill). Servers usually Nak it with their own value anyway.
+        static byte[] DeriveInterfaceId(uint magic) => new byte[]
+        {
+            0x02,                                                        // U/L bit set (locally administered), unicast
+            (byte)(magic >> 24), (byte)(magic >> 16), (byte)(magic >> 8),
+            0xFF, 0xFE,                                                  // EUI-64 fill
+            (byte)magic, 0x01,                                          // non-zero tail
+        };
 
         static byte[] BuildFrame(ushort proto, ReadOnlySpan<byte> payload)
         {

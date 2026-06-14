@@ -1,9 +1,9 @@
 using System.Net;
 using System.Text;
-using TqkLibrary.Vpn.Abstractions.Drivers.Models;
-using TqkLibrary.Vpn.Drivers.L2tpIpsec;
-using TqkLibrary.Vpn.Drivers.Sstp;
-using TqkLibrary.Vpn.IpStack;
+using TqkLibrary.VpnClient.Abstractions.Drivers.Models;
+using TqkLibrary.VpnClient.Drivers.L2tpIpsec;
+using TqkLibrary.VpnClient.Drivers.Sstp;
+using TqkLibrary.VpnClient.IpStack;
 
 namespace Vpn2ProxyDemo
 {

@@ -1,0 +1,174 @@
+using System.Net;
+using System.Security.Cryptography;
+using TqkLibrary.VpnClient.Crypto;
+using TqkLibrary.VpnClient.Ipsec.Esp;
+using TqkLibrary.VpnClient.Ipsec.Ike.V2.Enums;
+using TqkLibrary.VpnClient.Ipsec.Ike.V2.Models;
+using TqkLibrary.VpnClient.Ipsec.Ike.V2.Payloads;
+
+namespace TqkLibrary.VpnClient.Ipsec.Ike.V2
+{
+    /// <summary>
+    /// The initiator-side IKEv2 client for PSK authentication: drives IKE_SA_INIT then IKE_AUTH, verifies the
+    /// responder's AUTH, and exposes the negotiated CHILD_SA SPIs and keys for the ESP data plane to consume.
+    /// Pure protocol logic — the caller owns the UDP transport.
+    /// </summary>
+    public sealed class IkeClient
+    {
+        readonly HmacPrf _prf = HmacPrf.Sha256();
+        readonly IkeSaInitiator _initiator;
+        readonly byte[] _preSharedKey;
+        readonly IdentificationPayload _identity;
+        readonly bool _requestTransportMode;
+
+        IkeCipher? _cipher;
+
+        /// <summary>Creates a client with the given PSK and IDi, optionally requesting ESP transport mode (for L2TP).</summary>
+        public IkeClient(byte[] preSharedKey, IdentificationPayload identity, bool requestTransportMode = true, byte[]? initiatorSpi = null)
+        {
+            _preSharedKey = preSharedKey;
+            _identity = identity;
+            _requestTransportMode = requestTransportMode;
+            _initiator = new IkeSaInitiator(initiatorSpi);
+            ChildInboundSpi = RandomSpi();
+        }
+
+        /// <summary>The ESP SPI we chose (the peer uses it when sending to us).</summary>
+        public byte[] ChildInboundSpi { get; }
+
+        /// <summary>The ESP SPI the responder chose (we use it when sending to the peer).</summary>
+        public byte[] ChildOutboundSpi { get; private set; } = Array.Empty<byte>();
+
+        /// <summary>The CHILD_SA keys, valid after a successful <see cref="ProcessAuthResponse"/>.</summary>
+        public ChildSaKeys? ChildKeys { get; private set; }
+
+        /// <summary>The ESP suite the responder selected in IKE_AUTH, valid after a successful <see cref="ProcessAuthResponse"/>.</summary>
+        public EspSuiteSelection? NegotiatedEsp { get; private set; }
+
+        /// <summary>The IKE SA key material (after IKE_SA_INIT).</summary>
+        public IkeKeyMaterial? IkeKeys => _initiator.Keys;
+
+        /// <summary>Builds the IKE_SA_INIT request (caller encodes &amp; sends it).</summary>
+        public IkeMessage BuildInitRequest(IPAddress localIp, ushort localPort, IPAddress remoteIp, ushort remotePort)
+            => _initiator.BuildInitRequest(localIp, localPort, remoteIp, remotePort);
+
+        /// <summary>Processes the IKE_SA_INIT response, deriving the IKE SA keys and preparing the SK cipher.</summary>
+        public void ProcessInitResponse(IkeMessage response)
+        {
+            IkeKeyMaterial keys = _initiator.ProcessInitResponse(response);
+            _cipher = IkeCipher.ForInitiator(keys);
+        }
+
+        /// <summary>Builds the encrypted IKE_AUTH request (IDi, AUTH, SAi2, TSi, TSr [, USE_TRANSPORT_MODE]).</summary>
+        public byte[] BuildAuthRequest()
+        {
+            if (_cipher is null || _initiator.Keys is null)
+                throw new InvalidOperationException("IKE_SA_INIT must complete before IKE_AUTH.");
+
+            byte[] auth = IkePskAuth.ComputeInitiatorAuth(
+                _prf, _preSharedKey, _initiator.InitRequestBytes, _initiator.PeerNonce,
+                _initiator.Keys.SkPi, _identity.BodyBytes());
+
+            var message = new IkeMessage
+            {
+                InitiatorSpi = _initiator.InitiatorSpi,
+                ResponderSpi = _initiator.ResponderSpi,
+                ExchangeType = IkeExchangeType.IkeAuth,
+                Flags = IkeHeaderFlags.Initiator,
+                MessageId = 1,
+            };
+            message.Payloads.Add(_identity);
+            message.Payloads.Add(new AuthenticationPayload { Method = IkeAuthMethod.SharedKey, Data = auth });
+
+            var sa = new SecurityAssociationPayload();
+            foreach (IkeProposal proposal in IkeProposals.EspProposals(ChildInboundSpi))
+                sa.Proposals.Add(proposal);
+            message.Payloads.Add(sa);
+            message.Payloads.Add(TrafficSelectorPayload.AnyIpv4(isInitiator: true));
+            message.Payloads.Add(TrafficSelectorPayload.AnyIpv4(isInitiator: false));
+            if (_requestTransportMode)
+                message.Payloads.Add(NotifyPayload.Create(IkeNotifyMessageType.UseTransportMode, Array.Empty<byte>()));
+
+            return _cipher.EncryptMessage(message);
+        }
+
+        /// <summary>
+        /// Decrypts and validates the IKE_AUTH response: verifies the responder AUTH, records its ESP SPI, and
+        /// derives the CHILD_SA keys. Returns false if decryption, AUTH verification, or the SAr2 is invalid.
+        /// </summary>
+        public bool ProcessAuthResponse(byte[] wire)
+        {
+            if (_cipher is null || _initiator.Keys is null) return false;
+
+            IkeMessage? response = _cipher.DecryptMessage(wire);
+            if (response is null) return false;
+
+            IdentificationPayload? idR = response.Payloads.OfType<IdentificationPayload>().FirstOrDefault(p => !p.IsInitiator);
+            AuthenticationPayload? auth = response.Find<AuthenticationPayload>();
+            SecurityAssociationPayload? sa = response.Find<SecurityAssociationPayload>();
+            if (idR is null || auth is null || sa is null) return false;
+
+            byte[] expected = IkePskAuth.ComputeResponderAuth(
+                _prf, _preSharedKey, _initiator.InitResponseBytes, _initiator.Nonce,
+                _initiator.Keys.SkPr, idR.BodyBytes());
+            if (!FixedTimeEquals(expected, auth.Data)) return false;
+
+            IkeProposal? proposal = sa.Proposals.FirstOrDefault();
+            if (proposal is null || proposal.Spi.Length == 0) return false;
+
+            EspSuiteSelection? selection = ParseEspSelection(proposal);
+            if (selection is null) return false;
+
+            ChildOutboundSpi = proposal.Spi;
+            NegotiatedEsp = selection;
+            ChildKeys = ChildSaKeys.Derive(_prf, _initiator.Keys.SkD, _initiator.Nonce, _initiator.PeerNonce,
+                selection.EncryptionKeyLengthBytes, selection.SecondSliceLengthBytes);
+            return true;
+        }
+
+        /// <summary>
+        /// Maps the responder's selected CHILD_SA proposal to the suite we will build. AES-GCM when the ENCR
+        /// transform says so; otherwise AES-CBC with the key length / integrity read from the transforms
+        /// (defaulting to 256-bit / HMAC-SHA-256-128). Returns null if the proposal is unusable.
+        /// </summary>
+        static EspSuiteSelection? ParseEspSelection(IkeProposal proposal)
+        {
+            IkeTransform? encryption = proposal.Transforms.FirstOrDefault(t => t.Type == IkeTransformType.Encryption);
+            if (encryption is null) return null;
+
+            int keyBytes = KeyLengthOr(encryption, 256) / 8;
+            if (keyBytes != 16 && keyBytes != 24 && keyBytes != 32) return null;
+
+            if (encryption.Id == IkeTransformId.Encryption.AesGcm16)
+                return EspSuiteSelection.AesGcm16(keyBytes);
+
+            IkeTransform? integrity = proposal.Transforms.FirstOrDefault(t => t.Type == IkeTransformType.Integrity);
+            return integrity != null && integrity.Id == IkeTransformId.Integrity.HmacSha1_96
+                ? EspSuiteSelection.AesCbcHmacSha1(keyBytes)
+                : EspSuiteSelection.AesCbcHmacSha256(keyBytes);
+        }
+
+        static int KeyLengthOr(IkeTransform transform, int fallback)
+        {
+            foreach (IkeTransformAttribute attribute in transform.Attributes)
+                if (attribute.Type == IkeTransformId.KeyLengthAttribute) return attribute.Value;
+            return fallback;
+        }
+
+        static byte[] RandomSpi()
+        {
+            byte[] spi = new byte[4];
+            using var rng = RandomNumberGenerator.Create();
+            rng.GetBytes(spi);
+            return spi;
+        }
+
+        static bool FixedTimeEquals(byte[] a, byte[] b)
+        {
+            if (a.Length != b.Length) return false;
+            int diff = 0;
+            for (int i = 0; i < a.Length; i++) diff |= a[i] ^ b[i];
+            return diff == 0;
+        }
+    }
+}

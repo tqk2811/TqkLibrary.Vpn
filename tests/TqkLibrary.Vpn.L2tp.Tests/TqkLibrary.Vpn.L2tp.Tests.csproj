@@ -1,7 +1,0 @@
-<Project Sdk="Microsoft.NET.Sdk">
-
-  <ItemGroup>
-    <ProjectReference Include="..\..\src\TqkLibrary.Vpn.L2tp\TqkLibrary.Vpn.L2tp.csproj" />
-  </ItemGroup>
-
-</Project>

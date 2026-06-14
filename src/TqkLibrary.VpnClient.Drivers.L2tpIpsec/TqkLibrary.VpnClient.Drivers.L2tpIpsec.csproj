@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>L2TP/IPsec VPN protocol driver: IKEv1 PSK (Main + Quick Mode) over NAT-T, ESP transport mode, L2TPv2, PPP/MS-CHAPv2; keepalive, rekey, teardown, auto-reconnect.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Abstractions\TqkLibrary.VpnClient.Abstractions.csproj" />
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Ppp\TqkLibrary.VpnClient.Ppp.csproj" />
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Ipsec\TqkLibrary.VpnClient.Ipsec.csproj" />
+    <ProjectReference Include="..\TqkLibrary.VpnClient.L2tp\TqkLibrary.VpnClient.L2tp.csproj" />
+  </ItemGroup>
+
+</Project>

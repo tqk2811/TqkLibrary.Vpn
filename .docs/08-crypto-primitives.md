@@ -1,6 +1,6 @@
 # 08 — Crypto primitives: có sẵn vs tự viết
 
-> Cô lập trong family `TqkLibrary.Vpn.Crypto.*` sau interface (`Crypto.Abstractions`) để façade & driver không phụ thuộc chi tiết framework. netstandard2.0 thiếu nhiều API → ẩn sau shim.
+> Cô lập trong family `TqkLibrary.VpnClient.Crypto.*` sau interface (`Crypto.Abstractions`) để façade & driver không phụ thuộc chi tiết framework. netstandard2.0 thiếu nhiều API → ẩn sau shim.
 
 ## Bảng tổng hợp
 

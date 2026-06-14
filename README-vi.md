@@ -1,4 +1,4 @@
-# TqkLibrary.Vpn
+# TqkLibrary.VpnClient
 
 > **VPN client thuần userspace cho .NET** (`netstandard2.0` + `net8.0`) — không TUN/TAP, không kernel driver, không ghi bảng route hệ điều hành, không cần quyền admin. Ứng dụng nhận một IP ảo trong đường hầm rồi mở TCP/UDP socket chạy **bên trong** tunnel, cắm thẳng vào `HttpClient`.
 
@@ -20,7 +20,7 @@ Toàn bộ ngăn xếp giao thức — IKE, ESP, L2TP, PPP, SSTP, và cả TCP/I
 ## Dùng nhanh
 
 ```csharp
-using TqkLibrary.Vpn;
+using TqkLibrary.VpnClient;
 
 // 1) Đăng ký driver rồi build client
 var vpn = new VpnClientBuilder()
@@ -42,7 +42,7 @@ Stream s  = tcp.GetStream();                                   // cắm thẳng 
 
 ## Kiến trúc
 
-Hai triết lý: **plugin theo driver** (mỗi giao thức một `IVpnProtocolDriver`) và **đảo ngược phụ thuộc** (mọi tầng chỉ phụ thuộc `Abstractions`, không phụ thuộc ngang). Mọi giao thức hội tụ về một "đường ống gói IP" — [`IPacketChannel`](src/TqkLibrary.Vpn.Abstractions/Channels/Interfaces/IPacketChannel.cs#L6) — và stack TCP/IP **chỉ** bind vào interface đó.
+Hai triết lý: **plugin theo driver** (mỗi giao thức một `IVpnProtocolDriver`) và **đảo ngược phụ thuộc** (mọi tầng chỉ phụ thuộc `Abstractions`, không phụ thuộc ngang). Mọi giao thức hội tụ về một "đường ống gói IP" — [`IPacketChannel`](src/TqkLibrary.VpnClient.Abstractions/Channels/Interfaces/IPacketChannel.cs#L6) — và stack TCP/IP **chỉ** bind vào interface đó.
 
 ```
                         Ứng dụng (.NET)
@@ -51,12 +51,12 @@ Hai triết lý: **plugin theo driver** (mỗi giao thức một `IVpnProtocolDr
         control plane                         data plane
               │                                   │
  ┌────────────▼──────────────┐     ┌──────────────▼──────────────┐
- │ TqkLibrary.Vpn   (APP)    │     │ TqkLibrary.Vpn.Sockets      │
+ │ TqkLibrary.VpnClient   (APP)    │     │ TqkLibrary.VpnClient.Sockets      │
  │ VpnClientBuilder/VpnClient│     │ VpnTcpClient / VpnUdpClient │
  └────────────┬──────────────┘     │ VpnNetworkStream            │
               │ IVpnProtocolDriver └─────────────┬───────────────┘
  ┌────────────▼─────────────┐     ┌──────────────▼──────────────┐
- │ DRIVER                   │     │ TqkLibrary.Vpn.IpStack      │
+ │ DRIVER                   │     │ TqkLibrary.VpnClient.IpStack      │
  │ Drivers.Sstp             │     │ TCP·UDP·ICMP / IPv4+IPv6    │
  │ Drivers.L2tpIpsec        │     │ (userspace, dual-stack)     │
  └────────────┬─────────────┘     └──────────────┬──────────────┘
@@ -97,17 +97,17 @@ Hai triết lý: **plugin theo driver** (mỗi giao thức một `IVpnProtocolDr
 
 | Tầng | Project | Vai trò | README |
 |---|---|---|---|
-| APP | `TqkLibrary.Vpn` | Façade: `VpnClient`/`VpnClientBuilder`, đăng ký driver | [README](src/TqkLibrary.Vpn/README-vi.md) |
-| APP | `TqkLibrary.Vpn.Sockets` | `VpnTcpClient`/`VpnUdpClient`/`VpnNetworkStream` trong tunnel | [README](src/TqkLibrary.Vpn.Sockets/README-vi.md) |
-| DRIVER | `TqkLibrary.Vpn.Drivers.Sstp` | Driver MS-SSTP (TLS + PPP + crypto binding) | [README](src/TqkLibrary.Vpn.Drivers.Sstp/README-vi.md) |
-| DRIVER | `TqkLibrary.Vpn.Drivers.L2tpIpsec` | Driver L2TP/IPsec (IKEv1 + ESP + L2TP + PPP) | [README](src/TqkLibrary.Vpn.Drivers.L2tpIpsec/README-vi.md) |
-| PROTOCOL | `TqkLibrary.Vpn.Ipsec` | IKEv1/IKEv2 + ESP + NAT-T (`Nat/`) | [README](src/TqkLibrary.Vpn.Ipsec/README-vi.md) |
-| PROTOCOL | `TqkLibrary.Vpn.L2tp` | L2TPv2 control + data (RFC 2661) | [README](src/TqkLibrary.Vpn.L2tp/README-vi.md) |
-| PROTOCOL | `TqkLibrary.Vpn.Ppp` | PPP: LCP/IPCP/MS-CHAPv2 + HDLC framing | [README](src/TqkLibrary.Vpn.Ppp/README-vi.md) |
-| PROTOCOL | `TqkLibrary.Vpn.IpStack` | TCP/IP userspace dual-stack (IPv4+IPv6) | [README](src/TqkLibrary.Vpn.IpStack/README-vi.md) |
-| PROTOCOL | `TqkLibrary.Vpn.Ethernet` | Nền L2: codec Ethernet + switch học MAC + `VirtualHost` | [README](src/TqkLibrary.Vpn.Ethernet/README-vi.md) |
-| CRYPTO | `TqkLibrary.Vpn.Crypto` | Primitive: AES, DH MODP, HMAC-PRF, MD4, DES, AES-GCM shim | [README](src/TqkLibrary.Vpn.Crypto/README-vi.md) |
-| CORE | `TqkLibrary.Vpn.Abstractions` | Hợp đồng + model + enum (đáy đồ thị phụ thuộc) | [README](src/TqkLibrary.Vpn.Abstractions/README-vi.md) |
+| APP | `TqkLibrary.VpnClient` | Façade: `VpnClient`/`VpnClientBuilder`, đăng ký driver | [README](src/TqkLibrary.VpnClient/README-vi.md) |
+| APP | `TqkLibrary.VpnClient.Sockets` | `VpnTcpClient`/`VpnUdpClient`/`VpnNetworkStream` trong tunnel | [README](src/TqkLibrary.VpnClient.Sockets/README-vi.md) |
+| DRIVER | `TqkLibrary.VpnClient.Drivers.Sstp` | Driver MS-SSTP (TLS + PPP + crypto binding) | [README](src/TqkLibrary.VpnClient.Drivers.Sstp/README-vi.md) |
+| DRIVER | `TqkLibrary.VpnClient.Drivers.L2tpIpsec` | Driver L2TP/IPsec (IKEv1 + ESP + L2TP + PPP) | [README](src/TqkLibrary.VpnClient.Drivers.L2tpIpsec/README-vi.md) |
+| PROTOCOL | `TqkLibrary.VpnClient.Ipsec` | IKEv1/IKEv2 + ESP + NAT-T (`Nat/`) | [README](src/TqkLibrary.VpnClient.Ipsec/README-vi.md) |
+| PROTOCOL | `TqkLibrary.VpnClient.L2tp` | L2TPv2 control + data (RFC 2661) | [README](src/TqkLibrary.VpnClient.L2tp/README-vi.md) |
+| PROTOCOL | `TqkLibrary.VpnClient.Ppp` | PPP: LCP/IPCP/MS-CHAPv2 + HDLC framing | [README](src/TqkLibrary.VpnClient.Ppp/README-vi.md) |
+| PROTOCOL | `TqkLibrary.VpnClient.IpStack` | TCP/IP userspace dual-stack (IPv4+IPv6) | [README](src/TqkLibrary.VpnClient.IpStack/README-vi.md) |
+| PROTOCOL | `TqkLibrary.VpnClient.Ethernet` | Nền L2: codec Ethernet + switch học MAC + `VirtualHost` | [README](src/TqkLibrary.VpnClient.Ethernet/README-vi.md) |
+| CRYPTO | `TqkLibrary.VpnClient.Crypto` | Primitive: AES, DH MODP, HMAC-PRF, MD4, DES, AES-GCM shim | [README](src/TqkLibrary.VpnClient.Crypto/README-vi.md) |
+| CORE | `TqkLibrary.VpnClient.Abstractions` | Hợp đồng + model + enum (đáy đồ thị phụ thuộc) | [README](src/TqkLibrary.VpnClient.Abstractions/README-vi.md) |
 
 ## Trạng thái
 

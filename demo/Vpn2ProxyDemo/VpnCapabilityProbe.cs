@@ -4,16 +4,16 @@ using System.Net;
 using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
-using TqkLibrary.Vpn.Abstractions.Drivers.Enums;
-using TqkLibrary.Vpn.Abstractions.Drivers.Models;
-using TqkLibrary.Vpn.IpStack;
+using TqkLibrary.VpnClient.Abstractions.Drivers.Enums;
+using TqkLibrary.VpnClient.Abstractions.Drivers.Models;
+using TqkLibrary.VpnClient.IpStack;
 
 namespace Vpn2ProxyDemo
 {
     /// <summary>
     /// Probe + suy luận "VPN này hỗ trợ gì" để in panel ngay sau khi tunnel lên. Phần <b>probe được</b> thì gửi gói thật
     /// qua tunnel (UDP qua DNS-over-UDP — tái dùng <see cref="UdpDnsProbe"/>; LAN ảo qua ICMP ping gateway nội bộ —
-    /// <see cref="TqkLibrary.Vpn.IpStack.TcpIpStack.PingAsync"/>); phần <b>chưa probe được</b> thì suy từ địa chỉ
+    /// <see cref="TqkLibrary.VpnClient.IpStack.TcpIpStack.PingAsync"/>); phần <b>chưa probe được</b> thì suy từ địa chỉ
     /// được cấp + năng lực driver (<see cref="VpnDriverCapabilities"/>): IPv6 (chưa có IPv6CP), listen-external (NAT).
     /// <para>
     /// Mỗi sub-probe tự bao timeout ngắn và KHÔNG ném khi hết giờ (trả <see cref="CapabilityStatus.Unknown"/>/

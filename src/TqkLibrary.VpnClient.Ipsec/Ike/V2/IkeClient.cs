@@ -23,6 +23,7 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.V2
         readonly bool _requestConfiguration;
 
         IkeCipher? _cipher;
+        uint _nextMessageId = 2; // IKE_SA_INIT=0, IKE_AUTH=1; post-auth exchanges start here.
 
         /// <summary>
         /// Creates a client with the given PSK and IDi. <paramref name="requestTransportMode"/> asks for ESP
@@ -144,6 +145,61 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.V2
             ChildKeys = ChildSaKeys.Derive(_prf, _initiator.Keys.SkD, _initiator.Nonce, _initiator.PeerNonce,
                 selection.EncryptionKeyLengthBytes, selection.SecondSliceLengthBytes);
             return true;
+        }
+
+        // ---- Post-IKE_AUTH exchanges (INFORMATIONAL: DPD + DELETE), RFC 7296 §1.4/§2.4 ----
+
+        /// <summary>The message ID the next initiator-sent request will carry (IKE_SA_INIT=0, IKE_AUTH=1, then 2…).</summary>
+        public uint NextMessageId => _nextMessageId;
+
+        /// <summary>Decrypts any SK-protected message received after IKE_AUTH (INFORMATIONAL / CREATE_CHILD_SA); null if invalid.</summary>
+        public IkeMessage? Decrypt(byte[] wire) => _cipher?.DecryptMessage(wire);
+
+        /// <summary>Builds an encrypted INFORMATIONAL request carrying <paramref name="payloads"/> (empty = liveness/DPD), consuming a message ID.</summary>
+        public byte[] BuildInformationalRequest(params IkePayload[] payloads)
+            => BuildEncryptedRequest(IkeExchangeType.Informational, payloads);
+
+        /// <summary>Builds an empty INFORMATIONAL request — an IKEv2 liveness (Dead Peer Detection) probe (RFC 7296 §2.4).</summary>
+        public byte[] BuildDeadPeerDetection() => BuildInformationalRequest();
+
+        /// <summary>Builds an INFORMATIONAL request deleting the ESP CHILD_SA (our inbound SPI), for teardown.</summary>
+        public byte[] BuildDeleteChildSa() => BuildInformationalRequest(DeletePayload.Esp(ChildInboundSpi));
+
+        /// <summary>Builds an INFORMATIONAL request deleting the IKE SA itself — a clean tunnel teardown (RFC 7296 §1.4.1).</summary>
+        public byte[] BuildDeleteIkeSa() => BuildInformationalRequest(DeletePayload.Ike());
+
+        /// <summary>
+        /// Builds an INFORMATIONAL response echoing a peer-initiated request's message ID — e.g. the empty ack to the
+        /// gateway's DPD probe, or the ack to a peer DELETE. Keeps the Initiator flag (we remain the SA initiator).
+        /// </summary>
+        public byte[] BuildInformationalResponse(uint messageId, params IkePayload[] payloads)
+        {
+            if (_cipher is null) throw new InvalidOperationException("IKE SA not established.");
+            var message = new IkeMessage
+            {
+                InitiatorSpi = _initiator.InitiatorSpi,
+                ResponderSpi = _initiator.ResponderSpi,
+                ExchangeType = IkeExchangeType.Informational,
+                Flags = IkeHeaderFlags.Initiator | IkeHeaderFlags.Response,
+                MessageId = messageId,
+            };
+            foreach (IkePayload payload in payloads) message.Payloads.Add(payload);
+            return _cipher.EncryptMessage(message);
+        }
+
+        byte[] BuildEncryptedRequest(IkeExchangeType exchange, IkePayload[] payloads)
+        {
+            if (_cipher is null) throw new InvalidOperationException("IKE SA not established.");
+            var message = new IkeMessage
+            {
+                InitiatorSpi = _initiator.InitiatorSpi,
+                ResponderSpi = _initiator.ResponderSpi,
+                ExchangeType = exchange,
+                Flags = IkeHeaderFlags.Initiator,
+                MessageId = _nextMessageId++,
+            };
+            foreach (IkePayload payload in payloads) message.Payloads.Add(payload);
+            return _cipher.EncryptMessage(message);
         }
 
         /// <summary>

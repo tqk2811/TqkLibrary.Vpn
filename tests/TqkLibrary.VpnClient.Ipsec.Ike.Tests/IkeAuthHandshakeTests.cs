@@ -131,6 +131,57 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.Tests
             Assert.Equal(new[] { IPAddress.Parse("8.8.4.4") }, client.Configuration.DnsServers);
         }
 
+        [Fact]
+        public void AfterHandshake_DpdAndDelete_RideTheInformationalSkChannel()
+        {
+            IkeClient client = HandshakeReady(out SimulatedResponder responder);
+
+            // --- DPD (liveness): empty INFORMATIONAL request, message ID continues at 2 ---
+            byte[] dpdWire = client.BuildDeadPeerDetection();
+            IkeMessage dpd = responder.Decrypt(dpdWire)!;
+            Assert.Equal(IkeExchangeType.Informational, dpd.ExchangeType);
+            Assert.Empty(dpd.Payloads);
+            Assert.Equal(2u, dpd.MessageId);
+
+            // Responder answers with an empty INFORMATIONAL response; the client decrypts it.
+            var ack = new IkeMessage
+            {
+                InitiatorSpi = responder.InitiatorSpi,
+                ResponderSpi = responder.ResponderSpi,
+                ExchangeType = IkeExchangeType.Informational,
+                Flags = IkeHeaderFlags.Response,
+                MessageId = dpd.MessageId,
+            };
+            IkeMessage? gotAck = client.Decrypt(responder.EncryptResponse(ack));
+            Assert.NotNull(gotAck);
+            Assert.Empty(gotAck!.Payloads);
+
+            // --- DELETE CHILD_SA: next message ID, carries the ESP SPI we chose inbound ---
+            IkeMessage delChild = responder.Decrypt(client.BuildDeleteChildSa())!;
+            DeletePayload childDelete = delChild.Find<DeletePayload>()!;
+            Assert.Equal(IkeProtocolId.Esp, childDelete.ProtocolId);
+            Assert.Equal(client.ChildInboundSpi, Assert.Single(childDelete.Spis));
+            Assert.Equal(3u, delChild.MessageId);
+
+            // --- DELETE IKE_SA: clean teardown, no SPIs ---
+            IkeMessage delIke = responder.Decrypt(client.BuildDeleteIkeSa())!;
+            DeletePayload ikeDelete = delIke.Find<DeletePayload>()!;
+            Assert.Equal(IkeProtocolId.Ike, ikeDelete.ProtocolId);
+            Assert.Empty(ikeDelete.Spis);
+            Assert.Equal(4u, delIke.MessageId);
+        }
+
+        // Runs IKE_SA_INIT + IKE_AUTH and returns a client with a live SK channel plus its responder.
+        static IkeClient HandshakeReady(out SimulatedResponder responder)
+        {
+            var idInitiator = new IdentificationPayload { IsInitiator = true, IdType = IkeIdType.Ipv4Address, Data = new byte[] { 0, 0, 0, 0 } };
+            var client = new IkeClient(Psk, idInitiator);
+            responder = new SimulatedResponder(Psk);
+            client.ProcessInitResponse(IkeMessage.Decode(responder.HandleInit(client.BuildInitRequest(IPAddress.Loopback, 4500, IPAddress.Loopback, 4500).Encode())));
+            Assert.True(client.ProcessAuthResponse(responder.HandleAuth(client.BuildAuthRequest())));
+            return client;
+        }
+
         static EspSession BuildInitiatorEsp(IkeClient client)
         {
             ChildSaKeys k = client.ChildKeys!;
@@ -186,6 +237,12 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.Tests
 
             public byte[] ChildInboundSpi { get; }
             public byte[] ChildOutboundSpi { get; private set; } = Array.Empty<byte>();
+
+            // Exposed so post-auth INFORMATIONAL/CREATE_CHILD_SA tests can drive the SK channel both ways.
+            public byte[] InitiatorSpi => _initiatorSpi;
+            public byte[] ResponderSpi => _spi;
+            public IkeMessage? Decrypt(byte[] wire) => _cipher!.DecryptMessage(wire);
+            public byte[] EncryptResponse(IkeMessage message) => _cipher!.EncryptMessage(message);
 
             public byte[] HandleInit(byte[] requestWire)
             {

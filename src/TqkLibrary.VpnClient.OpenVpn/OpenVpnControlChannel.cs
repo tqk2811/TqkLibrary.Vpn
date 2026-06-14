@@ -144,6 +144,27 @@ namespace TqkLibrary.VpnClient.OpenVpn
             return negotiation.NegotiateAsync(optionsString, username, password, peerInfo, cancellationToken);
         }
 
+        /// <summary>
+        /// Pulls the server configuration (V2.e): sends <c>PUSH_REQUEST</c> over the TLS channel and returns the parsed
+        /// <c>PUSH_REPLY</c> (tunnel address, routes, DNS, peer-id, keepalive timers, cipher). Non-PUSH_REPLY
+        /// informational lines are skipped; <c>AUTH_FAILED</c> throws.
+        /// </summary>
+        public async Task<OpenVpnPushReply> RequestConfigAsync(CancellationToken cancellationToken = default)
+        {
+            byte[] request = OpenVpnControlMessage.Build("PUSH_REQUEST");
+            await TlsStream.WriteAsync(request, 0, request.Length, cancellationToken).ConfigureAwait(false);
+            await TlsStream.FlushAsync(cancellationToken).ConfigureAwait(false);
+
+            while (true)
+            {
+                string message = await OpenVpnControlMessage.ReadAsync(TlsStream, cancellationToken).ConfigureAwait(false);
+                if (OpenVpnPushReply.TryParse(message, out OpenVpnPushReply reply)) return reply;
+                if (message.StartsWith("AUTH_FAILED", StringComparison.Ordinal))
+                    throw new InvalidOperationException("OpenVPN server rejected the session: " + message);
+                // otherwise an informational line (e.g. a deferred reply) — keep reading.
+            }
+        }
+
         // Bridge write callback: fragment the TLS bytes, queue each fragment reliably (blocking on window space), pump.
         async Task SendTlsAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken)
         {

@@ -2,7 +2,7 @@
 
 Thư viện **protocol OpenVPN** thuần .NET (tương thích OpenVPN community server) — **không dùng PPP**. Control channel (TLS) + data channel ghép trên một socket UDP/TCP, demux theo byte opcode đầu. Đây là project protocol-level cho driver **V.2** (đang xây theo phase, xem [`.docs/11`](../../.docs/11-todo-roadmap.md) §V.2).
 
-> **Trạng thái:** **V2.a reliability-layer + config/.ovpn + V2.b TLS-in-control + V2.c tls-auth/tls-crypt + V2.d data channel AEAD xong**. Đã có: (1) codec gói control (opcode/key-id + session-id + ACK array + packet-id + payload); (2) reliability state machine — send window (gán packet-id + retransmit/backoff theo clock inject) + receive window (dedup + in-order delivery cho TLS + theo dõi ACK); (3) **`OpenVpnProfile` (config lập trình driver tiêu thụ) + `OpenVpnConfigParser` đọc `.ovpn`** (cert/key inline → PEM, dạng path → giữ đường dẫn cho caller; không I/O); (4) **`OpenVpnControlChannel` (client)** — ráp 2 window + codec + session-id + transport `IOpenVpnTransport`, làm reset HARD_RESET_CLIENT_V2 ⇄ HARD_RESET_SERVER_V2 rồi chạy `SslStream` thật trên `OpenVpnTlsBridgeStream` in-memory (TLS **bên trong** reliability layer); (5) **`IOpenVpnControlWrap`** — bọc/giải-bọc control packet: `OpenVpnTlsAuthWrap` (`--tls-auth` HMAC) + `OpenVpnTlsCryptWrap` (`--tls-crypt` HMAC + AES-256-CTR) trên `OpenVpnStaticKey` (`ta.key` 2048-bit), opt-in ở ctor channel; (6) **key-method-2 + data channel AEAD** — `OpenVpnKeyNegotiation` trao đổi key_source2 trên `TlsStream`, `OpenVpnKeyMethod2`/`Tls1Prf` suy khóa, `OpenVpnDataChannel` gói **P_DATA_V2 + AES-256-GCM** (`AesGcmCipher`) + anti-replay 64-gói. **Chưa**: PUSH_REPLY/keepalive (V2.e), NCP (V2.f), `tls-ekm` (chờ F.5), transport TCP/tap (V2.g); **direction key + interop chờ lab Q.1**.
+> **Trạng thái:** **V2.a reliability-layer + config/.ovpn + V2.b TLS-in-control + V2.c tls-auth/tls-crypt + V2.d data channel AEAD xong**. Đã có: (1) codec gói control (opcode/key-id + session-id + ACK array + packet-id + payload); (2) reliability state machine — send window (gán packet-id + retransmit/backoff theo clock inject) + receive window (dedup + in-order delivery cho TLS + theo dõi ACK); (3) **`OpenVpnProfile` (config lập trình driver tiêu thụ) + `OpenVpnConfigParser` đọc `.ovpn`** (cert/key inline → PEM, dạng path → giữ đường dẫn cho caller; không I/O); (4) **`OpenVpnControlChannel` (client)** — ráp 2 window + codec + session-id + transport `IOpenVpnTransport`, làm reset HARD_RESET_CLIENT_V2 ⇄ HARD_RESET_SERVER_V2 rồi chạy `SslStream` thật trên `OpenVpnTlsBridgeStream` in-memory (TLS **bên trong** reliability layer); (5) **`IOpenVpnControlWrap`** — bọc/giải-bọc control packet: `OpenVpnTlsAuthWrap` (`--tls-auth` HMAC) + `OpenVpnTlsCryptWrap` (`--tls-crypt` HMAC + AES-256-CTR) trên `OpenVpnStaticKey` (`ta.key` 2048-bit), opt-in ở ctor channel; (6) **key-method-2 + data channel AEAD** — `OpenVpnKeyNegotiation` trao đổi key_source2 trên `TlsStream`, `OpenVpnKeyMethod2`/`Tls1Prf` suy khóa, `OpenVpnDataChannel` gói **P_DATA_V2 + AES-256-GCM** (`AesGcmCipher`) + anti-replay 64-gói; (7) **config-pull + keepalive + make-before-break** — `RequestConfigAsync` (PUSH_REQUEST/PUSH_REPLY) → `OpenVpnPushReply` → `TunnelConfig`, `OpenVpnPing`/`OpenVpnKeepalive` (ping magic + timing), `OpenVpnDataPlane` giữ current+previous channel (mirror `EspDataPlane`). **Chưa**: NCP (V2.f), transport TCP/tap (V2.g), `tls-ekm` + điều phối control-plane soft-reset (driver) — chờ F.5/driver; **direction key + interop chờ lab Q.1**.
 
 ## Vị trí kiến trúc
 
@@ -12,7 +12,7 @@ Thư viện **protocol OpenVPN** thuần .NET (tương thích OpenVPN community 
 
 | Hướng | Project | Lý do |
 |-------|---------|-------|
-| Dùng | [Abstractions](../TqkLibrary.VpnClient.Abstractions) | (cho các phase sau: `IPacketChannel`, exceptions, `IHostResolver`) |
+| Dùng | [Abstractions](../TqkLibrary.VpnClient.Abstractions) | `TunnelConfig` (đích của PUSH_REPLY, V2.e); các phase sau: `IPacketChannel`, exceptions, `IHostResolver` |
 | Dùng | [Crypto](../TqkLibrary.VpnClient.Crypto) | `AesCtr` (tls-crypt V2.c), `Tls1Prf` (key-method-2 V2.d), `AesGcmCipher` + `AntiReplayWindow` (data channel V2.d) |
 | Được dùng bởi | `Drivers.OpenVpn` (V.2, **chưa có**) | driver lắp ráp control/data plane |
 
@@ -36,7 +36,12 @@ TqkLibrary.VpnClient.OpenVpn/
 │  ├─ OpenVpnKeyMethod2.cs         Build client msg + parse server reply + DeriveDataKeys (Tls1Prf → master → key2)
 │  ├─ OpenVpnDataChannelKeys.cs    Khóa data plane mỗi chiều: cipher key 32 + implicit IV 8
 │  ├─ OpenVpnKeyNegotiation.cs     Chạy trao đổi key-method-2 trên TlsStream → OpenVpnDataChannelKeys
-│  └─ OpenVpnDataChannel.cs        Protect/TryUnprotect P_DATA_V2 + AES-256-GCM + anti-replay
+│  ├─ OpenVpnDataChannel.cs        Protect/TryUnprotect P_DATA_V2 + AES-256-GCM + anti-replay
+│  ├─ OpenVpnControlMessage.cs     Control string NUL-terminated trên TLS (PUSH_REQUEST/PUSH_REPLY…) — V2.e
+│  ├─ OpenVpnPushReply.cs          Parse PUSH_REPLY (ifconfig/route/DNS/peer-id/ping/cipher) → TunnelConfig
+│  ├─ OpenVpnPing.cs               Ping magic 16B (keepalive qua data channel)
+│  ├─ OpenVpnKeepalive.cs          Timing ping/ping-restart clock-inject (ShouldSendPing/IsPeerDead)
+│  └─ OpenVpnDataPlane.cs          Make-before-break: current+previous data channel + RekeyNeeded (mirror EspDataPlane)
 ├─ Config/
 │  ├─ OpenVpnProfile.cs            Config lập trình (remote, proto, device, TLS material, cipher/auth, options)
 │  ├─ OpenVpnConfigParser.cs       Parse text .ovpn → OpenVpnProfile (pure, không I/O)
@@ -62,7 +67,7 @@ TqkLibrary.VpnClient.OpenVpn/
 | `OpenVpnReliableSendWindow` | `Queue`(gán id 0,1,2…) → `CollectDue(nowMs)` (gửi mới + retransmit hết interval, mark sent) → `Acknowledge(id/ids)`; `CanQueue`/`InFlight`/`IsExhausted(nowMs)` | [OpenVpnReliableSendWindow.cs:11](OpenVpnReliableSendWindow.cs#L11) |
 | `OpenVpnReliableReceiveWindow` | `Offer(id,payload)` (dedup + buffer trong window) → `TryDeliver` (in-order cho TLS) → `TakeAcks(max)` (≤8 cho P_ACK / ≤4 piggyback); `NextExpectedId`/`PendingAcks` | [OpenVpnReliableReceiveWindow.cs:11](OpenVpnReliableReceiveWindow.cs#L11) |
 | `IOpenVpnTransport` | cổng `SendAsync(packet)` + event `DatagramReceived` — 1 gói OpenVPN/đơn vị (driver UDP/TCP; in-process pair cho test) | [IOpenVpnTransport.cs:9](IOpenVpnTransport.cs#L9) |
-| `OpenVpnControlChannel` | control channel client: ctor nhận `controlWrap?` (tls-auth/tls-crypt); `ConnectAsync(...)` reset + `SslStream` AuthenticateAsClient trên reliability layer; `NegotiateDataChannelKeysAsync(...)` chạy key-method-2 (V2.d); `LocalSessionId`/`RemoteSessionId`/`KeyId`/`TlsStream`/`RemoteCertificate` | [OpenVpnControlChannel.cs:21](OpenVpnControlChannel.cs#L21) |
+| `OpenVpnControlChannel` | control channel client: ctor nhận `controlWrap?` (tls-auth/tls-crypt); `ConnectAsync(...)` reset + `SslStream` AuthenticateAsClient; `NegotiateDataChannelKeysAsync(...)` key-method-2 (V2.d); `RequestConfigAsync(...)` PUSH_REQUEST→PUSH_REPLY (V2.e); `LocalSessionId`/`RemoteSessionId`/`KeyId`/`TlsStream` | [OpenVpnControlChannel.cs:21](OpenVpnControlChannel.cs#L21) |
 | `OpenVpnTlsBridgeStream` *(internal)* | `Stream` in-memory cho SslStream: `WriteAsync`→fragment+gửi reliable (callback), `ReadAsync`←payload in-order qua `EnqueueInbound`; `CompleteInbound` đóng | [OpenVpnTlsBridgeStream.cs:15](OpenVpnTlsBridgeStream.cs#L15) |
 | `IOpenVpnControlWrap` | seam bọc control packet trên dây: `Wrap(controlPacket)` / `TryUnwrap(wire, out controlPacket)` (byte→byte quanh codec; unwrap-fail ⇒ drop) | [IOpenVpnControlWrap.cs:12](IOpenVpnControlWrap.cs#L12) |
 | `OpenVpnTlsAuthWrap` | `--tls-auth`: HMAC (mặc định SHA1) bọc — `op\|sid\|HMAC\|replay_id\|net_time\|body`, key out/in theo `OpenVpnKeyDirection`; `FixedTimeEquals` so tag | [OpenVpnTlsAuthWrap.cs:19](OpenVpnTlsAuthWrap.cs#L19) |
@@ -74,6 +79,11 @@ TqkLibrary.VpnClient.OpenVpn/
 | `OpenVpnDataChannelKeys` | khóa data plane mỗi chiều: `SendCipherKey`(32)/`SendImplicitIv`(8)/`ReceiveCipherKey`/`ReceiveImplicitIv` | [DataChannel/OpenVpnDataChannelKeys.cs:13](DataChannel/OpenVpnDataChannelKeys.cs#L13) |
 | `OpenVpnKeyNegotiation` | client: `NegotiateAsync(options, user?, pass?, peerInfo?)` ghi msg + đọc reply trên `Stream` → `OpenVpnDataChannelKeys` | [DataChannel/OpenVpnKeyNegotiation.cs:11](DataChannel/OpenVpnKeyNegotiation.cs#L11) |
 | `OpenVpnDataChannel` | `Protect`/`TryUnprotect` P_DATA_V2 + AES-256-GCM (`AesGcmCipher`), nonce=`packet_id‖implicit_iv`, AAD=header rõ; packet-id `checked(++)` + `AntiReplayWindow` | [DataChannel/OpenVpnDataChannel.cs:24](DataChannel/OpenVpnDataChannel.cs#L24) |
+| `OpenVpnControlMessage` | static: `Build(text)` (ascii+NUL) / `ReadAsync(stream)` đọc tới NUL — control string trên TLS | [DataChannel/OpenVpnControlMessage.cs:12](DataChannel/OpenVpnControlMessage.cs#L12) |
+| `OpenVpnPushReply` | `TryParse(msg)` → `IfconfigLocal`/`Routes`/`DnsServers`/`PeerId`/`Ping`/`PingRestart`/`Cipher`/`Topology`; `ToTunnelConfig()` | [DataChannel/OpenVpnPushReply.cs:14](DataChannel/OpenVpnPushReply.cs#L14) |
+| `OpenVpnPing` | static: `Magic` 16B + `IsPing(plaintext)` — keepalive gói qua data channel | [DataChannel/OpenVpnPing.cs:8](DataChannel/OpenVpnPing.cs#L8) |
+| `OpenVpnKeepalive` | timing clock-inject: `OnDataSent`/`OnDataReceived`/`ShouldSendPing(nowMs)`/`IsPeerDead(nowMs)` (ping/ping-restart; 0 = tắt) | [DataChannel/OpenVpnKeepalive.cs:13](DataChannel/OpenVpnKeepalive.cs#L13) |
+| `OpenVpnDataPlane` | make-before-break (mirror `EspDataPlane`): `Protect`/`TryUnprotect` current+previous, `Swap(next)`/`DropPreviousInbound`, event `RekeyNeeded` quanh 2³² | [DataChannel/OpenVpnDataPlane.cs:11](DataChannel/OpenVpnDataPlane.cs#L11) |
 | `OpenVpnProfile` | config lập trình driver tiêu thụ: `Remotes`/`Protocol`/`Port`/`Device`/`IsClient`, TLS material (`Ca`/`Cert`/`Key`/`TlsAuth`/`TlsCrypt`/`KeyDirection`), `Cipher`/`DataCiphers`/`Auth`, `AuthUserPass`, `Compression`/`RenegSec`/`TunMtu`, `OtherDirectives` (raw chưa model) | [Config/OpenVpnProfile.cs:14](Config/OpenVpnProfile.cs#L14) |
 | `OpenVpnConfigParser` | static `Parse(text)` → `OpenVpnProfile`: inline `<ca>…</ca>` → PEM, dạng path → `FilePath`; bỏ comment `#`/`;`, hỗ trợ arg trong `"…"`, flatten `<connection>`, directive lạ giữ raw | [Config/OpenVpnConfigParser.cs:16](Config/OpenVpnConfigParser.cs#L16) |
 | `OpenVpnRemote` / `OpenVpnFileOrInline` | endpoint `remote host [port] [proto]` / cert-key inline-hoặc-path | [Config/OpenVpnRemote.cs:6](Config/OpenVpnRemote.cs#L6) · [Config/OpenVpnFileOrInline.cs:9](Config/OpenVpnFileOrInline.cs#L9) |
@@ -123,6 +133,14 @@ Sau khi `SslStream` xác thực xong (V2.b), client suy ra khóa data plane qua 
 - **Data plane** ([`OpenVpnDataChannel`](DataChannel/OpenVpnDataChannel.cs)): wire `op|key_id(1) | peer_id(3) | packet_id(4) | tag(16) | ciphertext`; **nonce(12) = packet_id ‖ implicit_iv(8)**; **AAD = header rõ** (op+peer_id+packet_id); tag đứng **trước** ciphertext. `Protect` tăng packet-id `checked(++)` từ 1 (tràn 2³² ⇒ `OverflowException`, phải rekey V2.e trước khi lặp nonce); `TryUnprotect` chạy [`AntiReplayWindow`](../TqkLibrary.VpnClient.Crypto/AntiReplayWindow.cs) 64-gói (dùng chung ESP) + xác thực GCM (`AesGcmCipher`). peer-id mặc định 0 (server cấp qua PUSH_REPLY ở V2.e).
 - **Thuần client**: vai trò server (parse client msg / build reply / suy khóa role server) chỉ trong test; **direction key data-plane + interop chờ validate lab Q.1**; `tls-ekm` (RFC 5705) chờ **F.5** (`SslStream` net8 chưa lộ keying-material exporter).
 
+## Config-pull + keepalive + soft-reset (V2.e)
+
+Sau khi data channel có khóa (V2.d), client kéo cấu hình + duy trì kết nối:
+
+- **Config pull** ([`OpenVpnControlMessage`](DataChannel/OpenVpnControlMessage.cs) + [`OpenVpnControlChannel.RequestConfigAsync`](OpenVpnControlChannel.cs)): control message **text NUL-terminated** trên `TlsStream` (khác key-method-2: **không** có 4-byte sentinel — chỉ chạy sau khi đàm phán khóa nên reader tuần tự). Client gửi `PUSH_REQUEST`, đọc `PUSH_REPLY,…`; [`OpenVpnPushReply.TryParse`](DataChannel/OpenVpnPushReply.cs) tách `ifconfig`/`route`/`dhcp-option DNS`/`peer-id`/`ping`/`ping-restart`/`cipher`/`topology` (option lạ giữ verbatim ở `Options`); `ToTunnelConfig()` map sang [`TunnelConfig`](../TqkLibrary.VpnClient.Abstractions/Drivers/Models/TunnelConfig.cs) — `subnet` lấy prefix từ netmask, `net30`/p2p → /30. `AUTH_FAILED` ⇒ ném.
+- **Keepalive** ([`OpenVpnPing`](DataChannel/OpenVpnPing.cs) + [`OpenVpnKeepalive`](DataChannel/OpenVpnKeepalive.cs)): ping là gói **data channel** mang magic 16B cố định (mã hóa như payload thường); bên nhận giải mã thấy magic ⇒ không forward lên IP stack. `OpenVpnKeepalive` (clock-inject như reliability) báo `ShouldSendPing` khi im lặng gửi ≥ `ping` giây, `IsPeerDead` khi im lặng nhận ≥ `ping-restart` giây (0 = tắt) — driver bơm từ timer.
+- **Soft-reset make-before-break** ([`OpenVpnDataPlane`](DataChannel/OpenVpnDataPlane.cs), **mirror `EspDataPlane`**): giữ data channel **current + previous**; gửi trên current, nhận thử current rồi previous (sai khóa fail GCM tag) ⇒ rekey không mất gói in-flight. `Swap(next)` cài thế hệ mới, `DropPreviousInbound` bỏ thế hệ cũ sau grace; `RekeyNeeded` phát quanh 2³² packet-id (nonce GCM không được lặp). **Điều phối control-plane** (P_CONTROL_SOFT_RESET_V1 → chạy TLS handshake thứ 2 trên key_id mới → `Swap`) thuộc **driver `Drivers.OpenVpn`** (chưa có) — giống rekey IKE/ESP nằm ở connection chứ không ở protocol layer.
+
 ## Config (`.ovpn` + model lập trình)
 
 Hai lớp tách bạch để vừa dùng được file `.ovpn` vừa cấu hình tay, mà **lõi driver chỉ phụ thuộc model** (test offline sạch):
@@ -140,6 +158,7 @@ Hai lớp tách bạch để vừa dùng được file `.ovpn` vừa cấu hình
 | tls-auth (HMAC firewall) | `OpenVpnTlsAuthWrap` | HMAC bọc control packet + replay-id/timestamp; `key2` direction theo `--key-direction` |
 | key-method-2 + TLS 1.0 PRF | `OpenVpnKeyMethod2`/`Tls1Prf` | RFC 2246 §5 PRF (P_MD5⊕P_SHA1); master "OpenVPN master secret" + "OpenVPN key expansion" |
 | AEAD data channel (P_DATA_V2) | `OpenVpnDataChannel` | AES-256-GCM, nonce=packet_id‖implicit_iv, tag trước ciphertext, AAD=header rõ |
+| PUSH config + keepalive | `OpenVpnPushReply`/`OpenVpnKeepalive` | PUSH_REQUEST/PUSH_REPLY (ifconfig/route/dhcp-option/peer-id/ping); ping magic 16B |
 
 ## Trạng thái & ghi chú
 

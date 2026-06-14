@@ -41,13 +41,14 @@ namespace TqkLibrary.VpnClient.OpenVpn.DataChannel
         /// <summary>
         /// Creates the data channel over <paramref name="keys"/>. <paramref name="keyId"/> tags outgoing packets (the
         /// current key generation); <paramref name="peerId"/> is the server-assigned 24-bit peer-id (0 until a
-        /// PUSH_REPLY supplies one); <paramref name="cipher"/> defaults to AES-256-GCM.
+        /// PUSH_REPLY supplies one); <paramref name="cipher"/> defaults to AES-GCM sized to the key (128/256).
         /// </summary>
         public OpenVpnDataChannel(OpenVpnDataChannelKeys keys, byte keyId = 0, uint peerId = 0, IAeadCipher? cipher = null)
         {
             _keys = keys ?? throw new ArgumentNullException(nameof(keys));
             if (peerId > 0xFFFFFF) throw new ArgumentOutOfRangeException(nameof(peerId), "peer-id is 24-bit.");
-            _cipher = cipher ?? new AesGcmCipher(OpenVpnDataChannelKeys.CipherKeySize);
+            // Default AEAD matches the negotiated key length (AES-128/256-GCM); pass an explicit cipher for others.
+            _cipher = cipher ?? new AesGcmCipher(keys.SendCipherKey.Length);
             _opcodeByte = OpenVpnPacketCodec.Header(OpenVpnOpcode.DataV2, keyId);
             _peerId = peerId;
         }

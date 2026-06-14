@@ -41,8 +41,9 @@ namespace TqkLibrary.VpnClient.OpenVpn.Tests
             });
 
             var negotiation = new OpenVpnKeyNegotiation(clientStream, clientSid, serverSid);
-            OpenVpnDataChannelKeys clientKeys = await negotiation.NegotiateAsync("V4,cipher AES-256-GCM",
+            OpenVpnKeyMaterial material = await negotiation.NegotiateAsync("V4,cipher AES-256-GCM",
                 username: "user", password: "pass", cancellationToken: cts.Token);
+            OpenVpnDataChannelKeys clientKeys = material.DeriveDataKeys(OpenVpnDataCipher.Aes256Gcm);
             await serverTask;
 
             Assert.NotNull(serverKeys);

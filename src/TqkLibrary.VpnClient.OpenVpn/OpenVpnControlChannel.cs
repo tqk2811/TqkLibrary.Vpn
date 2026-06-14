@@ -132,12 +132,14 @@ namespace TqkLibrary.VpnClient.OpenVpn
         }
 
         /// <summary>
-        /// Runs key-method-2 over the established TLS channel to derive the AEAD data-channel keys (V2.d). Call after
-        /// <see cref="ConnectAsync"/>. <paramref name="optionsString"/> is the OCC options string the server compares;
+        /// Runs key-method-2 over the established TLS channel and returns the derived <see cref="OpenVpnKeyMaterial"/>
+        /// (V2.d). Call after <see cref="ConnectAsync"/>; slice it for the negotiated cipher once known (NCP, V2.f).
+        /// <paramref name="optionsString"/> is the OCC options string the server compares;
         /// <paramref name="username"/>/<paramref name="password"/> carry auth-user-pass; <paramref name="peerInfo"/> is
-        /// the optional IV_* peer-info block.
+        /// the optional IV_* peer-info block (carrying <c>IV_CIPHERS</c> for NCP — see
+        /// <see cref="OpenVpnPeerInfo"/>).
         /// </summary>
-        public Task<OpenVpnDataChannelKeys> NegotiateDataChannelKeysAsync(string optionsString,
+        public Task<OpenVpnKeyMaterial> NegotiateKeyMaterialAsync(string optionsString,
             string? username = null, string? password = null, string? peerInfo = null, CancellationToken cancellationToken = default)
         {
             var negotiation = new OpenVpnKeyNegotiation(TlsStream, LocalSessionId, RemoteSessionId);

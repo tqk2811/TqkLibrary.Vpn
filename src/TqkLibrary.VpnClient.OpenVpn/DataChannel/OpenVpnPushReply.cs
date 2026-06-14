@@ -30,6 +30,9 @@ namespace TqkLibrary.VpnClient.OpenVpn.DataChannel
         /// <summary>The negotiated data <c>cipher</c> (e.g. <c>AES-256-GCM</c>), if pushed.</summary>
         public string? Cipher { get; private set; }
 
+        /// <summary>The compression directive (<c>comp-lzo no</c>, <c>compress stub-v2</c>, …), verbatim; null = none.</summary>
+        public string? Compression { get; private set; }
+
         /// <summary>Keepalive ping interval in seconds (<c>ping</c>), if pushed.</summary>
         public int? Ping { get; private set; }
 
@@ -92,6 +95,10 @@ namespace TqkLibrary.VpnClient.OpenVpn.DataChannel
                         break;
                     case "topology":
                         if (t.Length >= 2) reply.Topology = t[1];
+                        break;
+                    case "comp-lzo":
+                    case "compress":
+                        reply.Compression = option; // e.g. "comp-lzo no" / "compress stub-v2" / "compress"
                         break;
                 }
             }

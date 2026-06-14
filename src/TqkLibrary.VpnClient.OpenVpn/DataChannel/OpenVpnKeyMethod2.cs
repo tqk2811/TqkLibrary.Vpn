@@ -75,13 +75,12 @@ namespace TqkLibrary.VpnClient.OpenVpn.DataChannel
         }
 
         /// <summary>
-        /// Derives the data-channel keys from the two key sources and the session ids. The TLS 1.0 PRF produces the
-        /// 48-byte master secret then the 256-byte key2 (two {cipher, hmac} sets, same layout as a static key). For
-        /// AES-256-GCM each direction takes a 32-byte cipher key + an 8-byte implicit IV (from the hmac half).
-        /// <paramref name="isServer"/> selects the role's set: client out = set 1 / in = set 0, server the reverse.
+        /// Derives the raw 256-byte key2 from the two key sources and the session ids via the TLS 1.0 PRF (master
+        /// secret then key expansion). This is cipher-independent; <see cref="SliceDataKeys"/> turns it into per-direction
+        /// cipher keys once the cipher is known (it may be negotiated only at PUSH_REPLY time — NCP, V2.f).
         /// </summary>
-        public static OpenVpnDataChannelKeys DeriveDataKeys(OpenVpnKeySource2 client, OpenVpnKeySource2 server,
-            ulong clientSessionId, ulong serverSessionId, bool isServer)
+        public static byte[] DeriveKey2(OpenVpnKeySource2 client, OpenVpnKeySource2 server,
+            ulong clientSessionId, ulong serverSessionId)
         {
             if (client.PreMaster.Length != OpenVpnKeySource2.PreMasterSize)
                 throw new ArgumentException("client key source must carry a pre-master.", nameof(client));
@@ -96,17 +95,31 @@ namespace TqkLibrary.VpnClient.OpenVpn.DataChannel
             BinaryPrimitives.WriteUInt64BigEndian(expansionSeed.AsSpan(p, SessionIdSize), clientSessionId); p += SessionIdSize;
             BinaryPrimitives.WriteUInt64BigEndian(expansionSeed.AsSpan(p, SessionIdSize), serverSessionId);
 
-            byte[] key2 = Tls1Prf.Compute(master, ExpansionLabel, expansionSeed, Key2Size);
+            return Tls1Prf.Compute(master, ExpansionLabel, expansionSeed, Key2Size);
+        }
 
+        /// <summary>
+        /// Slices key2 into the per-direction data-channel keys for <paramref name="cipher"/>: each direction takes a
+        /// <see cref="OpenVpnDataCipher.KeySizeBytes"/> cipher key + an 8-byte implicit IV (from the hmac half).
+        /// <paramref name="isServer"/> selects the role's set: client out = set 1 / in = set 0, server the reverse.
+        /// </summary>
+        public static OpenVpnDataChannelKeys SliceDataKeys(byte[] key2, OpenVpnDataCipher cipher, bool isServer)
+        {
+            if (cipher is null) throw new ArgumentNullException(nameof(cipher));
             // Reuse the static-key model: key2 has the same {cipher[64]|hmac[64]} × 2 layout.
             var sets = OpenVpnStaticKey.FromBytes(key2);
             (int outSet, int inSet) = isServer ? (0, 1) : (1, 0);
             return new OpenVpnDataChannelKeys(
-                sendCipherKey: sets.CipherKey(outSet, OpenVpnDataChannelKeys.CipherKeySize),
+                sendCipherKey: sets.CipherKey(outSet, cipher.KeySizeBytes),
                 sendImplicitIv: sets.HmacKey(outSet, OpenVpnDataChannelKeys.ImplicitIvSize),
-                receiveCipherKey: sets.CipherKey(inSet, OpenVpnDataChannelKeys.CipherKeySize),
+                receiveCipherKey: sets.CipherKey(inSet, cipher.KeySizeBytes),
                 receiveImplicitIv: sets.HmacKey(inSet, OpenVpnDataChannelKeys.ImplicitIvSize));
         }
+
+        /// <summary>Convenience: derive key2 and slice it for AES-256-GCM (the default cipher) in one call.</summary>
+        public static OpenVpnDataChannelKeys DeriveDataKeys(OpenVpnKeySource2 client, OpenVpnKeySource2 server,
+            ulong clientSessionId, ulong serverSessionId, bool isServer)
+            => SliceDataKeys(DeriveKey2(client, server, clientSessionId, serverSessionId), OpenVpnDataCipher.Aes256Gcm, isServer);
 
         static void WriteString(List<byte> buf, string s)
         {

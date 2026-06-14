@@ -26,10 +26,11 @@ namespace TqkLibrary.VpnClient.OpenVpn.DataChannel
 
         /// <summary>
         /// Sends the client key-method-2 message (with <paramref name="optionsString"/> and optional
-        /// auth-user-pass / peer-info), reads the server's reply and derives the data-channel keys. Throws
+        /// auth-user-pass / peer-info), reads the server's reply and returns the derived <see cref="OpenVpnKeyMaterial"/>
+        /// (the caller slices it for the negotiated cipher after PUSH_REPLY). Throws
         /// <see cref="InvalidOperationException"/> if the reply is malformed.
         /// </summary>
-        public async Task<OpenVpnDataChannelKeys> NegotiateAsync(string optionsString,
+        public async Task<OpenVpnKeyMaterial> NegotiateAsync(string optionsString,
             string? username = null, string? password = null, string? peerInfo = null, CancellationToken cancellationToken = default)
         {
             var clientKeySource = OpenVpnKeySource2.GenerateClient();
@@ -51,8 +52,8 @@ namespace TqkLibrary.VpnClient.OpenVpn.DataChannel
             if (!OpenVpnKeyMethod2.TryParseServerMessage(message, out OpenVpnKeySource2 serverKeySource, out _))
                 throw new InvalidOperationException("Malformed OpenVPN key-method-2 server reply.");
 
-            return OpenVpnKeyMethod2.DeriveDataKeys(clientKeySource, serverKeySource,
-                _clientSessionId, _serverSessionId, isServer: false);
+            byte[] key2 = OpenVpnKeyMethod2.DeriveKey2(clientKeySource, serverKeySource, _clientSessionId, _serverSessionId);
+            return new OpenVpnKeyMaterial(key2);
         }
 
         async Task<byte[]> ReadExactAsync(int count, CancellationToken cancellationToken)

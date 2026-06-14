@@ -22,7 +22,7 @@ namespace TqkLibrary.VpnClient.Drivers.Ikev2.Tests
             Assert.False(caps.UsesPpp);                                  // ESP tunnel mode → IP channel directly
             Assert.Equal(VpnSecurityKind.Esp, caps.SecurityKinds);
             Assert.Equal(VpnTransportKind.Udp, caps.TransportKinds);
-            Assert.Equal(VpnAuthMethod.PreSharedKey, caps.AuthMethods);
+            Assert.Equal(VpnAuthMethod.PreSharedKey | VpnAuthMethod.Eap, caps.AuthMethods); // PSK or EAP-MSCHAPv2
             Assert.Equal(AddressAssignment.ConfigPush, caps.AddressAssignment); // CFG_REPLY pushes the virtual IP
             Assert.Equal(MultiHostModel.None, caps.MultiHostModel);
         }
@@ -37,6 +37,20 @@ namespace TqkLibrary.VpnClient.Drivers.Ikev2.Tests
                 driver.ConnectAsync(endpoint, new VpnCredentials { PreSharedKey = null }));
             await Assert.ThrowsAsync<ArgumentException>(() =>
                 driver.ConnectAsync(endpoint, new VpnCredentials { PreSharedKey = Array.Empty<byte>() }));
+        }
+
+        [Fact]
+        public async Task ConnectAsync_WithUserNameButNoPassword_ThrowsArgumentException()
+        {
+            // EAP-MSCHAPv2 needs both halves; a half-filled credential is rejected before any network I/O.
+            var driver = new Ikev2Driver();
+            var endpoint = new VpnEndpoint("vpn.example.com", 500);
+            byte[] psk = System.Text.Encoding.ASCII.GetBytes("vpn");
+
+            await Assert.ThrowsAsync<ArgumentException>(() =>
+                driver.ConnectAsync(endpoint, new VpnCredentials { PreSharedKey = psk, Username = "user" }));
+            await Assert.ThrowsAsync<ArgumentException>(() =>
+                driver.ConnectAsync(endpoint, new VpnCredentials { PreSharedKey = psk, Password = "secret" }));
         }
 
         [Fact]

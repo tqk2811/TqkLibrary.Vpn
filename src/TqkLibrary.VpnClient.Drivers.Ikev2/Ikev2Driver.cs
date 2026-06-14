@@ -26,7 +26,7 @@ namespace TqkLibrary.VpnClient.Drivers.Ikev2
             MultiHostModel = MultiHostModel.None,
             TransportKinds = VpnTransportKind.Udp,
             SecurityKinds = VpnSecurityKind.Esp,
-            AuthMethods = VpnAuthMethod.PreSharedKey,
+            AuthMethods = VpnAuthMethod.PreSharedKey | VpnAuthMethod.Eap,
             AddressAssignment = AddressAssignment.ConfigPush,
         };
 
@@ -36,10 +36,21 @@ namespace TqkLibrary.VpnClient.Drivers.Ikev2
             byte[]? psk = credentials.PreSharedKey;
             if (psk is null || psk.Length == 0)
                 throw new ArgumentException(
-                    "IKEv2 requires a pre-shared key. Set VpnCredentials.PreSharedKey.", nameof(credentials));
+                    "IKEv2 requires a pre-shared key (it authenticates the gateway). Set VpnCredentials.PreSharedKey.", nameof(credentials));
+
+            // A user name + password switches the initiator to EAP-MSCHAPv2 (RFC 7296 §2.16); without them the
+            // initiator authenticates with the PSK too. A user name with no password (or vice versa) is ambiguous.
+            string? eapUserName = credentials.Username;
+            string? eapPassword = credentials.Password;
+            if (string.IsNullOrEmpty(eapUserName) != string.IsNullOrEmpty(eapPassword))
+                throw new ArgumentException(
+                    "IKEv2 EAP-MSCHAPv2 needs both VpnCredentials.Username and VpnCredentials.Password (or neither, for PSK auth).",
+                    nameof(credentials));
 
             var connection = new Ikev2Connection(endpoint.Host, psk, reconnectOptions: _reconnectOptions,
-                addressFamilyPreference: endpoint.AddressFamilyPreference);
+                addressFamilyPreference: endpoint.AddressFamilyPreference,
+                eapUserName: string.IsNullOrEmpty(eapUserName) ? null : eapUserName,
+                eapPassword: string.IsNullOrEmpty(eapPassword) ? null : eapPassword);
             try
             {
                 await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);

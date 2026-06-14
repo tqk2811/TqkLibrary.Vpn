@@ -36,6 +36,8 @@ namespace TqkLibrary.VpnClient.Drivers.Ikev2
 
         readonly string _host;
         readonly byte[] _preSharedKey;
+        readonly string? _eapUserName;
+        readonly string? _eapPassword;
         readonly Ikev2ReconnectOptions _opts;
         readonly AddressFamilyPreference _addressFamilyPreference;
         readonly IHostResolver _hostResolver;
@@ -67,12 +69,20 @@ namespace TqkLibrary.VpnClient.Drivers.Ikev2
         Task? _supervisor;
         Ikev2ConnectionState _state = Ikev2ConnectionState.Disconnected;
 
-        /// <summary>Creates a connection to the given IKEv2 gateway with the IPsec pre-shared key.</summary>
+        /// <summary>
+        /// Creates a connection to the given IKEv2 gateway. <paramref name="preSharedKey"/> always authenticates the
+        /// responder (RFC 7296 §2.15). When <paramref name="eapUserName"/>/<paramref name="eapPassword"/> are both
+        /// supplied, the initiator authenticates with EAP-MSCHAPv2 instead of a PSK AUTH (RFC 7296 §2.16); otherwise it
+        /// authenticates with the PSK as well.
+        /// </summary>
         public Ikev2Connection(string host, byte[] preSharedKey, Ikev2ReconnectOptions? reconnectOptions = null,
-            AddressFamilyPreference addressFamilyPreference = AddressFamilyPreference.Auto, IHostResolver? hostResolver = null)
+            AddressFamilyPreference addressFamilyPreference = AddressFamilyPreference.Auto, IHostResolver? hostResolver = null,
+            string? eapUserName = null, string? eapPassword = null)
         {
             _host = host;
             _preSharedKey = preSharedKey;
+            _eapUserName = eapUserName;
+            _eapPassword = eapPassword;
             _opts = reconnectOptions ?? new Ikev2ReconnectOptions();
             _addressFamilyPreference = addressFamilyPreference;
             _hostResolver = hostResolver ?? DnsHostResolver.Default;
@@ -116,8 +126,10 @@ namespace TqkLibrary.VpnClient.Drivers.Ikev2
 
             IPAddress serverIp = await ResolveAsync(_host, cancellationToken).ConfigureAwait(false);
 
+            bool useEap = _eapUserName is not null && _eapPassword is not null;
             NatTraversalChannel natt = StartAttemptChannel(serverIp, cancellationToken);
-            var ike = new IkeClient(_preSharedKey, BuildIdentity(), requestTransportMode: false, requestConfiguration: true);
+            var ike = new IkeClient(_preSharedKey, BuildIdentity(useEap), requestTransportMode: false, requestConfiguration: true,
+                eapUserName: _eapUserName, eapPassword: _eapPassword);
             _ike = ike;
 
             // --- IKE_SA_INIT on UDP/500 ---
@@ -129,9 +141,14 @@ namespace TqkLibrary.VpnClient.Drivers.Ikev2
             natt.SwitchToNatTPort();
 
             // --- IKE_AUTH on UDP/4500 (encrypted; carries IDi, AUTH, CP request, SAi2, TS) ---
-            byte[] authReply = await ExchangeIkeAsync(natt, ike.BuildAuthRequest(), cancellationToken).ConfigureAwait(false);
-            if (!ike.ProcessAuthResponse(authReply))
-                throw new VpnAuthenticationException("IKEv2 IKE_AUTH failed (PSK / AUTH mismatch or no CHILD_SA).");
+            if (useEap)
+                await RunEapAuthAsync(natt, ike, cancellationToken).ConfigureAwait(false);
+            else
+            {
+                byte[] authReply = await ExchangeIkeAsync(natt, ike.BuildAuthRequest(), cancellationToken).ConfigureAwait(false);
+                if (!ike.ProcessAuthResponse(authReply))
+                    throw new VpnAuthenticationException("IKEv2 IKE_AUTH failed (PSK / AUTH mismatch or no CHILD_SA).");
+            }
 
             IPAddress? assigned = ike.Configuration?.AssignedIp4Address;
             if (assigned is null)
@@ -162,8 +179,34 @@ namespace TqkLibrary.VpnClient.Drivers.Ikev2
             return natt;
         }
 
-        static IdentificationPayload BuildIdentity()
-            => new() { IsInitiator = true, IdType = IkeIdType.Ipv4Address, Data = new byte[] { 0, 0, 0, 0 } };
+        // PSK auth identifies by virtual IPv4 (gateway looks the PSK up by IDi); EAP carries the user name as IDi so the
+        // gateway can pick the EAP identity before the inner MSCHAPv2 exchange names it again.
+        IdentificationPayload BuildIdentity(bool useEap)
+        {
+            if (useEap && _eapUserName is not null)
+            {
+                IkeIdType idType = _eapUserName.Contains("@") ? IkeIdType.Rfc822Address : IkeIdType.Fqdn;
+                return new IdentificationPayload { IsInitiator = true, IdType = idType, Data = System.Text.Encoding.ASCII.GetBytes(_eapUserName) };
+            }
+            return new IdentificationPayload { IsInitiator = true, IdType = IkeIdType.Ipv4Address, Data = new byte[] { 0, 0, 0, 0 } };
+        }
+
+        // Runs the EAP-MSCHAPv2 exchange (RFC 7296 §2.16): the first IKE_AUTH omits AUTH, then each round trips an EAP
+        // request/response on its own message ID until the IkeClient reports the CHILD_SA is established or auth failed.
+        async Task RunEapAuthAsync(NatTraversalChannel natt, IkeClient ike, CancellationToken cancellationToken)
+        {
+            byte[] eapRequest = ike.BuildAuthRequestEap();
+            while (true)
+            {
+                byte[] reply = await ExchangeIkeAsync(natt, eapRequest, cancellationToken).ConfigureAwait(false);
+                byte[]? next = ike.ProcessAuthResponseEap(reply);
+                if (next is null) break;
+                eapRequest = next;
+            }
+            if (!ike.EapEstablished)
+                throw new VpnAuthenticationException(
+                    "IKEv2 EAP-MSCHAPv2 authentication failed (bad user name/password, EAP-Failure, or responder AUTH mismatch).");
+        }
 
         // Builds the bidirectional ESP session from the negotiated CHILD_SA: initiator keys outbound, responder inbound.
         static EspSession BuildEspSession(IkeClient ike)

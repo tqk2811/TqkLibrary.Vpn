@@ -3,6 +3,7 @@ using TqkLibrary.VpnClient.Crypto;
 using TqkLibrary.VpnClient.Ipsec.Esp;
 using TqkLibrary.VpnClient.Ipsec.Esp.Enums;
 using TqkLibrary.VpnClient.Ipsec.Ike.V2;
+using TqkLibrary.VpnClient.Ipsec.Ike.V2.Eap;
 using TqkLibrary.VpnClient.Ipsec.Ike.V2.Enums;
 using TqkLibrary.VpnClient.Ipsec.Ike.V2.Models;
 using TqkLibrary.VpnClient.Ipsec.Ike.V2.Payloads;
@@ -224,6 +225,72 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.Tests
             Assert.Null(responder.Decrypt(dpdWire));
         }
 
+        [Fact]
+        public void FullHandshake_WithEapMsChapV2_AuthenticatesAndChildSaCarriesTraffic()
+        {
+            var idInitiator = new IdentificationPayload
+            {
+                IsInitiator = true,
+                IdType = IkeIdType.Rfc822Address,
+                Data = System.Text.Encoding.ASCII.GetBytes("user@example.com"),
+            };
+            var client = new IkeClient(Psk, idInitiator, eapUserName: "User", eapPassword: "clientPass");
+            var responder = new SimulatedResponder(Psk, eapUserName: "User", eapPassword: "clientPass");
+
+            // --- IKE_SA_INIT ---
+            client.ProcessInitResponse(IkeMessage.Decode(
+                responder.HandleInit(client.BuildInitRequest(IPAddress.Loopback, 4500, IPAddress.Loopback, 4500).Encode())));
+
+            // --- IKE_AUTH + EAP-MSCHAPv2 loop (Identity → Challenge/Response → Success → MSK AUTH) ---
+            byte[]? requestWire = client.BuildAuthRequestEap();
+            while (requestWire is not null)
+                requestWire = client.ProcessAuthResponseEap(responder.HandleAuthEap(requestWire));
+
+            Assert.True(client.EapEstablished);
+            Assert.False(client.EapFailed);
+            Assert.NotNull(client.ChildKeys);
+            Assert.Equal(responder.ChildInboundSpi, client.ChildOutboundSpi);
+            Assert.Equal(client.ChildInboundSpi, responder.ChildOutboundSpi);
+            Assert.Equal(6u, client.NextMessageId); // IKE_AUTH consumed IDs 1–5: msg3 + EAP Identity/Challenge/Success + final MSK AUTH
+
+            // --- ESP data plane both directions, keyed from the EAP-authenticated CHILD_SA ---
+            EspSession clientEsp = BuildInitiatorEsp(client);
+            EspSession responderEsp = responder.BuildEsp();
+
+            byte[] toServer = clientEsp.Protect(System.Text.Encoding.ASCII.GetBytes("eap ping"));
+            Assert.True(responderEsp.TryUnprotect(toServer, out byte[] gotByServer, out _));
+            Assert.Equal("eap ping", System.Text.Encoding.ASCII.GetString(gotByServer));
+
+            byte[] toClient = responderEsp.Protect(System.Text.Encoding.ASCII.GetBytes("eap pong"));
+            Assert.True(clientEsp.TryUnprotect(toClient, out byte[] gotByClient, out _));
+            Assert.Equal("eap pong", System.Text.Encoding.ASCII.GetString(gotByClient));
+        }
+
+        [Fact]
+        public void EapMsChapV2_WithWrongPassword_FailsWithoutEstablishing()
+        {
+            var idInitiator = new IdentificationPayload
+            {
+                IsInitiator = true,
+                IdType = IkeIdType.Rfc822Address,
+                Data = System.Text.Encoding.ASCII.GetBytes("user@example.com"),
+            };
+            // The gateway PSK is correct (its AUTH verifies), but the EAP password is wrong → MS-CHAPv2 NT-Response mismatch.
+            var client = new IkeClient(Psk, idInitiator, eapUserName: "User", eapPassword: "wrongPass");
+            var responder = new SimulatedResponder(Psk, eapUserName: "User", eapPassword: "clientPass");
+
+            client.ProcessInitResponse(IkeMessage.Decode(
+                responder.HandleInit(client.BuildInitRequest(IPAddress.Loopback, 4500, IPAddress.Loopback, 4500).Encode())));
+
+            byte[]? requestWire = client.BuildAuthRequestEap();
+            while (requestWire is not null)
+                requestWire = client.ProcessAuthResponseEap(responder.HandleAuthEap(requestWire));
+
+            Assert.True(client.EapFailed);
+            Assert.False(client.EapEstablished);
+            Assert.Null(client.ChildKeys);
+        }
+
         // Runs IKE_SA_INIT + IKE_AUTH and returns a client with a live SK channel plus its responder.
         static IkeClient HandshakeReady(out SimulatedResponder responder)
         {
@@ -262,6 +329,8 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.Tests
             readonly EspSuiteSelection _esp; // the ESP CHILD_SA suite this responder selects in IKE_AUTH
             readonly IPAddress? _assignAddress; // virtual IP to hand back in a CFG_REPLY, when the client asks
             readonly IPAddress? _assignDns;
+            readonly string? _eapUserName; // EAP-MSCHAPv2 credentials this responder validates against
+            readonly string? _eapPassword;
             readonly byte[] _privateKey;
             readonly byte[] _publicKey;
             readonly byte[] _spi = new byte[8];
@@ -274,12 +343,15 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.Tests
             IkeKeyMaterial? _keys;
             IkeCipher? _cipher;
 
-            public SimulatedResponder(byte[] psk, EspSuiteSelection? esp = null, IPAddress? assignAddress = null, IPAddress? assignDns = null)
+            public SimulatedResponder(byte[] psk, EspSuiteSelection? esp = null, IPAddress? assignAddress = null,
+                IPAddress? assignDns = null, string? eapUserName = null, string? eapPassword = null)
             {
                 _psk = psk;
                 _esp = esp ?? EspSuiteSelection.AesCbcHmacSha256();
                 _assignAddress = assignAddress;
                 _assignDns = assignDns;
+                _eapUserName = eapUserName;
+                _eapPassword = eapPassword;
                 _privateKey = _dh.GeneratePrivateKey();
                 _publicKey = _dh.DerivePublicValue(_privateKey);
                 for (int i = 0; i < 8; i++) _spi[i] = (byte)(0x90 + i);
@@ -481,6 +553,154 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.Tests
                 });
                 response.Payloads.Add(new NoncePayload { Nonce = responderNonce });
                 return _cipher.EncryptMessage(response);
+            }
+
+            // ---- IKE_AUTH with EAP-MSCHAPv2 (server-side), RFC 7296 §2.16 + draft-kamath-pppext-eap-mschapv2 ----
+            int _eapStep;
+            byte[] _eapAuthChallenge = Array.Empty<byte>();
+            byte[] _eapPeerChallenge = Array.Empty<byte>();
+            byte[] _eapMsk = Array.Empty<byte>();
+            byte[] _eapInitiatorIdBody = Array.Empty<byte>();
+            IdentificationPayload? _eapIdR;
+
+            /// <summary>Drives one IKE_AUTH round of the EAP exchange and returns the response wire.</summary>
+            public byte[] HandleAuthEap(byte[] requestWire)
+            {
+                IkeMessage request = _cipher!.DecryptMessage(requestWire)!;
+                EapPayload? eap = request.Find<EapPayload>();
+                AuthenticationPayload? auth = request.Find<AuthenticationPayload>();
+
+                // Message 3: IDi + SAi2 + TS, NO AUTH. Respond IDr + responder PSK AUTH + EAP-Request/Identity.
+                if (_eapStep == 0)
+                {
+                    IdentificationPayload idI = request.Payloads.OfType<IdentificationPayload>().Single(p => p.IsInitiator);
+                    _eapInitiatorIdBody = idI.BodyBytes();
+                    ChildOutboundSpi = request.Find<SecurityAssociationPayload>()!.Proposals.First().Spi;
+
+                    _eapIdR = new IdentificationPayload { IsInitiator = false, IdType = IkeIdType.Ipv4Address, Data = new byte[] { 10, 0, 0, 1 } };
+                    byte[] responderAuth = IkePskAuth.ComputeResponderAuth(
+                        _prf, _psk, _initResponseWire, _initiatorNonce, _keys!.SkPr, _eapIdR.BodyBytes());
+
+                    IkeMessage resp = NewAuthResponse(request.MessageId);
+                    resp.Payloads.Add(_eapIdR);
+                    resp.Payloads.Add(new AuthenticationPayload { Method = IkeAuthMethod.SharedKey, Data = responderAuth });
+                    resp.Payloads.Add(new EapPayload { Message = EapPacket.Build(EapCode.Request, 1, 1, Array.Empty<byte>()) }); // Identity
+                    _eapStep = 1;
+                    return _cipher.EncryptMessage(resp);
+                }
+
+                if (eap is not null) return HandleEapResponse(request, eap.Message);
+
+                // Final message (7): the initiator's AUTH computed from the MSK. Verify it and answer with our MSK AUTH + SAr2.
+                byte[] expected = IkePskAuth.ComputeInitiatorAuth(
+                    _prf, _eapMsk, _initRequestWire, _nonce, _keys!.SkPi, _eapInitiatorIdBody);
+                Assert.Equal(expected, auth!.Data);
+
+                byte[] responderMskAuth = IkePskAuth.ComputeResponderAuth(
+                    _prf, _eapMsk, _initResponseWire, _initiatorNonce, _keys.SkPr, _eapIdR!.BodyBytes());
+                IkeMessage final = NewAuthResponse(request.MessageId);
+                final.Payloads.Add(new AuthenticationPayload { Method = IkeAuthMethod.SharedKey, Data = responderMskAuth });
+                var sa = new SecurityAssociationPayload();
+                sa.Proposals.Add(_esp.Algorithm == EspEncryptionAlgorithm.AesGcm16
+                    ? IkeProposals.GcmEsp(ChildInboundSpi)
+                    : IkeProposals.DefaultEsp(ChildInboundSpi));
+                final.Payloads.Add(sa);
+                final.Payloads.Add(TrafficSelectorPayload.AnyIpv4(isInitiator: true));
+                final.Payloads.Add(TrafficSelectorPayload.AnyIpv4(isInitiator: false));
+                final.Payloads.Add(NotifyPayload.Create(IkeNotifyMessageType.UseTransportMode, Array.Empty<byte>()));
+                return _cipher.EncryptMessage(final);
+            }
+
+            byte[] HandleEapResponse(IkeMessage request, byte[] msg)
+            {
+                byte type = msg.Length >= 5 ? msg[4] : (byte)0;
+
+                if (type == 1) // EAP-Response/Identity → MS-CHAPv2 Challenge
+                {
+                    _eapAuthChallenge = new byte[16];
+                    for (int i = 0; i < 16; i++) _eapAuthChallenge[i] = (byte)(0x10 + i);
+                    _eapStep = 2;
+                    return WrapEap(request.MessageId, EapCode.Request, 26, BuildChallengeData(_eapAuthChallenge));
+                }
+
+                if (type == 26)
+                {
+                    byte opCode = msg[5];
+                    if (opCode == 2) // Response (NT-Response) → verify, then Success
+                    {
+                        int valueSize = msg[9];
+                        _eapPeerChallenge = new byte[16];
+                        Buffer.BlockCopy(msg, 10, _eapPeerChallenge, 0, 16);
+                        byte[] ntResponse = new byte[24];
+                        Buffer.BlockCopy(msg, 10 + 24, ntResponse, 0, 24);
+
+                        byte[] expectedNt = MsChapV2.GenerateNTResponse(_eapAuthChallenge, _eapPeerChallenge, _eapUserName!, _eapPassword!);
+                        if (!expectedNt.AsSpan().SequenceEqual(ntResponse)) // wrong password → EAP-Failure
+                            return WrapEap(request.MessageId, EapCode.Failure, null, Array.Empty<byte>());
+
+                        _eapMsk = MsChapV2.DeriveMsk(_eapPassword!, ntResponse);
+                        byte[] digest = MsChapV2.GenerateAuthenticatorResponse(
+                            _eapAuthChallenge, _eapPeerChallenge, ntResponse, _eapUserName!, _eapPassword!);
+                        byte[] message = System.Text.Encoding.ASCII.GetBytes("S=" + ToHex(digest));
+                        _eapStep = 3;
+                        return WrapEap(request.MessageId, EapCode.Request, 26, BuildSuccessData(msg[6], message));
+                    }
+                    if (opCode == 3) // Success Response → EAP-Success
+                    {
+                        _eapStep = 4;
+                        return WrapEap(request.MessageId, EapCode.Success, null, Array.Empty<byte>());
+                    }
+                }
+                throw new InvalidOperationException("unexpected EAP response");
+            }
+
+            IkeMessage NewAuthResponse(uint messageId) => new IkeMessage
+            {
+                InitiatorSpi = _initiatorSpi,
+                ResponderSpi = _spi,
+                ExchangeType = IkeExchangeType.IkeAuth,
+                Flags = IkeHeaderFlags.Response,
+                MessageId = messageId,
+            };
+
+            byte[] WrapEap(uint messageId, EapCode code, byte? type, byte[] typeData)
+            {
+                IkeMessage resp = NewAuthResponse(messageId);
+                byte id = code == EapCode.Success ? (byte)3 : (byte)(_eapStep + 1);
+                resp.Payloads.Add(new EapPayload { Message = EapPacket.Build(code, id, type, typeData) });
+                return _cipher!.EncryptMessage(resp);
+            }
+
+            // MS-CHAPv2 Challenge type-data: OpCode=1 | ID | MS-Length(2) | Value-Size=16 | Challenge(16) | Name.
+            static byte[] BuildChallengeData(byte[] challenge)
+            {
+                byte[] name = System.Text.Encoding.ASCII.GetBytes("server");
+                int msLen = 4 + 1 + 16 + name.Length;
+                byte[] d = new byte[msLen];
+                d[0] = 1; d[1] = 0x10;
+                d[2] = (byte)(msLen >> 8); d[3] = (byte)msLen;
+                d[4] = 16;
+                Buffer.BlockCopy(challenge, 0, d, 5, 16);
+                Buffer.BlockCopy(name, 0, d, 21, name.Length);
+                return d;
+            }
+
+            // MS-CHAPv2 Success type-data: OpCode=3 | ID | MS-Length(2) | Message("S=<hex>").
+            static byte[] BuildSuccessData(byte msChapId, byte[] message)
+            {
+                int msLen = 4 + message.Length;
+                byte[] d = new byte[msLen];
+                d[0] = 3; d[1] = msChapId;
+                d[2] = (byte)(msLen >> 8); d[3] = (byte)msLen;
+                Buffer.BlockCopy(message, 0, d, 4, message.Length);
+                return d;
+            }
+
+            static string ToHex(byte[] bytes)
+            {
+                var sb = new System.Text.StringBuilder(bytes.Length * 2);
+                foreach (byte b in bytes) sb.Append(b.ToString("X2"));
+                return sb.ToString();
             }
         }
     }

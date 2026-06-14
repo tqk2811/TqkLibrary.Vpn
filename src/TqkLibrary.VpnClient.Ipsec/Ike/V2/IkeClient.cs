@@ -2,6 +2,7 @@ using System.Net;
 using System.Security.Cryptography;
 using TqkLibrary.VpnClient.Crypto;
 using TqkLibrary.VpnClient.Ipsec.Esp;
+using TqkLibrary.VpnClient.Ipsec.Ike.V2.Eap;
 using TqkLibrary.VpnClient.Ipsec.Ike.V2.Enums;
 using TqkLibrary.VpnClient.Ipsec.Ike.V2.Models;
 using TqkLibrary.VpnClient.Ipsec.Ike.V2.Payloads;
@@ -21,6 +22,8 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.V2
         readonly IdentificationPayload _identity;
         readonly bool _requestTransportMode;
         readonly bool _requestConfiguration;
+        readonly string? _eapUserName;
+        readonly string? _eapPassword;
 
         IkeCipher? _cipher;
         uint _nextMessageId = 2; // IKE_SA_INIT=0, IKE_AUTH=1; post-auth exchanges start here.
@@ -33,6 +36,13 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.V2
         byte[]? _currentSkD;
         IkeKeyMaterial? _currentKeys;
 
+        // EAP (RFC 7296 §2.16) state: the running method, the responder's RestOfIDr cached from the first response
+        // (for the final MSK-based responder-AUTH check), and the IKE_AUTH message-ID counter for the EAP rounds.
+        EapMsChapV2Client? _eap;
+        byte[]? _eapResponderIdBody;
+        uint _eapMessageId;
+        bool _eapStarted;
+
         /// <summary>
         /// Creates a client with the given PSK and IDi. <paramref name="requestTransportMode"/> asks for ESP
         /// transport mode (L2TP); <paramref name="requestConfiguration"/> attaches a CFG_REQUEST so the gateway
@@ -40,12 +50,15 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.V2
         /// transport mode keeps the host's address, tunnel mode pulls one.
         /// </summary>
         public IkeClient(byte[] preSharedKey, IdentificationPayload identity, bool requestTransportMode = true,
-            byte[]? initiatorSpi = null, bool requestConfiguration = false)
+            byte[]? initiatorSpi = null, bool requestConfiguration = false,
+            string? eapUserName = null, string? eapPassword = null)
         {
             _preSharedKey = preSharedKey;
             _identity = identity;
             _requestTransportMode = requestTransportMode;
             _requestConfiguration = requestConfiguration;
+            _eapUserName = eapUserName;
+            _eapPassword = eapPassword;
             _initiator = new IkeSaInitiator(initiatorSpi);
             _currentInitiatorSpi = _initiator.InitiatorSpi;
             ChildInboundSpi = RandomSpi();
@@ -157,6 +170,149 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.V2
             ChildKeys = ChildSaKeys.Derive(_prf, _initiator.Keys.SkD, _initiator.Nonce, _initiator.PeerNonce,
                 selection.EncryptionKeyLengthBytes, selection.SecondSliceLengthBytes);
             return true;
+        }
+
+        // ---- IKE_AUTH with EAP-MSCHAPv2 (server username/password), RFC 7296 §2.16 + draft-kamath-pppext-eap-mschapv2 ----
+        // Flow: the initiator omits its AUTH from the first IKE_AUTH (signalling EAP); the responder authenticates with
+        // its PSK and starts EAP; EAP packets ride successive IKE_AUTH exchanges; on EAP-Success both sides authenticate
+        // with the MSK (RFC 7296 §2.16) and the CHILD_SA is negotiated in the final exchange.
+
+        /// <summary>True once EAP authentication completed and the CHILD_SA keys are ready (read <see cref="ChildKeys"/>).</summary>
+        public bool EapEstablished { get; private set; }
+
+        /// <summary>True if the EAP exchange failed (bad responder AUTH, EAP-Failure, or a verification mismatch).</summary>
+        public bool EapFailed { get; private set; }
+
+        /// <summary>
+        /// Builds the first IKE_AUTH request for EAP (RFC 7296 §2.16): IDi, the ESP proposals and traffic selectors,
+        /// but <em>no</em> AUTH payload — the absence tells the gateway we will authenticate with EAP. Requires the
+        /// client to have been created with EAP credentials.
+        /// </summary>
+        public byte[] BuildAuthRequestEap()
+        {
+            if (_cipher is null || _initiator.Keys is null)
+                throw new InvalidOperationException("IKE_SA_INIT must complete before IKE_AUTH.");
+            if (_eapUserName is null || _eapPassword is null)
+                throw new InvalidOperationException("EAP credentials were not supplied to the IkeClient.");
+
+            _eap = new EapMsChapV2Client(_eapUserName, _eapPassword);
+            _eapMessageId = 1; // IKE_AUTH exchanges count from 1 (IKE_SA_INIT was 0); each EAP round consumes one.
+
+            var message = new IkeMessage
+            {
+                InitiatorSpi = _initiator.InitiatorSpi,
+                ResponderSpi = _initiator.ResponderSpi,
+                ExchangeType = IkeExchangeType.IkeAuth,
+                Flags = IkeHeaderFlags.Initiator,
+                MessageId = _eapMessageId++,
+            };
+            message.Payloads.Add(_identity);
+            if (_requestConfiguration)
+                message.Payloads.Add(ConfigurationPayload.Request());
+
+            var sa = new SecurityAssociationPayload();
+            foreach (IkeProposal proposal in IkeProposals.EspProposals(ChildInboundSpi))
+                sa.Proposals.Add(proposal);
+            message.Payloads.Add(sa);
+            message.Payloads.Add(TrafficSelectorPayload.AnyIpv4(isInitiator: true));
+            message.Payloads.Add(TrafficSelectorPayload.AnyIpv4(isInitiator: false));
+            if (_requestTransportMode)
+                message.Payloads.Add(NotifyPayload.Create(IkeNotifyMessageType.UseTransportMode, Array.Empty<byte>()));
+
+            return _cipher.EncryptMessage(message);
+        }
+
+        /// <summary>
+        /// Processes one IKE_AUTH response during the EAP exchange and returns the wire of the next IKE_AUTH request
+        /// to send, or null when authentication is complete (<see cref="EapEstablished"/>) or has failed
+        /// (<see cref="EapFailed"/>). The first response also carries the responder's PSK AUTH, which is verified here.
+        /// </summary>
+        public byte[]? ProcessAuthResponseEap(byte[] wire)
+        {
+            if (_cipher is null || _initiator.Keys is null || _eap is null) return Fail();
+
+            IkeMessage? response = _cipher.DecryptMessage(wire);
+            if (response is null) return Fail();
+
+            // First response (message 4): verify the responder's PSK AUTH and cache RestOfIDr for the final MSK check.
+            if (!_eapStarted)
+            {
+                IdentificationPayload? idR = response.Payloads.OfType<IdentificationPayload>().FirstOrDefault(p => !p.IsInitiator);
+                AuthenticationPayload? auth = response.Find<AuthenticationPayload>();
+                if (idR is null || auth is null) return Fail();
+
+                byte[] expected = IkePskAuth.ComputeResponderAuth(
+                    _prf, _preSharedKey, _initiator.InitResponseBytes, _initiator.Nonce, _initiator.Keys.SkPr, idR.BodyBytes());
+                if (!FixedTimeEquals(expected, auth.Data)) return Fail();
+
+                _eapResponderIdBody = idR.BodyBytes();
+                _eapStarted = true;
+            }
+
+            EapPayload? eap = response.Find<EapPayload>();
+            if (eap is not null)
+            {
+                EapResult result = _eap.Handle(eap.Message, out byte[]? eapResponse);
+                if (result == EapResult.Failed) return Fail();
+                if (result == EapResult.Success)
+                    return BuildEapMessage(new AuthenticationPayload { Method = IkeAuthMethod.SharedKey, Data = ComputeMskAuth() });
+                return BuildEapMessage(new EapPayload { Message = eapResponse! });
+            }
+
+            // No EAP payload → the final response (message 8): verify the responder's MSK AUTH and derive the CHILD_SA.
+            return ProcessFinalEapResponse(response) ? null : Fail();
+        }
+
+        // The initiator's final AUTH uses the EAP MSK as the shared secret (RFC 7296 §2.16, syntax of §2.15).
+        byte[] ComputeMskAuth()
+            => IkePskAuth.ComputeInitiatorAuth(
+                _prf, _eap!.Msk!, _initiator.InitRequestBytes, _initiator.PeerNonce, _initiator.Keys!.SkPi, _identity.BodyBytes());
+
+        byte[] BuildEapMessage(IkePayload payload)
+        {
+            var message = new IkeMessage
+            {
+                InitiatorSpi = _initiator.InitiatorSpi,
+                ResponderSpi = _initiator.ResponderSpi,
+                ExchangeType = IkeExchangeType.IkeAuth,
+                Flags = IkeHeaderFlags.Initiator,
+                MessageId = _eapMessageId++,
+            };
+            message.Payloads.Add(payload);
+            return _cipher!.EncryptMessage(message);
+        }
+
+        bool ProcessFinalEapResponse(IkeMessage response)
+        {
+            AuthenticationPayload? auth = response.Find<AuthenticationPayload>();
+            SecurityAssociationPayload? sa = response.Find<SecurityAssociationPayload>();
+            if (auth is null || sa is null || _eapResponderIdBody is null || _eap?.Msk is null || _initiator.Keys is null)
+                return false;
+
+            byte[] expected = IkePskAuth.ComputeResponderAuth(
+                _prf, _eap.Msk, _initiator.InitResponseBytes, _initiator.Nonce, _initiator.Keys.SkPr, _eapResponderIdBody);
+            if (!FixedTimeEquals(expected, auth.Data)) return false;
+
+            IkeProposal? proposal = sa.Proposals.FirstOrDefault();
+            if (proposal is null || proposal.Spi.Length == 0) return false;
+            EspSuiteSelection? selection = ParseEspSelection(proposal);
+            if (selection is null) return false;
+
+            ChildOutboundSpi = proposal.Spi;
+            NegotiatedEsp = selection;
+            Configuration = response.Find<ConfigurationPayload>();
+            ChildKeys = ChildSaKeys.Derive(_prf, _initiator.Keys.SkD, _initiator.Nonce, _initiator.PeerNonce,
+                selection.EncryptionKeyLengthBytes, selection.SecondSliceLengthBytes);
+
+            _nextMessageId = _eapMessageId; // post-auth exchanges continue after the EAP message IDs
+            EapEstablished = true;
+            return true;
+        }
+
+        byte[]? Fail()
+        {
+            EapFailed = true;
+            return null;
         }
 
         // ---- Post-IKE_AUTH exchanges (INFORMATIONAL: DPD + DELETE), RFC 7296 §1.4/§2.4 ----

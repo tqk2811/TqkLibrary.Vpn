@@ -126,6 +126,7 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.V2
             IkePayloadType.TrafficSelectorResponder => TrafficSelectorPayload.Parse(body, isInitiator: false),
             IkePayloadType.Configuration => ConfigurationPayload.Parse(body),
             IkePayloadType.Delete => DeletePayload.Parse(body),
+            IkePayloadType.Eap => EapPayload.Parse(body),
             _ => new RawPayload(type, body.ToArray()),
         };
     }

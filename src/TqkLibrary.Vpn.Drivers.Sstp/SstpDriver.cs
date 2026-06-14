@@ -41,7 +41,7 @@ namespace TqkLibrary.Vpn.Drivers.Sstp
         public async Task<IVpnConnection> ConnectAsync(VpnEndpoint endpoint, VpnCredentials credentials, CancellationToken cancellationToken = default)
         {
             var connection = new SstpConnection(endpoint.Host, endpoint.Port, reconnectOptions: _reconnectOptions,
-                certificateValidationCallback: _certificateValidationCallback);
+                certificateValidationCallback: _certificateValidationCallback, addressFamilyPreference: endpoint.AddressFamilyPreference);
             try
             {
                 await connection.ConnectAsync(credentials.Username ?? string.Empty, credentials.Password ?? string.Empty, cancellationToken)

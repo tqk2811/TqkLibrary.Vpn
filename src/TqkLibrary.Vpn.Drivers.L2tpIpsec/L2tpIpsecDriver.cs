@@ -50,7 +50,8 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
                     nameof(credentials));
 
             var connection = new L2tpIpsecConnection(endpoint.Host, psk, reconnectOptions: _reconnectOptions,
-                timeoutOptions: _timeoutOptions, natTraversalMode: _natTraversalMode);
+                timeoutOptions: _timeoutOptions, natTraversalMode: _natTraversalMode,
+                addressFamilyPreference: endpoint.AddressFamilyPreference);
             try
             {
                 await connection.ConnectAsync(credentials.Username ?? string.Empty, credentials.Password ?? string.Empty, cancellationToken)

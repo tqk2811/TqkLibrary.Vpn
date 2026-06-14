@@ -31,6 +31,7 @@ TqkLibrary.Vpn.Abstractions/
 │   ├── Interfaces/           #   ILinkChannel + IPacketChannel (L3) + IEthernetChannel (L2) + slot INeighborResolver/IAddressConfigurator
 │   └── SwappablePacketChannel.cs  # facade IPacketChannel hot-swap được (reconnect không rebind stack)
 ├── Transport/Interfaces/     # Ống truyền byte/datagram bên dưới (TCP/TLS vs UDP)
+├── Net/                      # Resolve outer host → IPAddress theo họ IP (AddressFamilyPreference, IHostResolver, DnsHostResolver)
 └── Drivers/                  # Hợp đồng plugin driver + model cấu hình + enum năng lực
     ├── Enums/                #   VpnLinkLayer/Transport/Security/Auth + Address/MultiHost
     ├── Models/               #   VpnEndpoint, VpnCredentials, TunnelConfig, VpnDriverCapabilities
@@ -63,6 +64,14 @@ TqkLibrary.Vpn.Abstractions/
 | `IByteStreamTransport` | Ống byte tin cậy, có thứ tự (TCP/TLS/SSH); nền cho PPP-over-stream và SSL-VPN. **Đã có hiện thực** đầu tiên: `TlsByteStream` trong driver SSTP (P0.1); một project `Transport.Tls` dùng chung là roadmap F.1 | [IByteStreamTransport.cs:4](Transport/Interfaces/IByteStreamTransport.cs#L4) |
 | `IDatagramTransport` | Ống datagram (UDP), giữ biên gói; comment trỏ IKE/ESP demux trên UDP/4500 (RFC 3948) về [`Ipsec/Nat`](../TqkLibrary.Vpn.Ipsec/Nat) (`NatTraversal`/`NatTraversalChannel`) — chưa có impl, giữ làm nền DTLS (roadmap F.3) | [IDatagramTransport.cs:7](Transport/Interfaces/IDatagramTransport.cs#L7) |
 
+### Net — resolve outer host (P1.2)
+
+| Type | Vai trò | Vị trí |
+| --- | --- | --- |
+| `AddressFamilyPreference` | Enum chọn họ IP cho outer transport: `Auto`(=IPv4-first, giữ hành vi cũ) / `IPv4` / `IPv6` — luôn fallback họ còn lại | [AddressFamilyPreference.cs](Net/AddressFamilyPreference.cs) |
+| `IHostResolver` | Seam resolve host (name/literal) → 1 `IPAddress` theo preference; instance để test với fake không cần DNS | [IHostResolver.cs:7](Net/IHostResolver.cs#L7) |
+| `DnsHostResolver` | Impl mặc định: literal-passthrough + `Dns.GetHostAddresses` + `Select` (pure static — ưu tiên 1 họ, fallback họ kia; testable không DNS). Consumer thật: SSTP `TlsByteStream`, L2TP `L2tpIpsecConnection` | [DnsHostResolver.cs:14](Net/DnsHostResolver.cs#L14) |
+
 ### Drivers — hợp đồng plugin + model
 
 | Type | Vai trò | Vị trí |
@@ -71,7 +80,7 @@ TqkLibrary.Vpn.Abstractions/
 | `IVpnConnection` | Một kết nối live (1 transport / 1 IKE-SA / 1 TLS); chứa nhiều `IVpnSession`, `OpenSessionAsync` | [IVpnConnection.cs:7](Drivers/Interfaces/IVpnConnection.cs#L7) |
 | `IVpnSession` | Một IP endpoint logic: `Config` + `PacketChannel` (1 IP / 1 stack) | [IVpnSession.cs:10](Drivers/Interfaces/IVpnSession.cs#L10) |
 | `VpnDriverCapabilities` | Bảng năng lực driver: link layer, multi-host, PPP, transport/security/auth, address assignment, raw-IP/elevation | [VpnDriverCapabilities.cs:9](Drivers/Models/VpnDriverCapabilities.cs#L9) |
-| `VpnEndpoint` | Host + port của server | [VpnEndpoint.cs:4](Drivers/Models/VpnEndpoint.cs#L4) |
+| `VpnEndpoint` | Host + port của server + `AddressFamilyPreference` (chọn họ IP outer transport, P1.2) | [VpnEndpoint.cs:4](Drivers/Models/VpnEndpoint.cs#L4) |
 | `VpnCredentials` | `Username` / `Password` / `PreSharedKey` | [VpnCredentials.cs:4](Drivers/Models/VpnCredentials.cs#L4) |
 | `TunnelConfig` | Kết quả mạng của session: địa chỉ, prefix, DNS, routes, MTU (chỉ dùng nội bộ, không ghi routing table OS) | [TunnelConfig.cs:9](Drivers/Models/TunnelConfig.cs#L9) |
 | `VpnElevationRequiredException` | Ném khi driver cần quyền admin/root/CAP_NET_RAW nhưng tiến trình không có (kế thừa `Exception`, **không** thuộc cây `VpnConnectionException`) | [VpnElevationRequiredException.cs:7](Drivers/VpnElevationRequiredException.cs#L7) |

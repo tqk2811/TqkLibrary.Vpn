@@ -48,7 +48,7 @@ TqkLibrary.Vpn.Drivers.L2tpIpsec/
 | Type | Vai trò | Vị trí |
 |------|---------|--------|
 | `L2tpIpsecDriver` | `IVpnProtocolDriver`: khai báo capabilities, `ConnectAsync` dựng `L2tpIpsecConnection` → trả `IVpnConnection`; wire `Reconnected`→`ApplyReconnect` | [L2tpIpsecDriver.cs:8](L2tpIpsecDriver.cs#L8) |
-| `L2tpIpsecConnection` | Bộ điều phối control plane: chạy handshake IKE/L2TP/PPP, keepalive, rekey, teardown, supervisor reconnect | [L2tpIpsecConnection.cs:25](L2tpIpsecConnection.cs#L25) |
+| `L2tpIpsecConnection` | Bộ điều phối control plane: chạy handshake IKE/L2TP/PPP, keepalive, rekey, teardown, supervisor reconnect; ctor nhận `AddressFamilyPreference` + `IHostResolver` (outer IPv6, P1.2 — `ResolveAsync` chọn họ IP server) | [L2tpIpsecConnection.cs:25](L2tpIpsecConnection.cs#L25) |
 | `IpsecL2tpTransport` | `IL2tpTransport`: ESP data plane — bọc L2TP-trong-UDP/1701-trong-ESP; giữ SA cũ tạm thời khi rekey | [IpsecL2tpTransport.cs:11](IpsecL2tpTransport.cs#L11) |
 | `UdpEncapsulation` | Build/parse UDP header (1701, checksum 0) mà ESP transport mode bảo vệ | [UdpEncapsulation.cs:8](UdpEncapsulation.cs#L8) |
 | `L2tpPppFrameChannel` | `IPppFrameChannel`: PPP frame đi trong L2TP data message | [L2tpPppFrameChannel.cs:7](L2tpPppFrameChannel.cs#L7) |
@@ -102,7 +102,7 @@ Class hạ tầng `L2tpIpsecConnection` cũng public nếu cần điều khiển
 
 ### Handshake (trong `EstablishAsync` — clean-slate, dùng chung cho connect đầu và mọi reconnect)
 
-1. Resolve host → `StartAttemptChannel` tạo `NatTraversalChannel` (UDP/500) + chạy `ReceiveLoopAsync` ghép kênh IKE/ESP — [L2tpIpsecConnection.cs:234](L2tpIpsecConnection.cs#L234). Trước đó `CleanupAttemptResourcesAsync` dọn attempt cũ: cancel vòng đọc, null `_natt` rồi **await** `DisposeAsync` (socket cũ đóng hẳn trước khi mở socket mới) — [L2tpIpsecConnection.cs:258-286](L2tpIpsecConnection.cs#L258-L286); vòng đọc còn **guard sau mỗi `ReceiveAsync`** (re-check token + identity channel) để gói stale đang in-flight không lọt vào waiter của attempt mới — [L2tpIpsecConnection.cs:359](L2tpIpsecConnection.cs#L359).
+1. Resolve host qua `IHostResolver` theo `AddressFamilyPreference` (P1.2 — ưu tiên họ IP config, fallback họ còn lại; thay filter cứng IPv4 cũ) → `StartAttemptChannel` tạo `NatTraversalChannel` (UDP/500, **bind đúng họ địa chỉ server**) + chạy `ReceiveLoopAsync` ghép kênh IKE/ESP — [L2tpIpsecConnection.cs:234](L2tpIpsecConnection.cs#L234). Trước đó `CleanupAttemptResourcesAsync` dọn attempt cũ: cancel vòng đọc, null `_natt` rồi **await** `DisposeAsync` (socket cũ đóng hẳn trước khi mở socket mới) — [L2tpIpsecConnection.cs:258-286](L2tpIpsecConnection.cs#L258-L286); vòng đọc còn **guard sau mỗi `ReceiveAsync`** (re-check token + identity channel) để gói stale đang in-flight không lọt vào waiter của attempt mới — [L2tpIpsecConnection.cs:359](L2tpIpsecConnection.cs#L359).
 2. **IKEv1 Phase 1 (MM1–MM4) + quyết định cổng NAT-T** trong `BringUpPhase1Async` theo `L2tpIpsecNatTraversalMode` (mặc định `ForcedNatT`) — [L2tpIpsecConnection.cs:181-230](L2tpIpsecConnection.cs#L181-L230):
    - **ForcedNatT** (đường live đang chạy): cổng nguồn ephemeral, NAT-D **khai man** nguồn = `(Any, 500)` ⇒ ép gateway thấy NAT ⇒ **luôn** `SwitchToNatTPort()` sang 4500.
    - **HonestFirst** (opt-in **P0.8b**): thử-bind cổng nguồn **500 thật** (bind fail, vd Windows IKEEXT ⇒ fallback forced), NAT-D **trung thực**, rồi `IkeV1Client.DetectNat` đọc verdict gateway — `ShouldFloatToNatT` ⇒ float 4500; no-NAT (gateway muốn native ESP, **chưa làm** — P0.8c) ⇒ teardown rồi **fallback forced**.

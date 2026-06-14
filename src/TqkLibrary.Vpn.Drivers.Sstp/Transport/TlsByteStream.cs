@@ -1,7 +1,9 @@
+using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography.X509Certificates;
+using TqkLibrary.Vpn.Abstractions.Net;
 using TqkLibrary.Vpn.Abstractions.Transport.Interfaces;
 
 namespace TqkLibrary.Vpn.Drivers.Sstp.Transport
@@ -23,6 +25,8 @@ namespace TqkLibrary.Vpn.Drivers.Sstp.Transport
         readonly string _host;
         readonly int _port;
         readonly RemoteCertificateValidationCallback? _certificateValidationCallback;
+        readonly AddressFamilyPreference _addressFamilyPreference;
+        readonly IHostResolver _hostResolver;
         TcpClient? _tcp;
         SslStream? _ssl;
 
@@ -31,12 +35,17 @@ namespace TqkLibrary.Vpn.Drivers.Sstp.Transport
         /// <paramref name="certificateValidationCallback"/> validates the server certificate during the TLS handshake;
         /// when <c>null</c> (the default) any certificate is accepted (SSTP binds the server identity through its crypto
         /// binding, not PKI). The server certificate is captured into <see cref="RemoteCertificate"/> either way.
+        /// <paramref name="addressFamilyPreference"/> selects IPv4/IPv6 for the outer TCP connection when the host
+        /// resolves to both; <paramref name="hostResolver"/> performs the name→address lookup (default: DNS).
         /// </summary>
-        public TlsByteStream(string host, int port = 443, RemoteCertificateValidationCallback? certificateValidationCallback = null)
+        public TlsByteStream(string host, int port = 443, RemoteCertificateValidationCallback? certificateValidationCallback = null,
+            AddressFamilyPreference addressFamilyPreference = AddressFamilyPreference.Auto, IHostResolver? hostResolver = null)
         {
             _host = host;
             _port = port;
             _certificateValidationCallback = certificateValidationCallback;
+            _addressFamilyPreference = addressFamilyPreference;
+            _hostResolver = hostResolver ?? DnsHostResolver.Default;
         }
 
         /// <inheritdoc/>
@@ -45,15 +54,18 @@ namespace TqkLibrary.Vpn.Drivers.Sstp.Transport
         /// <inheritdoc/>
         public async ValueTask ConnectAsync(CancellationToken cancellationToken = default)
         {
-            var tcp = new TcpClient();
+            // Resolve first so the socket is created in the chosen address family (IPv4/IPv6). The original host string
+            // is still used as the TLS TargetHost (SNI) below — only the connect uses the concrete address.
+            IPAddress address = await _hostResolver.ResolveAsync(_host, _addressFamilyPreference, cancellationToken).ConfigureAwait(false);
+            var tcp = new TcpClient(address.AddressFamily);
             _tcp = tcp;
 #if NET5_0_OR_GREATER
-            await tcp.ConnectAsync(_host, _port, cancellationToken).ConfigureAwait(false);
+            await tcp.ConnectAsync(address, _port, cancellationToken).ConfigureAwait(false);
 #else
             // netstandard2.0 TcpClient.ConnectAsync has no CancellationToken overload — cancel by disposing the socket.
             using (cancellationToken.Register(() => { try { tcp.Dispose(); } catch { } }))
             {
-                try { await tcp.ConnectAsync(_host, _port).ConfigureAwait(false); }
+                try { await tcp.ConnectAsync(address, _port).ConfigureAwait(false); }
                 catch (Exception) when (cancellationToken.IsCancellationRequested) { }
             }
             cancellationToken.ThrowIfCancellationRequested();

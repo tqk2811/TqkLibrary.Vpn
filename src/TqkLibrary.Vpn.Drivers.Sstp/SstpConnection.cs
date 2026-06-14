@@ -7,6 +7,7 @@ using System.Security.Cryptography;
 using TqkLibrary.Vpn.Abstractions.Channels;
 using TqkLibrary.Vpn.Abstractions.Channels.Interfaces;
 using TqkLibrary.Vpn.Abstractions.Drivers;
+using TqkLibrary.Vpn.Abstractions.Net;
 using TqkLibrary.Vpn.Drivers.Sstp.Enums;
 using TqkLibrary.Vpn.Drivers.Sstp.Models;
 using TqkLibrary.Vpn.Drivers.Sstp.Transport;
@@ -63,13 +64,14 @@ namespace TqkLibrary.Vpn.Drivers.Sstp
         /// transport (null ⇒ accept any cert); it is ignored when an explicit <paramref name="transportFactory"/> is given.
         /// </summary>
         public SstpConnection(string host, int port = 443, uint magic = 0x1A2B3C4D, SstpReconnectOptions? reconnectOptions = null,
-            Func<ITlsByteStream>? transportFactory = null, RemoteCertificateValidationCallback? certificateValidationCallback = null)
+            Func<ITlsByteStream>? transportFactory = null, RemoteCertificateValidationCallback? certificateValidationCallback = null,
+            AddressFamilyPreference addressFamilyPreference = AddressFamilyPreference.Auto)
         {
             _host = host;
             _port = port;
             _magic = magic;
             _opts = reconnectOptions ?? new SstpReconnectOptions();
-            _transportFactory = transportFactory ?? (() => new TlsByteStream(_host, _port, certificateValidationCallback));
+            _transportFactory = transportFactory ?? (() => new TlsByteStream(_host, _port, certificateValidationCallback, addressFamilyPreference));
         }
 
         /// <summary>The stable L3 packet channel (valid after a successful connect; survives reconnect).</summary>

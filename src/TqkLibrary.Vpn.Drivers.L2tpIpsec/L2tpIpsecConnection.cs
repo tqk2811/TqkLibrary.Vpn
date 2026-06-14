@@ -2,6 +2,7 @@ using System.Net;
 using TqkLibrary.Vpn.Abstractions.Channels;
 using TqkLibrary.Vpn.Abstractions.Channels.Interfaces;
 using TqkLibrary.Vpn.Abstractions.Drivers;
+using TqkLibrary.Vpn.Abstractions.Net;
 using TqkLibrary.Vpn.Drivers.L2tpIpsec.Enums;
 using TqkLibrary.Vpn.Drivers.L2tpIpsec.Models;
 using TqkLibrary.Vpn.Ipsec.Esp;
@@ -39,6 +40,8 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
         readonly L2tpIpsecReconnectOptions _opts;
         readonly L2tpIpsecTimeoutOptions _timeouts;
         readonly L2tpIpsecNatTraversalMode _natMode;
+        readonly AddressFamilyPreference _addressFamilyPreference;
+        readonly IHostResolver _hostResolver;
         readonly SwappablePacketChannel _facade = new();
         readonly CancellationTokenSource _lifetimeCts = new();
         readonly Random _random = new();
@@ -76,7 +79,8 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
         /// <summary>Creates a connection to the given L2TP/IPsec gateway with the IPsec pre-shared key.</summary>
         public L2tpIpsecConnection(string host, byte[] preSharedKey, uint magic = 0x4D2A3B1C,
             L2tpIpsecReconnectOptions? reconnectOptions = null, L2tpIpsecTimeoutOptions? timeoutOptions = null,
-            L2tpIpsecNatTraversalMode natTraversalMode = L2tpIpsecNatTraversalMode.ForcedNatT)
+            L2tpIpsecNatTraversalMode natTraversalMode = L2tpIpsecNatTraversalMode.ForcedNatT,
+            AddressFamilyPreference addressFamilyPreference = AddressFamilyPreference.Auto, IHostResolver? hostResolver = null)
         {
             _host = host;
             _preSharedKey = preSharedKey;
@@ -84,6 +88,8 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
             _opts = reconnectOptions ?? new L2tpIpsecReconnectOptions();
             _timeouts = timeoutOptions ?? new L2tpIpsecTimeoutOptions();
             _natMode = natTraversalMode;
+            _addressFamilyPreference = addressFamilyPreference;
+            _hostResolver = hostResolver ?? DnsHostResolver.Default;
         }
 
         /// <summary>The stable L3 packet channel (valid after a successful connect; survives reconnect).</summary>
@@ -129,7 +135,7 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
             _ikeWaiter = null;
             _rekeyWaiter = null;
 
-            IPAddress serverIp = await ResolveAsync(_host).ConfigureAwait(false);
+            IPAddress serverIp = await ResolveAsync(_host, cancellationToken).ConfigureAwait(false);
 
             // Phase 1 Main Mode 1-4 + the NAT-T port decision (forced, or honest-first with a forced fallback).
             (NatTraversalChannel natt, IkeV1Client ike) = await BringUpPhase1Async(serverIp, cancellationToken).ConfigureAwait(false);
@@ -633,12 +639,7 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
             await task.ConfigureAwait(false);
         }
 
-        static async Task<IPAddress> ResolveAsync(string host)
-        {
-            if (IPAddress.TryParse(host, out IPAddress? literal)) return literal;
-            IPAddress[] addresses = await Dns.GetHostAddressesAsync(host).ConfigureAwait(false);
-            return addresses.First(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork);
-        }
+        Task<IPAddress> ResolveAsync(string host, CancellationToken cancellationToken) => _hostResolver.ResolveAsync(host, _addressFamilyPreference, cancellationToken);
 
         static uint ToSpi(byte[] spi) => (uint)((spi[0] << 24) | (spi[1] << 16) | (spi[2] << 8) | spi[3]);
 

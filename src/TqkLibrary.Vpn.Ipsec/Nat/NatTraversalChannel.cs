@@ -21,7 +21,8 @@ namespace TqkLibrary.Vpn.Ipsec.Nat
         {
             _remoteAddress = remoteAddress;
             _remote = new IPEndPoint(remoteAddress, remotePort);
-            _client = new UdpClient(localPort);
+            // Bind in the gateway's address family so an IPv6 server gets an IPv6 UDP socket (RFC 3948 over UDP/IPv6).
+            _client = new UdpClient(localPort, remoteAddress.AddressFamily);
         }
 
         /// <summary>The bound local UDP port.</summary>

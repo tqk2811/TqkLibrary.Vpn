@@ -6,12 +6,16 @@ namespace TqkLibrary.VpnClient.Sockets.Extensions
     /// <summary>Convenience helpers that build the userspace socket layer over a VPN session.</summary>
     public static class VpnSessionSocketsExtensions
     {
-        /// <summary>Creates a userspace TCP/IP stack bound to the session's packet channel and assigned address.</summary>
+        /// <summary>
+        /// Creates a userspace TCP/IP stack bound to the session's packet channel and assigned address(es). When the
+        /// session also negotiated an IPv6 address (<see cref="TunnelConfig.AssignedAddressV6"/>) the stack is built
+        /// dual-stack, so both families flow through the one channel.
+        /// </summary>
         public static TcpIpStack CreateTcpStack(this IVpnSession session)
         {
-            if (session.Config.AssignedAddress == null)
+            if (session.Config.AssignedAddress == null && session.Config.AssignedAddressV6 == null)
                 throw new InvalidOperationException("The session has no assigned address.");
-            return new TcpIpStack(session.PacketChannel, session.Config.AssignedAddress);
+            return new TcpIpStack(session.PacketChannel, session.Config.AssignedAddress, session.Config.AssignedAddressV6);
         }
     }
 }

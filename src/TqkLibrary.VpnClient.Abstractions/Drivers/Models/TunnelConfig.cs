@@ -14,6 +14,12 @@ namespace TqkLibrary.VpnClient.Abstractions.Drivers.Models
         /// <summary>Prefix length of the assigned address (e.g. 32 for a point-to-point /32).</summary>
         public int PrefixLength { get; set; } = 32;
 
+        /// <summary>The IPv6 tunnel address assigned to this session, or null if IPv6 was not negotiated.</summary>
+        public IPAddress? AssignedAddressV6 { get; set; }
+
+        /// <summary>Prefix length of the assigned IPv6 address (e.g. 64 for a link-local /64).</summary>
+        public int PrefixLengthV6 { get; set; } = 64;
+
         /// <summary>DNS servers pushed by the server.</summary>
         public IList<IPAddress> DnsServers { get; } = new List<IPAddress>();
 

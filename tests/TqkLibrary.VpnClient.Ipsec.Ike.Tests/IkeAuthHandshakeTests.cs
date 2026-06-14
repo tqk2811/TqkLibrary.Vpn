@@ -114,6 +114,23 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.Tests
             Assert.Equal("pong via gcm", System.Text.Encoding.ASCII.GetString(gotByClient));
         }
 
+        [Fact]
+        public void FullHandshake_WithConfigRequest_AssignsVirtualIpAndDns()
+        {
+            var idInitiator = new IdentificationPayload { IsInitiator = true, IdType = IkeIdType.Ipv4Address, Data = new byte[] { 0, 0, 0, 0 } };
+            // tunnel mode (no USE_TRANSPORT_MODE) + a CFG_REQUEST for a virtual IP, as the IKEv2-native driver will do.
+            var client = new IkeClient(Psk, idInitiator, requestTransportMode: false, requestConfiguration: true);
+            var responder = new SimulatedResponder(Psk, assignAddress: IPAddress.Parse("10.11.12.13"), assignDns: IPAddress.Parse("8.8.4.4"));
+
+            byte[] initResponseWire = responder.HandleInit(client.BuildInitRequest(IPAddress.Loopback, 4500, IPAddress.Loopback, 4500).Encode());
+            client.ProcessInitResponse(IkeMessage.Decode(initResponseWire));
+            Assert.True(client.ProcessAuthResponse(responder.HandleAuth(client.BuildAuthRequest())));
+
+            Assert.NotNull(client.Configuration);
+            Assert.Equal(IPAddress.Parse("10.11.12.13"), client.Configuration!.AssignedIp4Address);
+            Assert.Equal(new[] { IPAddress.Parse("8.8.4.4") }, client.Configuration.DnsServers);
+        }
+
         static EspSession BuildInitiatorEsp(IkeClient client)
         {
             ChildSaKeys k = client.ChildKeys!;
@@ -139,6 +156,8 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.Tests
             readonly ModpDhGroup _dh = ModpDhGroup.Group14();
             readonly byte[] _psk;
             readonly EspSuiteSelection _esp; // the ESP CHILD_SA suite this responder selects in IKE_AUTH
+            readonly IPAddress? _assignAddress; // virtual IP to hand back in a CFG_REPLY, when the client asks
+            readonly IPAddress? _assignDns;
             readonly byte[] _privateKey;
             readonly byte[] _publicKey;
             readonly byte[] _spi = new byte[8];
@@ -151,10 +170,12 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.Tests
             IkeKeyMaterial? _keys;
             IkeCipher? _cipher;
 
-            public SimulatedResponder(byte[] psk, EspSuiteSelection? esp = null)
+            public SimulatedResponder(byte[] psk, EspSuiteSelection? esp = null, IPAddress? assignAddress = null, IPAddress? assignDns = null)
             {
                 _psk = psk;
                 _esp = esp ?? EspSuiteSelection.AesCbcHmacSha256();
+                _assignAddress = assignAddress;
+                _assignDns = assignDns;
                 _privateKey = _dh.GeneratePrivateKey();
                 _publicKey = _dh.DerivePublicValue(_privateKey);
                 for (int i = 0; i < 8; i++) _spi[i] = (byte)(0x90 + i);
@@ -225,6 +246,17 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.Tests
                 };
                 response.Payloads.Add(idR);
                 response.Payloads.Add(new AuthenticationPayload { Method = IkeAuthMethod.SharedKey, Data = responderAuth });
+
+                // Echo a CFG_REPLY when the client sent a CFG_REQUEST and we were told what to assign.
+                if (_assignAddress is not null && request.Find<ConfigurationPayload>()?.ConfigType == IkeConfigType.Request)
+                {
+                    var cp = new ConfigurationPayload { ConfigType = IkeConfigType.Reply };
+                    cp.Attributes.Add(new IkeConfigAttribute(IkeConfigAttributeType.InternalIp4Address, _assignAddress.GetAddressBytes()));
+                    if (_assignDns is not null)
+                        cp.Attributes.Add(new IkeConfigAttribute(IkeConfigAttributeType.InternalIp4Dns, _assignDns.GetAddressBytes()));
+                    response.Payloads.Add(cp);
+                }
+
                 var sa = new SecurityAssociationPayload();
                 sa.Proposals.Add(_esp.Algorithm == EspEncryptionAlgorithm.AesGcm16
                     ? IkeProposals.GcmEsp(ChildInboundSpi)

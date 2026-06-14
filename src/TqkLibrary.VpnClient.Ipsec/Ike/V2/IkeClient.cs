@@ -20,15 +20,23 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.V2
         readonly byte[] _preSharedKey;
         readonly IdentificationPayload _identity;
         readonly bool _requestTransportMode;
+        readonly bool _requestConfiguration;
 
         IkeCipher? _cipher;
 
-        /// <summary>Creates a client with the given PSK and IDi, optionally requesting ESP transport mode (for L2TP).</summary>
-        public IkeClient(byte[] preSharedKey, IdentificationPayload identity, bool requestTransportMode = true, byte[]? initiatorSpi = null)
+        /// <summary>
+        /// Creates a client with the given PSK and IDi. <paramref name="requestTransportMode"/> asks for ESP
+        /// transport mode (L2TP); <paramref name="requestConfiguration"/> attaches a CFG_REQUEST so the gateway
+        /// assigns a virtual IP/DNS (tunnel mode, IKEv2-native). The two are mutually exclusive in practice —
+        /// transport mode keeps the host's address, tunnel mode pulls one.
+        /// </summary>
+        public IkeClient(byte[] preSharedKey, IdentificationPayload identity, bool requestTransportMode = true,
+            byte[]? initiatorSpi = null, bool requestConfiguration = false)
         {
             _preSharedKey = preSharedKey;
             _identity = identity;
             _requestTransportMode = requestTransportMode;
+            _requestConfiguration = requestConfiguration;
             _initiator = new IkeSaInitiator(initiatorSpi);
             ChildInboundSpi = RandomSpi();
         }
@@ -44,6 +52,13 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.V2
 
         /// <summary>The ESP suite the responder selected in IKE_AUTH, valid after a successful <see cref="ProcessAuthResponse"/>.</summary>
         public EspSuiteSelection? NegotiatedEsp { get; private set; }
+
+        /// <summary>
+        /// The Configuration Payload the responder returned (virtual IP/DNS), or null when none was requested or sent.
+        /// Valid after a successful <see cref="ProcessAuthResponse"/>; read <see cref="ConfigurationPayload.AssignedIp4Address"/>
+        /// / <see cref="ConfigurationPayload.DnsServers"/> for the assigned tunnel address and resolvers.
+        /// </summary>
+        public ConfigurationPayload? Configuration { get; private set; }
 
         /// <summary>The IKE SA key material (after IKE_SA_INIT).</summary>
         public IkeKeyMaterial? IkeKeys => _initiator.Keys;
@@ -79,6 +94,10 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.V2
             };
             message.Payloads.Add(_identity);
             message.Payloads.Add(new AuthenticationPayload { Method = IkeAuthMethod.SharedKey, Data = auth });
+
+            // CFG_REQUEST (if asked): goes before SAi2 so the gateway assigns a virtual IP/DNS for tunnel mode.
+            if (_requestConfiguration)
+                message.Payloads.Add(ConfigurationPayload.Request());
 
             var sa = new SecurityAssociationPayload();
             foreach (IkeProposal proposal in IkeProposals.EspProposals(ChildInboundSpi))
@@ -121,6 +140,7 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.V2
 
             ChildOutboundSpi = proposal.Spi;
             NegotiatedEsp = selection;
+            Configuration = response.Find<ConfigurationPayload>();
             ChildKeys = ChildSaKeys.Derive(_prf, _initiator.Keys.SkD, _initiator.Nonce, _initiator.PeerNonce,
                 selection.EncryptionKeyLengthBytes, selection.SecondSliceLengthBytes);
             return true;

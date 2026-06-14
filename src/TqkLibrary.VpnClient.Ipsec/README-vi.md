@@ -8,7 +8,7 @@ Project này hiện thực **IPsec ở tầng PROTOCOL** cho VPN client userspac
 
 - **IKE (Internet Key Exchange)** — control plane: thương lượng SA và sinh khóa.
   - `Ike/V1` — ISAKMP/IKEv1 (RFC 2407/2408/2409): Main Mode (PSK, 6 message) + Quick Mode (3 message), cộng các Informational (DPD keepalive, Delete teardown, Quick Mode rekey). **Đây là phần đang chạy thực tế**, được driver L2TP/IPsec dùng để dựng ESP CHILD SA cho L2TP/IPsec qua VPN Gate.
-  - `Ike/V2` — IKEv2 (RFC 7296): IKE_SA_INIT + IKE_AUTH (PSK) đầy đủ, có unit test, **nhưng chưa driver nào wire vào**.
+  - `Ike/V2` — IKEv2 (RFC 7296): IKE_SA_INIT + IKE_AUTH (PSK) + Configuration Payload (virtual IP/DNS) + INFORMATIONAL (DPD liveness, DELETE teardown) + CREATE_CHILD_SA (rekey CHILD_SA make-before-break), có unit test — **đủ protocol cho driver V.1 IKEv2-native (chưa wire); còn lại rekey IKE SA + EAP-MSCHAPv2**.
 - **ESP (Encapsulating Security Payload)** — data plane (RFC 4303): `Esp/` đóng/mở gói ESP (`Protect` / `TryUnprotect`), gán sequence number, anti-replay window, hỗ trợ hai bộ suite **AES-CBC+HMAC** và **AES-GCM** (AEAD). `EspSuiteSelection` là descriptor "suite đã negotiate" — ánh xạ thuật toán → độ dài keymat → `EspCipherSuite`, dùng chung cho cả IKEv1 lẫn IKEv2 sau khi đọc transform server chọn.
 - **NAT-T (UDP encapsulation)** — `Nat/` (RFC 3948, gom từ project cũ `TqkLibrary.VpnClient.Transport.Udp`): framing **Non-ESP Marker** phân biệt IKE với ESP khi chung cổng 4500 ([NatTraversal.cs](Nat/NatTraversal.cs)) + kênh UDP một-gateway có trạng thái cổng ([NatTraversalChannel.cs](Nat/NatTraversalChannel.cs)) — bind cổng local ephemeral (≠500/4500, tránh đụng IKEEXT của OS và ép forced-NAT-T) **theo họ địa chỉ gateway (IPv4/IPv6 — outer IPv6 P1.2)**, gửi/nhận IKE+ESP, đổi cổng 500→4500 theo lệnh.
 
@@ -62,8 +62,8 @@ TqkLibrary.VpnClient.Ipsec/
    │  ├─ Enums/                 Payload type, exchange type, hằng số ISAKMP, kind Informational
    │  ├─ Models/                IsakmpAttribute / IsakmpTransform / IsakmpProposal + InformationalResult
    │  └─ Payloads/              IsakmpPayload (base), IsakmpRawPayload, IsakmpSaPayload
-   └─ V2/                       IKEv2 (RFC 7296) — đầy đủ + test, CHƯA driver nào dùng
-      ├─ IkeClient.cs           Client initiator IKEv2: IKE_SA_INIT + IKE_AUTH (PSK)
+   └─ V2/                       IKEv2 (RFC 7296) — protocol đủ cho V.1 (IKE_SA_INIT/AUTH + CP + INFORMATIONAL + CREATE_CHILD_SA), CHƯA driver nào wire
+      ├─ IkeClient.cs           Client initiator: IKE_SA_INIT + IKE_AUTH (PSK, opt-in CP) + DPD/DELETE + rekey CHILD_SA
       ├─ IkeSaInitiator.cs      Nửa initiator của IKE_SA_INIT (SPI, DH, nonce, SK_*)
       ├─ IkeKeyMaterial.cs      7 khóa SK_d/ai/ar/ei/er/pi/pr (RFC 7296 §2.14)
       ├─ ChildSaKeys.cs         KEYMAT CHILD_SA = prf+(SK_d, Ni|Nr) (RFC 7296 §2.17)
@@ -71,7 +71,10 @@ TqkLibrary.VpnClient.Ipsec/
       ├─ IkePskAuth.cs          AUTH = prf(prf(PSK,"Key Pad…"), SignedOctets) (RFC 7296 §2.15)
       ├─ IkeMessage.cs / IkeBuffer.cs   Header 28B + payload chain (encode/decode)
       ├─ IkeProposals.cs / NatDetection.cs
-      ├─ Enums/ Models/ Payloads/   Cấu trúc payload IKEv2 (SA, KE, Nonce, Notify, TS, ID, AUTH…)
+      ├─ Models/ChildSaParameters.cs   Tham số CHILD_SA (SPI in/out + keys + suite) trả về cho driver sau rekey
+      ├─ Payloads/ConfigurationPayload.cs   CP (RFC 7296 §3.15): kéo virtual IP/netmask/DNS
+      ├─ Payloads/DeletePayload.cs   DELETE (RFC 7296 §3.11): teardown CHILD_SA (ESP SPI) / IKE SA (no-SPI)
+      ├─ Enums/ Models/ Payloads/   Cấu trúc payload IKEv2 (SA, KE, Nonce, Notify, Delete, CP, TS, ID, AUTH…)
 ```
 
 ## Thành phần chính
@@ -117,11 +120,14 @@ TqkLibrary.VpnClient.Ipsec/
 | `IkeV1InformationalResult` / `IkeV1InformationalKind` | Phân loại Informational đến (DPD/Delete/Unknown) | [IkeV1InformationalResult.cs:6](Ike/V1/Models/IkeV1InformationalResult.cs#L6), [IkeV1InformationalKind.cs:4](Ike/V1/Enums/IkeV1InformationalKind.cs#L4) |
 | `IkeV1Constants` | DOI, protocol/transform id, lớp attribute SA (RFC 2407/2408/2409) | [IkeV1Constants.cs:24](Ike/V1/Enums/IkeV1Constants.cs#L24) |
 
-### IKEv2 (đầy đủ nhưng chưa wire)
+### IKEv2 (protocol đủ cho V.1, chưa wire)
 
 | Type | Vai trò | Vị trí |
 |------|---------|--------|
-| `IkeClient` | Client initiator IKEv2: IKE_SA_INIT → IKE_AUTH (PSK), verify AUTH, sinh CHILD_SA; chào AES-CBC + AES-GCM rồi build suite server chọn (`NegotiatedEsp`/`ChildKeys`) | [IkeClient.cs:16](Ike/V2/IkeClient.cs#L16) |
+| `IkeClient` | Client initiator IKEv2: IKE_SA_INIT → IKE_AUTH (PSK, opt-in CFG_REQUEST), verify AUTH, sinh CHILD_SA; chào AES-CBC + AES-GCM rồi build suite server chọn (`NegotiatedEsp`/`ChildKeys`). Hậu-AUTH: `BuildDeadPeerDetection`/`BuildDeleteChildSa`/`BuildDeleteIkeSa` + `BuildInformationalResponse` (INFORMATIONAL), `BuildRekeyChildSaRequest`/`ProcessRekeyChildSaResponse` (rekey CHILD_SA → `ChildSaParameters`); bộ đếm message-id | [IkeClient.cs:16](Ike/V2/IkeClient.cs#L16) |
+| `ConfigurationPayload` | CP (RFC 7296 §3.15): `Request()` CFG_REQUEST rỗng ↔ CFG_REPLY; accessor `AssignedIp4Address`/`AssignedIp6Address`/`DnsServers` | [ConfigurationPayload.cs:16](Ike/V2/Payloads/ConfigurationPayload.cs#L16) |
+| `DeletePayload` | DELETE (RFC 7296 §3.11): `Esp(spi)` cho CHILD_SA, `Ike()` cho IKE SA (no-SPI) | [DeletePayload.cs:13](Ike/V2/Payloads/DeletePayload.cs#L13) |
+| `ChildSaParameters` | Kết quả rekey: SPI in/out + `ChildSaKeys` + `EspSuiteSelection` cho driver dựng `EspSession` mới | [ChildSaParameters.cs:11](Ike/V2/Models/ChildSaParameters.cs#L11) |
 | `IkeSaInitiator` | Nửa initiator IKE_SA_INIT: SPI, DH (MODP-2048), nonce, SK_* | [IkeSaInitiator.cs:15](Ike/V2/IkeSaInitiator.cs#L15) |
 | `IkeKeyMaterial` | 7 khóa SK_d/ai/ar/ei/er/pi/pr (RFC 7296 §2.14) | [IkeKeyMaterial.cs:11](Ike/V2/IkeKeyMaterial.cs#L11) |
 | `ChildSaKeys` | KEYMAT CHILD_SA = prf+(SK_d, Ni\|Nr) (no PFS) | [ChildSaKeys.cs:11](Ike/V2/ChildSaKeys.cs#L11) |
@@ -146,7 +152,7 @@ TqkLibrary.VpnClient.Ipsec/
 | **RFC 3948** (UDP Encapsulation of ESP — Non-ESP Marker §2.2, ghép kênh IKE/ESP trên 4500) | `NatTraversal` (framing/Classify), `NatTPacketKind`, `NatTraversalChannel` | [NatTraversal.cs:6](Nat/NatTraversal.cs#L6), [NatTPacketKind.cs:3](Nat/Enums/NatTPacketKind.cs#L3), [NatTraversalChannel.cs:8](Nat/NatTraversalChannel.cs#L8) | RFC ghi rõ trong comment |
 | **draft-ietf-ipsec-nat-t-ike-02/03** | `IkeV1NatDetection.VendorIdDraft02/03` (fallback NAT-T cũ, payload NAT-D = 130) | [IkeV1NatDetection.cs:17](Ike/V1/IkeV1NatDetection.cs#L17) | Có trong comment |
 | **RFC 3706** (DPD) | `IkeV1Dpd` (R-U-THERE / R-U-THERE-ACK), `IkeV1InformationalKind` | [IkeV1Dpd.cs:6](Ike/V1/IkeV1Dpd.cs#L6), [IkeV1InformationalKind.cs:3](Ike/V1/Enums/IkeV1InformationalKind.cs#L3) | Có trong comment |
-| **RFC 7296** (IKEv2) | `IkeMessage` (§3.1), `IkeKeyMaterial` (§2.14), `ChildSaKeys` (§2.17), `IkeCipher` (§3.14), `IkePskAuth` (§2.15), `IkeSaInitiator` (§2.15), `NatDetection` (§2.23), `Ike/V2/Payloads/*`, `Ike/V2/Enums/*` | [IkeMessage.cs:7](Ike/V2/IkeMessage.cs#L7), [IkeKeyMaterial.cs:7](Ike/V2/IkeKeyMaterial.cs#L7), [ChildSaKeys.cs:7](Ike/V2/ChildSaKeys.cs#L7), [IkeCipher.cs:8](Ike/V2/IkeCipher.cs#L8), [IkePskAuth.cs:7](Ike/V2/IkePskAuth.cs#L7), [NatDetection.cs:7](Ike/V2/NatDetection.cs#L7) | Có trong comment (chưa wire) |
+| **RFC 7296** (IKEv2) | `IkeMessage` (§3.1), `IkeKeyMaterial` (§2.14), `ChildSaKeys` (§2.17), `IkeCipher` (§3.14), `IkePskAuth` (§2.15), `IkeSaInitiator` (§2.15), `NatDetection` (§2.23), `ConfigurationPayload` (§3.15), `DeletePayload` (§3.11), `IkeClient` INFORMATIONAL/DPD (§1.4) + CREATE_CHILD_SA rekey (§1.3.3), `Ike/V2/Payloads/*`, `Ike/V2/Enums/*` | [IkeMessage.cs:7](Ike/V2/IkeMessage.cs#L7), [IkeKeyMaterial.cs:7](Ike/V2/IkeKeyMaterial.cs#L7), [ChildSaKeys.cs:7](Ike/V2/ChildSaKeys.cs#L7), [IkeCipher.cs:8](Ike/V2/IkeCipher.cs#L8), [IkePskAuth.cs:7](Ike/V2/IkePskAuth.cs#L7), [ConfigurationPayload.cs:11](Ike/V2/Payloads/ConfigurationPayload.cs#L11), [DeletePayload.cs:7](Ike/V2/Payloads/DeletePayload.cs#L7), [IkeClient.cs:175](Ike/V2/IkeClient.cs#L175), [NatDetection.cs:7](Ike/V2/NatDetection.cs#L7) | Có trong comment (chưa wire driver) |
 | **FIPS-197** (AES) | Khóa AES-128/192/256 cho mọi suite ESP + cipher IKE (qua `TqkLibrary.VpnClient.Crypto`) | [EspCbcHmacSuite.cs:28](Esp/EspCbcHmacSuite.cs#L28) | **(suy luận)** — không chú thích trong comment |
 | **NIST SP 800-38D** (AES-GCM) | `EspGcmSuite` (chế độ GCM của AES) | [EspGcmSuite.cs:11](Esp/EspGcmSuite.cs#L11) | **(suy luận)** — RFC 4106 mới được ghi |
 | **NIST SP 800-38A** (CBC mode) | `EspCbcHmacSuite`, `IkeV1Cipher`, `IkeCipher` (V2) | [EspCbcHmacSuite.cs:11](Esp/EspCbcHmacSuite.cs#L11) | **(suy luận)** |

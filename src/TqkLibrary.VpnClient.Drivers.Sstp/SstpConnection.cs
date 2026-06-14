@@ -30,6 +30,7 @@ namespace TqkLibrary.VpnClient.Drivers.Sstp
         readonly string _host;
         readonly int _port;
         readonly uint _magic;
+        readonly bool _enableIpv6;
         readonly SstpReconnectOptions _opts;
         readonly Func<ITlsByteStream> _transportFactory;
         readonly SwappablePacketChannel _facade = new();
@@ -62,14 +63,17 @@ namespace TqkLibrary.VpnClient.Drivers.Sstp
         /// here to exercise the handshake/keepalive/reconnect supervisor without a live server.
         /// <paramref name="certificateValidationCallback"/> validates the server TLS certificate of the default
         /// transport (null ⇒ accept any cert); it is ignored when an explicit <paramref name="transportFactory"/> is given.
+        /// Set <paramref name="enableIpv6"/> to also run IPV6CP (RFC 5072) for a link-local IPv6 address alongside IPCP
+        /// (best-effort: a server without IPv6 support simply never opens IPV6CP and the IPv4 link is unaffected).
         /// </summary>
         public SstpConnection(string host, int port = 443, uint magic = 0x1A2B3C4D, SstpReconnectOptions? reconnectOptions = null,
             Func<ITlsByteStream>? transportFactory = null, RemoteCertificateValidationCallback? certificateValidationCallback = null,
-            AddressFamilyPreference addressFamilyPreference = AddressFamilyPreference.Auto)
+            AddressFamilyPreference addressFamilyPreference = AddressFamilyPreference.Auto, bool enableIpv6 = false)
         {
             _host = host;
             _port = port;
             _magic = magic;
+            _enableIpv6 = enableIpv6;
             _opts = reconnectOptions ?? new SstpReconnectOptions();
             _transportFactory = transportFactory ?? (() => new TlsByteStream(_host, _port, certificateValidationCallback, addressFamilyPreference));
         }
@@ -82,6 +86,9 @@ namespace TqkLibrary.VpnClient.Drivers.Sstp
 
         /// <summary>The DNS server pushed by the server, if any (tracks the latest attempt).</summary>
         public IPAddress? AssignedDns => _engine!.AssignedDns;
+
+        /// <summary>The link-local IPv6 address negotiated via IPV6CP, or null (IPv6 disabled / server has no IPV6CP).</summary>
+        public IPAddress? AssignedAddressV6 => _engine?.AssignedAddressV6;
 
         /// <summary>Raised whenever the connection state changes (handshake progress, drop, reconnect).</summary>
         public event Action<SstpConnectionState>? StateChanged;
@@ -181,8 +188,10 @@ namespace TqkLibrary.VpnClient.Drivers.Sstp
             _channel = channel;
 
             var authenticator = new MsChapV2Authenticator(_userName ?? string.Empty, _password ?? string.Empty);
-            var engine = new PppEngine(channel, _magic, IPAddress.Any, authenticator: authenticator);
+            var engine = new PppEngine(channel, _magic, IPAddress.Any, authenticator: authenticator, enableIpv6: _enableIpv6);
             _engine = engine;
+            var ipv6Up = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            engine.Ipv6Up += () => ipv6Up.TrySetResult(true);
 
             var linkUp = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             // Capture per-attempt locals (transport/authenticator/nonce) so a stale closure never sends the wrong binding.
@@ -215,6 +224,7 @@ namespace TqkLibrary.VpnClient.Drivers.Sstp
             engine.Start();
 
             await WaitForLinkUpAsync(linkUp.Task, loopTask, channel, cancellationToken).ConfigureAwait(false);
+            await AwaitIpv6GraceAsync(engine, ipv6Up.Task, cancellationToken).ConfigureAwait(false);
 
             _facade.SetInner(engine.PacketChannel);
             StartKeepalive();
@@ -234,6 +244,18 @@ namespace TqkLibrary.VpnClient.Drivers.Sstp
             if (linkUp.IsCompleted) { await linkUp.ConfigureAwait(false); return; } // success, or rethrow AuthFailed
             throw new VpnConnectionException("The SSTP connection closed during the handshake.",
                 channel.ReadError ?? new IOException("connection closed"));
+        }
+
+        // IPV6CP runs in parallel with IPCP and usually opens around the same time; give it a short grace after IPv4
+        // link-up so the link-local address is surfaced in TunnelConfig. A server without IPv6 never opens IPV6CP — we
+        // never fail on it (IPv6 is best-effort), and a no-op when disabled or already up keeps the IPv4 path unchanged.
+        async Task AwaitIpv6GraceAsync(PppEngine engine, Task<bool> ipv6Up, CancellationToken cancellationToken)
+        {
+            if (!_enableIpv6 || engine.IsIpv6Up) return;
+            using var grace = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            grace.CancelAfter(TimeSpan.FromSeconds(2));
+            try { await Task.WhenAny(ipv6Up, Task.Delay(Timeout.Infinite, grace.Token)).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { } // grace elapsed, no IPv6
         }
 
         // Tears down the resources of the previous attempt before a fresh one (no-op on the very first attempt).

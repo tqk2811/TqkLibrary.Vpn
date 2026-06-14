@@ -10,16 +10,20 @@ namespace TqkLibrary.VpnClient.Drivers.Sstp
     {
         readonly SstpReconnectOptions? _reconnectOptions;
         readonly RemoteCertificateValidationCallback? _certificateValidationCallback;
+        readonly bool _enableIpv6;
 
         /// <summary>
         /// Creates the driver; <paramref name="reconnectOptions"/> tunes (or disables) auto-reconnect and
         /// <paramref name="certificateValidationCallback"/> validates the server TLS certificate (<c>null</c> ⇒ accept
-        /// any cert — the SSTP identity is bound by its crypto binding, not PKI).
+        /// any cert — the SSTP identity is bound by its crypto binding, not PKI). Set <paramref name="enableIpv6"/> to
+        /// also run IPV6CP for a link-local IPv6 address (best-effort; the IPv4 path is unaffected).
         /// </summary>
-        public SstpDriver(SstpReconnectOptions? reconnectOptions = null, RemoteCertificateValidationCallback? certificateValidationCallback = null)
+        public SstpDriver(SstpReconnectOptions? reconnectOptions = null, RemoteCertificateValidationCallback? certificateValidationCallback = null,
+            bool enableIpv6 = false)
         {
             _reconnectOptions = reconnectOptions;
             _certificateValidationCallback = certificateValidationCallback;
+            _enableIpv6 = enableIpv6;
         }
 
         /// <inheritdoc/>
@@ -41,13 +45,14 @@ namespace TqkLibrary.VpnClient.Drivers.Sstp
         public async Task<IVpnConnection> ConnectAsync(VpnEndpoint endpoint, VpnCredentials credentials, CancellationToken cancellationToken = default)
         {
             var connection = new SstpConnection(endpoint.Host, endpoint.Port, reconnectOptions: _reconnectOptions,
-                certificateValidationCallback: _certificateValidationCallback, addressFamilyPreference: endpoint.AddressFamilyPreference);
+                certificateValidationCallback: _certificateValidationCallback, addressFamilyPreference: endpoint.AddressFamilyPreference,
+                enableIpv6: _enableIpv6);
             try
             {
                 await connection.ConnectAsync(credentials.Username ?? string.Empty, credentials.Password ?? string.Empty, cancellationToken)
                     .ConfigureAwait(false);
 
-                var config = new TunnelConfig { AssignedAddress = connection.AssignedAddress };
+                var config = new TunnelConfig { AssignedAddress = connection.AssignedAddress, AssignedAddressV6 = connection.AssignedAddressV6 };
                 if (connection.AssignedDns != null) config.DnsServers.Add(connection.AssignedDns);
 
                 var session = new SstpVpnSession(connection.PacketChannel, config);

@@ -2,7 +2,7 @@
 
 Thư viện **protocol OpenVPN** thuần .NET (tương thích OpenVPN community server) — **không dùng PPP**. Control channel (TLS) + data channel ghép trên một socket UDP/TCP, demux theo byte opcode đầu. Đây là project protocol-level cho driver **V.2** (đang xây theo phase, xem [`.docs/11`](../../.docs/11-todo-roadmap.md) §V.2).
 
-> **Trạng thái:** **V2.a — control-channel reliability layer xong (primitive)**. Đã có: codec gói control (opcode/key-id + session-id + ACK array + packet-id + payload) **và** reliability state machine — send window (gán packet-id + retransmit/backoff theo clock inject) + receive window (dedup + in-order delivery cho TLS + theo dõi ACK). **Chưa**: object control-channel ráp windows+codec+session-id+transport rồi feed `SslStream` (V2.b), tls-auth/tls-crypt (V2.c), data channel AEAD (V2.d)…
+> **Trạng thái:** **V2.a reliability-layer primitive + config model/.ovpn parser xong**. Đã có: (1) codec gói control (opcode/key-id + session-id + ACK array + packet-id + payload); (2) reliability state machine — send window (gán packet-id + retransmit/backoff theo clock inject) + receive window (dedup + in-order delivery cho TLS + theo dõi ACK); (3) **`OpenVpnProfile` (config lập trình driver tiêu thụ) + `OpenVpnConfigParser` đọc `.ovpn`** (cert/key inline → PEM, dạng path → giữ đường dẫn cho caller; không I/O). **Chưa**: object control-channel ráp windows+codec+session-id+transport rồi feed `SslStream` (V2.b), tls-auth/tls-crypt (V2.c), data channel AEAD (V2.d)…
 
 ## Vị trí kiến trúc
 
@@ -23,8 +23,15 @@ TqkLibrary.VpnClient.OpenVpn/
 ├─ OpenVpnReliabilityOptions.cs    Chính sách retransmit (interval/backoff/cap) + window size
 ├─ OpenVpnReliableSendWindow.cs    Send half: gán packet-id, in-flight window, retransmit theo clock
 ├─ OpenVpnReliableReceiveWindow.cs Receive half: dedup + in-order delivery + theo dõi ACK
+├─ Config/
+│  ├─ OpenVpnProfile.cs            Config lập trình (remote, proto, device, TLS material, cipher/auth, options)
+│  ├─ OpenVpnConfigParser.cs       Parse text .ovpn → OpenVpnProfile (pure, không I/O)
+│  ├─ OpenVpnRemote.cs             1 endpoint `remote host [port] [proto]`
+│  └─ OpenVpnFileOrInline.cs       cert/key: inline PEM hoặc đường dẫn file
 ├─ Enums/
-│  └─ OpenVpnOpcode.cs             5-bit opcode (P_CONTROL/P_ACK/HARD_RESET/SOFT_RESET/P_DATA…)
+│  ├─ OpenVpnOpcode.cs             5-bit opcode (P_CONTROL/P_ACK/HARD_RESET/SOFT_RESET/P_DATA…)
+│  ├─ OpenVpnProtocol.cs           Udp / Tcp
+│  └─ OpenVpnDeviceType.cs         Tun / Tap
 └─ Models/
    └─ OpenVpnControlPacket.cs      Gói control đã decode (session-id, acks, remote-session-id, packet-id, payload)
 ```
@@ -39,6 +46,9 @@ TqkLibrary.VpnClient.OpenVpn/
 | `OpenVpnReliabilityOptions` | `Interval`/`BackoffMultiplier`/`MaxInterval`/`MaxRetransmits`/`WindowSize` + `IntervalFor(resends)` (mirror `L2tpRetransmitOptions`) | [OpenVpnReliabilityOptions.cs:11](OpenVpnReliabilityOptions.cs#L11) |
 | `OpenVpnReliableSendWindow` | `Queue`(gán id 0,1,2…) → `CollectDue(nowMs)` (gửi mới + retransmit hết interval, mark sent) → `Acknowledge(id/ids)`; `CanQueue`/`InFlight`/`IsExhausted(nowMs)` | [OpenVpnReliableSendWindow.cs:11](OpenVpnReliableSendWindow.cs#L11) |
 | `OpenVpnReliableReceiveWindow` | `Offer(id,payload)` (dedup + buffer trong window) → `TryDeliver` (in-order cho TLS) → `TakeAcks(max)` (≤8 cho P_ACK / ≤4 piggyback); `NextExpectedId`/`PendingAcks` | [OpenVpnReliableReceiveWindow.cs:11](OpenVpnReliableReceiveWindow.cs#L11) |
+| `OpenVpnProfile` | config lập trình driver tiêu thụ: `Remotes`/`Protocol`/`Port`/`Device`/`IsClient`, TLS material (`Ca`/`Cert`/`Key`/`TlsAuth`/`TlsCrypt`/`KeyDirection`), `Cipher`/`DataCiphers`/`Auth`, `AuthUserPass`, `Compression`/`RenegSec`/`TunMtu`, `OtherDirectives` (raw chưa model) | [Config/OpenVpnProfile.cs:14](Config/OpenVpnProfile.cs#L14) |
+| `OpenVpnConfigParser` | static `Parse(text)` → `OpenVpnProfile`: inline `<ca>…</ca>` → PEM, dạng path → `FilePath`; bỏ comment `#`/`;`, hỗ trợ arg trong `"…"`, flatten `<connection>`, directive lạ giữ raw | [Config/OpenVpnConfigParser.cs:16](Config/OpenVpnConfigParser.cs#L16) |
+| `OpenVpnRemote` / `OpenVpnFileOrInline` | endpoint `remote host [port] [proto]` / cert-key inline-hoặc-path | [Config/OpenVpnRemote.cs:6](Config/OpenVpnRemote.cs#L6) · [Config/OpenVpnFileOrInline.cs:9](Config/OpenVpnFileOrInline.cs#L9) |
 
 ## Wire format (control packet)
 
@@ -60,6 +70,13 @@ OpenVPN chạy TLS **bên trong** một lớp tin cậy tự chế trên control
 - **Receive** (`OpenVpnReliableReceiveWindow`): `Offer(id,payload)` dedup (gói đã giao / đã buffer / ngoài window) + buffer gói đến lệch thứ tự; `TryDeliver` nhả payload **đúng thứ tự packet-id** cho TLS (gọi lặp tới khi gặp lỗ hổng); `TakeAcks(max)` lấy id cần ack (≤8 đút P_ACK_V1, ≤4 piggyback lên P_CONTROL). Mọi id nhận được (kể cả trùng) đều xếp lại để ack vì peer resend tới khi thấy ack.
 
 > Object **control-channel** (ráp 2 window + codec + session-id, quyết định gửi P_ACK riêng hay piggyback, feed `SslStream`) thuộc **V2.b**.
+
+## Config (`.ovpn` + model lập trình)
+
+Hai lớp tách bạch để vừa dùng được file `.ovpn` vừa cấu hình tay, mà **lõi driver chỉ phụ thuộc model** (test offline sạch):
+
+- **`OpenVpnProfile`** — thứ driver (V2.b+) tiêu thụ: remote(s)/proto/port/device, TLS material (CA/cert/key/tls-auth/tls-crypt + key-direction), cipher/data-ciphers/auth, auth-user-pass, comp/reneg/mtu. Directive parser chưa model giữ nguyên trong `OtherDirectives` (không mất gì).
+- **`OpenVpnConfigParser.Parse(text)`** — **thuần text→model, không I/O**: cert/key **inline** (`<ca>…</ca>`) giữ nguyên PEM; dạng **đường dẫn** (`ca ca.crt`) chỉ ghi `FilePath` cho caller tự nạp (I/O thuộc tầng driver/app). Bỏ comment `#`/`;`, hỗ trợ arg trong `"…"`, flatten `<connection>`, inline thắng path khi trùng. Nhiều `remote` → danh sách (mỗi cái port/proto riêng, fallback default).
 
 ## Bảng chuẩn / nguồn
 

@@ -227,6 +227,53 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.Tests
             Assert.False(nat.ShouldFloatToNatT);
         }
 
+        [Fact]
+        public void Phase1Rekey_NewIsakmpSa_CarriesEsp_WhileOldStaysValidDuringGrace()
+        {
+            // SA #1 — the live tunnel.
+            var client1 = new IkeV1Client(Psk, IPAddress.Loopback, IPAddress.Loopback);
+            var responder1 = new SimulatedResponderV1(Psk, client1.InitiatorCookie);
+            DriveToQuickModeComplete(client1, responder1);
+            (EspSession clientEsp1, EspSession responderEsp1) = BuildEspPair(client1, responder1);
+
+            // Phase 1 rekey: a brand-new ISAKMP SA (fresh cookie) negotiated in place via a full Main Mode + Quick Mode,
+            // exactly what L2tpIpsecConnection.RekeyPhase1Async drives on the live channel.
+            var client2 = new IkeV1Client(Psk, IPAddress.Loopback, IPAddress.Loopback);
+            var responder2 = new SimulatedResponderV1(Psk, client2.InitiatorCookie);
+            DriveToQuickModeComplete(client2, responder2);
+            (EspSession clientEsp2, EspSession responderEsp2) = BuildEspPair(client2, responder2);
+
+            // The new SA is genuinely fresh: a different initiator cookie and different CHILD SA keys.
+            Assert.NotEqual(client1.InitiatorCookie, client2.InitiatorCookie);
+            Assert.NotEqual(client1.CreatePhase2Keys().OutboundEncryption, client2.CreatePhase2Keys().OutboundEncryption);
+            // The new SA's cookie steers its replies in the receive loop; the old SA's do not match it.
+            Assert.True(client2.IsForThisSa(client2.BuildMainMode1()));
+            Assert.False(client2.IsForThisSa(client1.BuildMainMode1()));
+
+            // Make-before-break: the new SA carries traffic both directions...
+            byte[] viaNew = clientEsp2.Protect(Ascii("via new SA"));
+            Assert.True(responderEsp2.TryUnprotect(viaNew, out byte[] gotNew, out _));
+            Assert.Equal("via new SA", Ascii(gotNew));
+            byte[] backNew = responderEsp2.Protect(Ascii("reply new SA"));
+            Assert.True(clientEsp2.TryUnprotect(backNew, out byte[] gotBackNew, out _));
+            Assert.Equal("reply new SA", Ascii(gotBackNew));
+
+            // ...while the old SA still decrypts in-flight packets during the grace period (no drop on rekey).
+            byte[] viaOld = clientEsp1.Protect(Ascii("late on old SA"));
+            Assert.True(responderEsp1.TryUnprotect(viaOld, out byte[] gotOld, out _));
+            Assert.Equal("late on old SA", Ascii(gotOld));
+        }
+
+        [Fact]
+        public void IsForThisSa_MatchesOwnInitiatorCookie_RejectsOthersAndShortWire()
+        {
+            var client = new IkeV1Client(Psk, IPAddress.Loopback, IPAddress.Loopback);
+            var other = new IkeV1Client(Psk, IPAddress.Loopback, IPAddress.Loopback);
+            Assert.True(client.IsForThisSa(client.BuildMainMode1()));  // our own MM1 carries our cookie in bytes 0-7
+            Assert.False(client.IsForThisSa(other.BuildMainMode1()));  // a different SA's cookie
+            Assert.False(client.IsForThisSa(new byte[4]));             // too short to hold an 8-byte cookie
+        }
+
         static void DriveToQuickModeComplete(IkeV1Client client, SimulatedResponderV1 responder)
         {
             client.ProcessMainMode2(responder.HandleMainMode1(client.BuildMainMode1()));
@@ -235,6 +282,28 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.Tests
             Assert.True(client.ProcessQuickMode2(responder.HandleQuickMode1(client.BuildQuickMode1())));
             responder.HandleQuickMode3(client.BuildQuickMode3());
         }
+
+        // Builds the bidirectional ESP pair for a completed handshake (AES-CBC + HMAC-SHA1), mirroring the SPI orientation
+        // asserted in FullMainModeAndQuickMode_ThenEspExchange_Succeeds.
+        static (EspSession Client, EspSession Responder) BuildEspPair(IkeV1Client client, SimulatedResponderV1 responder)
+        {
+            IkeV1Phase2Keys c = client.CreatePhase2Keys();
+            IkeV1Phase2Keys r = responder.CreatePhase2Keys();
+            EspSession clientEsp = new(
+                ToSpi(client.ChildOutboundSpi),
+                EspCipherSuite.AesCbcHmacSha1(c.OutboundEncryption, c.OutboundIntegrity),
+                ToSpi(client.ChildInboundSpi),
+                EspCipherSuite.AesCbcHmacSha1(c.InboundEncryption, c.InboundIntegrity));
+            EspSession responderEsp = new(
+                ToSpi(client.ChildInboundSpi),
+                EspCipherSuite.AesCbcHmacSha1(r.OutboundEncryption, r.OutboundIntegrity),
+                ToSpi(responder.ChildInboundSpi),
+                EspCipherSuite.AesCbcHmacSha1(r.InboundEncryption, r.InboundIntegrity));
+            return (clientEsp, responderEsp);
+        }
+
+        static byte[] Ascii(string s) => System.Text.Encoding.ASCII.GetBytes(s);
+        static string Ascii(byte[] b) => System.Text.Encoding.ASCII.GetString(b);
 
         static uint ToSpi(byte[] spi) => (uint)((spi[0] << 24) | (spi[1] << 16) | (spi[2] << 8) | spi[3]);
 

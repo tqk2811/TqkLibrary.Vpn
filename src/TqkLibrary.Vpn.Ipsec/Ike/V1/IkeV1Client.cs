@@ -381,6 +381,20 @@ namespace TqkLibrary.Vpn.Ipsec.Ike.V1
             return header.ExchangeType == IsakmpExchangeType.QuickMode && header.MessageId == _rekeyMessageId;
         }
 
+        /// <summary>
+        /// True if <paramref name="wire"/> is an ISAKMP message belonging to this SA — its initiator cookie (the first
+        /// eight bytes, always in the clear even for an encrypted message) equals ours. A Phase 1 rekey runs a full Main
+        /// Mode under a fresh client whose cookie differs from the live SA's, so the orchestrator uses this to steer the
+        /// rekey's Main/Quick Mode replies apart from the live SA's steady-state DPD arriving on the same socket.
+        /// </summary>
+        public bool IsForThisSa(byte[] wire)
+        {
+            if (wire is null || wire.Length < InitiatorCookie.Length) return false;
+            for (int i = 0; i < InitiatorCookie.Length; i++)
+                if (wire[i] != InitiatorCookie[i]) return false;
+            return true;
+        }
+
         // ---- Teardown: Delete payloads ----
 
         /// <summary>Builds an encrypted Informational+Delete for the current ESP CHILD SA (the latest inbound SPI).</summary>

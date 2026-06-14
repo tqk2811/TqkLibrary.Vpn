@@ -29,9 +29,11 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
         static readonly TimeSpan DpdInterval = TimeSpan.FromSeconds(20);
         const int DpdMaxMissed = 3;
 
-        // Rekey the ESP CHILD SA at ~90% of its lifetime; declare the IKE SA expired likewise (Phase 1 = 8h).
+        // Rekey the ESP CHILD SA at ~90% of its lifetime; rekey the IKE SA in place at ~90% of Phase 1 (8h). A failed
+        // Phase 1 rekey is retried within the remaining ~10% (≈48 min) margin before the gateway's hard expiry.
         static readonly TimeSpan RekeyInterval = TimeSpan.FromSeconds(IkeV1Lifetimes.Phase2Seconds * 9 / 10);
         static readonly TimeSpan Phase1Lifetime = TimeSpan.FromSeconds(IkeV1Lifetimes.Phase1Seconds * 9 / 10);
+        static readonly TimeSpan Phase1RekeyRetry = TimeSpan.FromMinutes(2);
         static readonly TimeSpan RekeyGrace = TimeSpan.FromSeconds(10);
 
         readonly string _host;
@@ -50,12 +52,14 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
         string? _userName;
         string? _password;
         IPAddress? _lastAssignedAddress;
+        IPAddress? _serverIp; // the resolved gateway address (kept so a Phase 1 rekey can rebuild its NAT-D)
 
         NatTraversalChannel? _natt;
         IpsecL2tpTransport? _dataTransport;
         L2tpClient? _l2tp;
         PppEngine? _ppp;
         IkeV1Client? _ike;
+        IkeV1Client? _rekeyIke; // the in-flight Phase 1 rekey's new ISAKMP SA (its reply cookie steers the receive loop)
         CancellationTokenSource? _loopCts;
         TaskCompletionSource<byte[]>? _ikeWaiter;
         volatile bool _espActive;
@@ -66,6 +70,7 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
         System.Threading.Timer? _phase1Timer;
         System.Threading.Timer? _dropTimer;
         TaskCompletionSource<byte[]>? _rekeyWaiter;
+        TaskCompletionSource<byte[]>? _phase1RekeyWaiter;
         int _dpdSequence;
         int _dpdMissed;
         int _rekeyInProgress; // 0/1 guard so the timer rekey and the sequence-exhaustion rekey never overlap
@@ -134,8 +139,11 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
             Interlocked.Exchange(ref _rekeyInProgress, 0);
             _ikeWaiter = null;
             _rekeyWaiter = null;
+            _phase1RekeyWaiter = null;
+            _rekeyIke = null;
 
             IPAddress serverIp = await ResolveAsync(_host, cancellationToken).ConfigureAwait(false);
+            _serverIp = serverIp;
 
             // Phase 1 Main Mode 1-4 + the NAT-T port decision (forced, or honest-first with a forced fallback).
             (NatTraversalChannel natt, IkeV1Client ike) = await BringUpPhase1Async(serverIp, cancellationToken).ConfigureAwait(false);
@@ -366,11 +374,15 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
                     if (kind == NatTPacketKind.Ike)
                     {
                         TaskCompletionSource<byte[]>? waiter = _ikeWaiter;
+                        TaskCompletionSource<byte[]>? p1Rekey = _phase1RekeyWaiter;
+                        IkeV1Client? p1Ike = _rekeyIke;
                         TaskCompletionSource<byte[]>? rekey = _rekeyWaiter;
                         if (waiter != null)
                             waiter.TrySetResult(payload);                  // a handshake reply
+                        else if (p1Rekey != null && p1Ike != null && p1Ike.IsForThisSa(payload))
+                            p1Rekey.TrySetResult(payload);                 // a Phase 1 rekey Main/Quick Mode reply (new SA cookie)
                         else if (rekey != null && _ike != null && _ike.IsRekeyReply(payload))
-                            rekey.TrySetResult(payload);                   // a rekey Quick Mode reply
+                            rekey.TrySetResult(payload);                   // a Phase 2 rekey Quick Mode reply
                         else
                             HandleInboundIke(payload);                     // steady-state DPD / Delete
                     }
@@ -395,8 +407,11 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
             _helloTimer = new System.Threading.Timer(_ => _ = SendHelloTickAsync(), null, HelloInterval, HelloInterval);
             _dpdTimer = new System.Threading.Timer(_ => _ = SendDpdTickAsync(), null, DpdInterval, DpdInterval);
             _rekeyTimer = new System.Threading.Timer(_ => _ = RekeyPhase2Async(), null, RekeyInterval, RekeyInterval);
+            // Phase 1 (ISAKMP SA, 8h) rekeys in place — a fresh Main Mode + CHILD SA swapped behind the live tunnel —
+            // rather than dropping into a reconnect. One-shot; RekeyPhase1Async re-arms it (full lifetime on success,
+            // a short retry on failure).
             _phase1Timer = new System.Threading.Timer(
-                _ => OnLinkLost("IKE Phase 1 SA lifetime expired."), null, Phase1Lifetime, System.Threading.Timeout.InfiniteTimeSpan);
+                _ => _ = RekeyPhase1Async(), null, Phase1Lifetime, System.Threading.Timeout.InfiniteTimeSpan);
         }
 
         void StopKeepalive()
@@ -527,6 +542,98 @@ namespace TqkLibrary.Vpn.Drivers.L2tpIpsec
             _dropTimer = new System.Threading.Timer(
                 _ => { try { _dataTransport?.DropPreviousInbound(); } catch { } },
                 null, RekeyGrace, System.Threading.Timeout.InfiniteTimeSpan);
+        }
+
+        // ---- rekey: refresh the IKE SA (Phase 1) in place — re-Main-Mode, move the ESP CHILD SA onto the new SA ----
+
+        // The ISAKMP SA is nearing its 8h expiry. Instead of dropping the tunnel and reconnecting, negotiate a brand-new
+        // ISAKMP SA (fresh cookies, DH, SKEYID*) with a full Main Mode on the same already-floated UDP/4500 channel, run
+        // a Quick Mode under it for a fresh ESP CHILD SA, swap the data plane onto it (make-before-break — keep the old
+        // inbound for a grace period), then swing every steady-state exchange (DPD / Phase 2 rekey / teardown) to the new
+        // SA. The data plane never drops. Mirrors the Phase 2 rekey above; both share _rekeyInProgress so the two never
+        // run a Quick Mode (or a SwapSession) at the same time.
+        async Task RekeyPhase1Async()
+        {
+            if (!_keepaliveRunning) return;
+            if (Interlocked.CompareExchange(ref _rekeyInProgress, 1, 0) != 0)
+            {
+                ArmPhase1Timer(Phase1RekeyRetry); // a Phase 2 rekey holds the mutex; retry within the expiry margin
+                return;
+            }
+
+            bool succeeded = false;
+            try
+            {
+                NatTraversalChannel? natt = _natt; // snapshot: a concurrent teardown nulls the fields
+                IkeV1Client? oldIke = _ike;
+                IpsecL2tpTransport? transport = _dataTransport;
+                IPAddress? serverIp = _serverIp;
+                if (natt == null || oldIke == null || transport == null || serverIp == null) return;
+
+                // A new ISAKMP SA via a full Main Mode on the floated channel. NAT-D mirrors forced mode (claim source
+                // port 500) so the gateway stays floated on 4500 just as it was for the original handshake.
+                var newIke = new IkeV1Client(_preSharedKey, IPAddress.Any, serverIp);
+                _rekeyIke = newIke;
+
+                newIke.ProcessMainMode2(await ExchangePhase1RekeyAsync(newIke, newIke.BuildMainMode1()).ConfigureAwait(false));
+                newIke.ProcessMainMode4(await ExchangePhase1RekeyAsync(newIke, newIke.BuildMainMode3(IPAddress.Any, serverIp)).ConfigureAwait(false));
+                if (!newIke.ProcessMainMode6(await ExchangePhase1RekeyAsync(newIke, newIke.BuildMainMode5()).ConfigureAwait(false)))
+                    return; // PSK / HASH_R mismatch on the new SA — keep the current SA and retry
+
+                // A fresh ESP CHILD SA (Quick Mode) under the new ISAKMP SA.
+                if (!newIke.ProcessQuickMode2(await ExchangePhase1RekeyAsync(newIke, newIke.BuildQuickMode1()).ConfigureAwait(false)))
+                    return;
+                await natt.SendIkeAsync(newIke.BuildQuickMode3()).ConfigureAwait(false); // QM3 has no reply
+
+                // Make-before-break: install the new CHILD SA for outbound, keep the old inbound during the grace window.
+                EspSession next = BuildEspSession(newIke.NegotiatedEsp, newIke.CreatePhase2Keys(), newIke.ChildOutboundSpi, newIke.ChildInboundSpi);
+                transport.SwapSession(next);
+
+                // Release the old ISAKMP SA at the gateway, then swing DPD / Phase 2 rekey / teardown onto the new SA.
+                await Swallow(() => natt.SendIkeAsync(oldIke.BuildDeleteIsakmp())).ConfigureAwait(false);
+                _ike = newIke;
+                ScheduleDropPreviousInbound();
+                succeeded = true;
+            }
+            catch { /* rekey failed; the old SA stays active — retried below, or DPD/Delete forces a reconnect if it dies */ }
+            finally
+            {
+                _phase1RekeyWaiter = null;
+                _rekeyIke = null;
+                Interlocked.Exchange(ref _rekeyInProgress, 0);
+                if (_keepaliveRunning) ArmPhase1Timer(succeeded ? Phase1Lifetime : Phase1RekeyRetry);
+            }
+        }
+
+        // Sends one Phase 1 rekey request and waits for its reply, retransmitting on timeout. Steered to _phase1RekeyWaiter
+        // by the new SA's initiator cookie (IsForThisSa), so the live SA's concurrent DPD on the same socket is untouched.
+        async Task<byte[]> ExchangePhase1RekeyAsync(IkeV1Client newIke, byte[] request)
+        {
+            for (int attempt = 0; attempt < _timeouts.IkeMaxAttempts && _keepaliveRunning; attempt++)
+            {
+                NatTraversalChannel? natt = _natt; // snapshot: a concurrent teardown nulls the field
+                if (natt == null) break;
+                var waiter = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+                _phase1RekeyWaiter = waiter;
+                await natt.SendIkeAsync(request).ConfigureAwait(false);
+
+                Task completed = await Task.WhenAny(waiter.Task, Task.Delay(WithJitter(_timeouts.IkeIntervalFor(attempt), _timeouts.RetransmitJitterFraction))).ConfigureAwait(false);
+                _phase1RekeyWaiter = null;
+                if (completed == waiter.Task)
+                {
+                    byte[] reply = await waiter.Task.ConfigureAwait(false);
+                    if (IkeV1Client.TryReadRejectNotify(reply, out ushort notifyType))
+                        throw IkeRejected(notifyType, natt.RemotePort);
+                    return reply;
+                }
+            }
+            throw new VpnNetworkTimeoutException("No IKE response during the Phase 1 rekey Main/Quick Mode.");
+        }
+
+        // Re-arms the one-shot Phase 1 rekey timer (swallows the race where teardown disposed it meanwhile).
+        void ArmPhase1Timer(TimeSpan due)
+        {
+            try { _phase1Timer?.Change(due, System.Threading.Timeout.InfiniteTimeSpan); } catch { }
         }
 
         // ---- link-loss handling + auto-reconnect supervisor ----

@@ -12,7 +12,7 @@ Thư viện **protocol OpenVPN** thuần .NET (tương thích OpenVPN community 
 
 | Hướng | Project | Lý do |
 |-------|---------|-------|
-| Dùng | [Abstractions](../TqkLibrary.VpnClient.Abstractions) | `TunnelConfig` (đích của PUSH_REPLY, V2.e); `IByteStreamTransport` (TCP transport V2.g, F.1), `IPacketChannel`/`IEthernetChannel` (tun/tap link V2.g); các phase sau: exceptions, `IHostResolver` |
+| Dùng | [Abstractions](../TqkLibrary.VpnClient.Abstractions) | `TunnelConfig` (đích của PUSH_REPLY, V2.e); `IByteStreamTransport` (TCP transport V2.g, F.1) + `IDatagramTransport` (UDP transport V2.h), `IPacketChannel`/`IEthernetChannel` (tun/tap link V2.g); các phase sau: exceptions, `IHostResolver` |
 | Dùng | [Crypto](../TqkLibrary.VpnClient.Crypto) | `AesCtr` (tls-crypt V2.c), `Tls1Prf` (key-method-2 V2.d), `AesGcmCipher` + `AntiReplayWindow` (data channel V2.d) |
 | Được dùng bởi | `Drivers.OpenVpn` (V.2, **chưa có**) | driver lắp ráp control/data plane |
 
@@ -54,6 +54,7 @@ TqkLibrary.VpnClient.OpenVpn/
 ├─ Transport/
 │  ├─ OpenVpnTcpFraming.cs         TCP 16-bit length framing (encode + reassemble) — seam F.2 — V2.g
 │  ├─ OpenVpnTcpTransport.cs       Bọc IByteStreamTransport (F.1) thành IOpenVpnTransport — V2.g
+│  ├─ OpenVpnUdpTransport.cs       Bọc IDatagramTransport (UDP) thành IOpenVpnTransport (không framing) — V2.h
 │  ├─ OpenVpnDataLink.cs           Base cầu nối data plane + compression ↔ sink transport — V2.g
 │  ├─ OpenVpnTunChannel.cs         dev tun → IPacketChannel (L3, payload = gói IP) — V2.g
 │  └─ OpenVpnTapChannel.cs         dev tap → IEthernetChannel (L2, payload = khung Ethernet) — V2.g
@@ -100,6 +101,7 @@ TqkLibrary.VpnClient.OpenVpn/
 | `OpenVpnDataPlane` | make-before-break (mirror `EspDataPlane`): `Protect`/`TryUnprotect` current+previous, `Swap(next)`/`DropPreviousInbound`, event `RekeyNeeded` quanh 2³² | [DataChannel/OpenVpnDataPlane.cs:11](DataChannel/OpenVpnDataPlane.cs#L11) |
 | `OpenVpnTcpFraming` | TCP framing (V2.g, seam F.2): `Encode(packet)` prepend 16-bit BE length; decoder `Append(chunk)` + `TryReadPacket(out)` ráp gói qua mọi ranh đọc | [Transport/OpenVpnTcpFraming.cs:18](Transport/OpenVpnTcpFraming.cs#L18) |
 | `OpenVpnTcpTransport` | adapter `IByteStreamTransport`(F.1)→`IOpenVpnTransport`: `SendAsync` length-prefix + write nối tiếp; `RunReceiveLoopAsync` đọc→ráp→`DatagramReceived` | [Transport/OpenVpnTcpTransport.cs:14](Transport/OpenVpnTcpTransport.cs#L14) |
+| `OpenVpnUdpTransport` | adapter `IDatagramTransport`(UDP)→`IOpenVpnTransport` (V2.h): 1 datagram = 1 gói nên **không framing**; `SendAsync` gửi 1 datagram; `RunReceiveLoopAsync` raise `DatagramReceived` mỗi datagram, 0-byte không phải EOF | [Transport/OpenVpnUdpTransport.cs:15](Transport/OpenVpnUdpTransport.cs#L15) |
 | `OpenVpnDataLink` *(abstract)* | base cầu nối: `SendPayloadAsync` (compression-frame + `OpenVpnDataPlane.Protect` → sink) / `TryReceivePayload` (TryUnprotect + de-frame) / `Deliver(wire)` | [Transport/OpenVpnDataLink.cs:15](Transport/OpenVpnDataLink.cs#L15) |
 | `OpenVpnTunChannel` | `dev tun` → `IPacketChannel` (Medium=Ip, MaxHeaderLength 0): `WriteIpPacketAsync`/`InboundIpPacket` qua data channel | [Transport/OpenVpnTunChannel.cs:12](Transport/OpenVpnTunChannel.cs#L12) |
 | `OpenVpnTapChannel` | `dev tap` → `IEthernetChannel` (Medium=Ethernet, MaxHeaderLength 14, MAC + resolution): `WriteFrameAsync`/`InboundFrame` qua data channel | [Transport/OpenVpnTapChannel.cs:15](Transport/OpenVpnTapChannel.cs#L15) |
@@ -169,6 +171,7 @@ Sau khi data channel có khóa (V2.d), client kéo cấu hình + duy trì kết 
 
 - **TCP framing** ([`OpenVpnTcpFraming`](Transport/OpenVpnTcpFraming.cs)): trên stream transport, mỗi gói OpenVPN được prefix **16-bit big-endian length** để ranh giới "1 gói" của `IOpenVpnTransport` sống sót qua byte-stream của TCP — đây là hiện thực OpenVPN của seam **F.2 `IPacketEncapsulator`** (đối xứng SSTP 4-byte framing). `Encode` egress; decoder instance (`Append` + `TryReadPacket`) ráp lại gói nguyên qua **mọi ranh đọc** (gói cắt nhiều read, hoặc nhiều gói gộp một read). UDP không cần (1 datagram = 1 gói).
 - **TCP transport** ([`OpenVpnTcpTransport`](Transport/OpenVpnTcpTransport.cs)): bọc một byte-stream tin cậy ([`IByteStreamTransport`](../TqkLibrary.VpnClient.Abstractions/Transport/Interfaces/IByteStreamTransport.cs) — TCP, hoặc TCP+TLS qua **F.1**) thành `IOpenVpnTransport`: `SendAsync` length-prefix + write (nối tiếp qua semaphore để 2 send không xen khung); `RunReceiveLoopAsync` đọc stream, ráp gói nguyên, raise `DatagramReceived`.
+- **UDP transport** ([`OpenVpnUdpTransport`](Transport/OpenVpnUdpTransport.cs), V2.h): bọc một datagram-pipe ([`IDatagramTransport`](../TqkLibrary.VpnClient.Abstractions/Transport/Interfaces/IDatagramTransport.cs) — UDP) thành `IOpenVpnTransport`. Trên UDP **1 datagram đã là 1 gói** nên — khác TCP — **không có length framing**: `SendAsync` gửi gói thành 1 datagram, `RunReceiveLoopAsync` raise `DatagramReceived` mỗi datagram đọc được. Datagram 0-byte **không** phải end-of-stream (UDP không có close) nên vòng lặp bỏ qua và lắng nghe tiếp; chỉ kết thúc khi cancel.
 - **tun/tap link** ([`OpenVpnDataLink`](Transport/OpenVpnDataLink.cs) + 2 hiện thực): data channel **payload-agnostic** — chỉ khác nội dung payload + medium kênh. [`OpenVpnTunChannel`](Transport/OpenVpnTunChannel.cs) (`dev tun`) lộ data channel thành **L3 `IPacketChannel`** (payload = gói IP, MaxHeaderLength 0, không resolution) để IP stack bind thẳng; [`OpenVpnTapChannel`](Transport/OpenVpnTapChannel.cs) (`dev tap`) lộ thành **L2 `IEthernetChannel`** (payload = khung Ethernet, MaxHeaderLength 14, MAC + resolution) để **cắm fabric Ethernet** (ARP/DHCP/switch → IP stack). Base ráp compression-framing + `OpenVpnDataPlane.Protect`/`TryUnprotect` quanh một sink transport (UDP send / `OpenVpnTcpTransport`); driver route gói **P_DATA sau demux opcode** vào `Deliver`. Bind tun→stack / tap→fabric + demux + chọn transport là việc của **driver `Drivers.OpenVpn`** (V2.h, chưa có).
 
 ## Config (`.ovpn` + model lập trình)

@@ -15,7 +15,8 @@ namespace TqkLibrary.VpnClient.OpenVpn
     /// (reliability packet-id 0), then the TLS client handshake (its records ride packet-id 1+). After it returns,
     /// <see cref="TlsStream"/> is the authenticated pipe the key-method-2 negotiation + data-channel keying run over
     /// (V2.d). Inbound packets are pushed in via the transport's <see cref="IOpenVpnTransport.DatagramReceived"/>; a
-    /// timer pumps retransmits. Not a server: the responder role lives only in tests.
+    /// timer pumps retransmits. An optional <see cref="IOpenVpnControlWrap"/> authenticates (<c>--tls-auth</c>) or
+    /// encrypts (<c>--tls-crypt</c>) every control packet on the wire. Not a server: the responder role lives only in tests.
     /// </summary>
     public sealed class OpenVpnControlChannel : IDisposable
     {
@@ -27,6 +28,7 @@ namespace TqkLibrary.VpnClient.OpenVpn
 
         readonly IOpenVpnTransport _transport;
         readonly OpenVpnReliabilityOptions _options;
+        readonly IOpenVpnControlWrap? _wrap;
         readonly Func<long> _clock;
         readonly byte _keyId;
         readonly ulong _localSessionId;
@@ -45,14 +47,18 @@ namespace TqkLibrary.VpnClient.OpenVpn
         /// <summary>
         /// Creates the channel over <paramref name="transport"/>. <paramref name="keyId"/> selects the key generation
         /// (0 for the initial handshake). <paramref name="options"/> sets the retransmit/window policy (default 1s,
-        /// window 8). <paramref name="clock"/> supplies the millisecond clock the retransmit pump uses (default: the
-        /// system tick clock) — tests inject a deterministic one.
+        /// window 8). <paramref name="controlWrap"/> authenticates/encrypts every control packet on the wire
+        /// (<see cref="OpenVpnTlsAuthWrap"/> for <c>--tls-auth</c>, <see cref="OpenVpnTlsCryptWrap"/> for
+        /// <c>--tls-crypt</c>); null ⇒ the packets ride the wire verbatim (neither directive). <paramref name="clock"/>
+        /// supplies the millisecond clock the retransmit pump uses (default: the system tick clock) — tests inject a
+        /// deterministic one.
         /// </summary>
         public OpenVpnControlChannel(IOpenVpnTransport transport, byte keyId = 0,
-            OpenVpnReliabilityOptions? options = null, Func<long>? clock = null)
+            OpenVpnReliabilityOptions? options = null, IOpenVpnControlWrap? controlWrap = null, Func<long>? clock = null)
         {
             _transport = transport ?? throw new ArgumentNullException(nameof(transport));
             _options = options ?? new OpenVpnReliabilityOptions();
+            _wrap = controlWrap;
             _clock = clock ?? DefaultClock;
             _keyId = keyId;
             _sendWindow = new OpenVpnReliableSendWindow(_options);
@@ -141,7 +147,17 @@ namespace TqkLibrary.VpnClient.OpenVpn
 
         void OnDatagram(ReadOnlyMemory<byte> datagram)
         {
-            if (!OpenVpnPacketCodec.TryDecodeControl(datagram.Span, out OpenVpnControlPacket packet))
+            ReadOnlySpan<byte> controlBytes;
+            byte[]? unwrapped = null;
+            if (_wrap != null)
+            {
+                // tls-auth/tls-crypt: drop the datagram if it fails authentication (or isn't ours).
+                if (!_wrap.TryUnwrap(datagram.Span, out unwrapped)) return;
+                controlBytes = unwrapped;
+            }
+            else controlBytes = datagram.Span;
+
+            if (!OpenVpnPacketCodec.TryDecodeControl(controlBytes, out OpenVpnControlPacket packet))
                 return; // data packets are handled by the data channel (V2.d), not here
 
             bool resetSeen = false;
@@ -184,7 +200,8 @@ namespace TqkLibrary.VpnClient.OpenVpn
                 IReadOnlyList<uint> rest = _recvWindow.TakeAcks(OpenVpnPacketCodec.MaxAcks);
                 if (rest.Count > 0) outgoing.Add(EncodeAck(rest));
             }
-            foreach (byte[] wire in outgoing) _ = _transport.SendAsync(wire);
+            foreach (byte[] wire in outgoing)
+                _ = _transport.SendAsync(_wrap != null ? _wrap.Wrap(wire) : wire);
         }
 
         byte[] EncodeControl(uint id, byte[] payload, IReadOnlyList<uint> acks) => OpenVpnPacketCodec.EncodeControl(new OpenVpnControlPacket

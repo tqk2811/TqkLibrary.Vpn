@@ -18,16 +18,44 @@ namespace TqkLibrary.VpnClient.OpenVpn.Tests
     /// </summary>
     public class OpenVpnControlChannelTests
     {
-        [Fact]
-        public async Task ConnectAsync_CompletesTlsHandshakeThroughReliability_AndEchoesAppData()
+        /// <summary>The control-channel wrap variants V2.c adds: none, tls-auth (HMAC) and tls-crypt (HMAC + encrypt).</summary>
+        public enum WrapMode { None, TlsAuth, TlsCrypt }
+
+        static OpenVpnStaticKey SharedStaticKey()
+        {
+            byte[] material = new byte[OpenVpnStaticKey.KeyLength];
+            for (int i = 0; i < material.Length; i++) material[i] = (byte)(i * 5 + 9);
+            return OpenVpnStaticKey.FromBytes(material);
+        }
+
+        static IOpenVpnControlWrap? ClientWrap(WrapMode mode) => mode switch
+        {
+            WrapMode.TlsAuth => new OpenVpnTlsAuthWrap(SharedStaticKey(), OpenVpnKeyDirection.Inverse, HashAlgorithmName.SHA256),
+            WrapMode.TlsCrypt => new OpenVpnTlsCryptWrap(SharedStaticKey(), isServer: false),
+            _ => null,
+        };
+
+        static IOpenVpnControlWrap? ServerWrap(WrapMode mode) => mode switch
+        {
+            WrapMode.TlsAuth => new OpenVpnTlsAuthWrap(SharedStaticKey(), OpenVpnKeyDirection.Normal, HashAlgorithmName.SHA256),
+            WrapMode.TlsCrypt => new OpenVpnTlsCryptWrap(SharedStaticKey(), isServer: true),
+            _ => null,
+        };
+
+        [Theory]
+        [InlineData(WrapMode.None)]
+        [InlineData(WrapMode.TlsAuth)]
+        [InlineData(WrapMode.TlsCrypt)]
+        public async Task ConnectAsync_CompletesTlsHandshakeThroughReliability_AndEchoesAppData(WrapMode mode)
         {
             var link = new LoopbackLink();
             using var serverCert = CreateSelfSignedServerCert();
-            var server = new SimulatedOpenVpnServer(link.Server, serverCert);
+            var server = new SimulatedOpenVpnServer(link.Server, serverCert, ServerWrap(mode));
 
             // A long retransmit interval so the lossless in-memory path never triggers a spurious resend mid-handshake.
             var client = new OpenVpnControlChannel(link.Client,
-                options: new OpenVpnReliabilityOptions { Interval = TimeSpan.FromSeconds(30) });
+                options: new OpenVpnReliabilityOptions { Interval = TimeSpan.FromSeconds(30) },
+                controlWrap: ClientWrap(mode));
 
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
             await client.ConnectAsync("test-openvpn-server", serverCertificateValidation: (_, _, _, _) => true, cancellationToken: cts.Token);
@@ -105,6 +133,7 @@ namespace TqkLibrary.VpnClient.OpenVpn.Tests
         sealed class SimulatedOpenVpnServer : IDisposable
         {
             readonly IOpenVpnTransport _transport;
+            readonly IOpenVpnControlWrap? _wrap;
             readonly object _sync = new();
             readonly ServerBridge _bridge = new();
             readonly SslStream _ssl;
@@ -115,9 +144,10 @@ namespace TqkLibrary.VpnClient.OpenVpn.Tests
 
             public ulong SessionId { get; } = 0x1122334455667788UL;
 
-            public SimulatedOpenVpnServer(IOpenVpnTransport transport, X509Certificate2 certificate)
+            public SimulatedOpenVpnServer(IOpenVpnTransport transport, X509Certificate2 certificate, IOpenVpnControlWrap? wrap = null)
             {
                 _transport = transport;
+                _wrap = wrap;
                 _transport.DatagramReceived += OnDatagram;
                 _bridge.Send = SendTls;
                 _ssl = new SslStream(_bridge, leaveInnerStreamOpen: false);
@@ -144,7 +174,16 @@ namespace TqkLibrary.VpnClient.OpenVpn.Tests
 
             void OnDatagram(ReadOnlyMemory<byte> datagram)
             {
-                if (!OpenVpnPacketCodec.TryDecodeControl(datagram.Span, out OpenVpnControlPacket packet)) return;
+                ReadOnlySpan<byte> controlBytes;
+                byte[]? unwrapped = null;
+                if (_wrap != null)
+                {
+                    if (!_wrap.TryUnwrap(datagram.Span, out unwrapped)) return;
+                    controlBytes = unwrapped;
+                }
+                else controlBytes = datagram.Span;
+
+                if (!OpenVpnPacketCodec.TryDecodeControl(controlBytes, out OpenVpnControlPacket packet)) return;
 
                 byte[]? wire = null;
                 byte[]? deliver = null;
@@ -178,8 +217,11 @@ namespace TqkLibrary.VpnClient.OpenVpn.Tests
                 }
 
                 if (deliver is { Length: > 0 }) _bridge.EnqueueInbound(deliver);
-                if (wire != null) _ = _transport.SendAsync(wire);
+                if (wire != null) Send(wire);
             }
+
+            // Apply the same tls-auth/tls-crypt wrap the client uses (symmetric crypto, complementary direction).
+            void Send(byte[] wire) => _ = _transport.SendAsync(_wrap != null ? _wrap.Wrap(wire) : wire);
 
             void SendTls(byte[] data)
             {
@@ -191,7 +233,7 @@ namespace TqkLibrary.VpnClient.OpenVpn.Tests
                     Array.Copy(data, offset, chunk, 0, len);
                     byte[] wire;
                     lock (_sync) wire = Encode(OpenVpnOpcode.ControlV1, _sendNext++, Array.Empty<uint>(), chunk);
-                    _ = _transport.SendAsync(wire);
+                    Send(wire);
                     offset += len;
                 }
             }

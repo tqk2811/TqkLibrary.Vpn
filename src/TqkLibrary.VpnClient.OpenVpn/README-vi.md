@@ -2,7 +2,7 @@
 
 Thư viện **protocol OpenVPN** thuần .NET (tương thích OpenVPN community server) — **không dùng PPP**. Control channel (TLS) + data channel ghép trên một socket UDP/TCP, demux theo byte opcode đầu. Đây là project protocol-level cho driver **V.2** (đang xây theo phase, xem [`.docs/11`](../../.docs/11-todo-roadmap.md) §V.2).
 
-> **Trạng thái:** **V2.a reliability-layer + config/.ovpn + V2.b TLS-in-control xong**. Đã có: (1) codec gói control (opcode/key-id + session-id + ACK array + packet-id + payload); (2) reliability state machine — send window (gán packet-id + retransmit/backoff theo clock inject) + receive window (dedup + in-order delivery cho TLS + theo dõi ACK); (3) **`OpenVpnProfile` (config lập trình driver tiêu thụ) + `OpenVpnConfigParser` đọc `.ovpn`** (cert/key inline → PEM, dạng path → giữ đường dẫn cho caller; không I/O); (4) **`OpenVpnControlChannel` (client)** — ráp 2 window + codec + session-id + transport `IOpenVpnTransport`, làm reset HARD_RESET_CLIENT_V2 ⇄ HARD_RESET_SERVER_V2 rồi chạy `SslStream` thật trên `OpenVpnTlsBridgeStream` in-memory (TLS **bên trong** reliability layer). **Chưa**: tls-auth/tls-crypt (V2.c), data channel AEAD (V2.d)…
+> **Trạng thái:** **V2.a reliability-layer + config/.ovpn + V2.b TLS-in-control + V2.c tls-auth/tls-crypt xong**. Đã có: (1) codec gói control (opcode/key-id + session-id + ACK array + packet-id + payload); (2) reliability state machine — send window (gán packet-id + retransmit/backoff theo clock inject) + receive window (dedup + in-order delivery cho TLS + theo dõi ACK); (3) **`OpenVpnProfile` (config lập trình driver tiêu thụ) + `OpenVpnConfigParser` đọc `.ovpn`** (cert/key inline → PEM, dạng path → giữ đường dẫn cho caller; không I/O); (4) **`OpenVpnControlChannel` (client)** — ráp 2 window + codec + session-id + transport `IOpenVpnTransport`, làm reset HARD_RESET_CLIENT_V2 ⇄ HARD_RESET_SERVER_V2 rồi chạy `SslStream` thật trên `OpenVpnTlsBridgeStream` in-memory (TLS **bên trong** reliability layer); (5) **`IOpenVpnControlWrap`** — bọc/giải-bọc control packet: `OpenVpnTlsAuthWrap` (`--tls-auth` HMAC) + `OpenVpnTlsCryptWrap` (`--tls-crypt` HMAC + AES-256-CTR) trên `OpenVpnStaticKey` (`ta.key` 2048-bit), opt-in ở ctor channel. **Chưa**: data channel AEAD + key-method-2 (V2.d)…
 
 ## Vị trí kiến trúc
 
@@ -13,6 +13,7 @@ Thư viện **protocol OpenVPN** thuần .NET (tương thích OpenVPN community 
 | Hướng | Project | Lý do |
 |-------|---------|-------|
 | Dùng | [Abstractions](../TqkLibrary.VpnClient.Abstractions) | (cho các phase sau: `IPacketChannel`, exceptions, `IHostResolver`) |
+| Dùng | [Crypto](../TqkLibrary.VpnClient.Crypto) | `AesCtr` cho tls-crypt (V2.c); AEAD data channel (V2.d) sẽ dùng `AesGcmCipher` |
 | Được dùng bởi | `Drivers.OpenVpn` (V.2, **chưa có**) | driver lắp ráp control/data plane |
 
 ## Cấu trúc thư mục
@@ -23,6 +24,10 @@ TqkLibrary.VpnClient.OpenVpn/
 ├─ OpenVpnControlChannel.cs        Control channel (client): reset + reliability + SslStream (TLS-in-control) — V2.b
 ├─ OpenVpnTlsBridgeStream.cs       Stream in-memory cho SslStream: write→fragment reliable, read←payload in-order
 ├─ IOpenVpnTransport.cs            Cổng gửi/nhận 1 gói OpenVPN (driver UDP/TCP impl; in-process pair cho test)
+├─ IOpenVpnControlWrap.cs          Bọc/giải-bọc control packet trên dây (tls-auth/tls-crypt) — V2.c
+├─ OpenVpnTlsAuthWrap.cs           --tls-auth: HMAC xác thực control packet (key theo OpenVpnKeyDirection)
+├─ OpenVpnTlsCryptWrap.cs          --tls-crypt: HMAC-SHA256 + AES-256-CTR mã hóa control packet (hướng theo role)
+├─ OpenVpnStaticKey.cs             Parse ta.key 2048-bit (key2: 2 bộ cipher[64]|hmac[64]) + slice theo hướng
 ├─ OpenVpnReliabilityOptions.cs    Chính sách retransmit (interval/backoff/cap) + window size
 ├─ OpenVpnReliableSendWindow.cs    Send half: gán packet-id, in-flight window, retransmit theo clock
 ├─ OpenVpnReliableReceiveWindow.cs Receive half: dedup + in-order delivery + theo dõi ACK
@@ -33,6 +38,7 @@ TqkLibrary.VpnClient.OpenVpn/
 │  └─ OpenVpnFileOrInline.cs       cert/key: inline PEM hoặc đường dẫn file
 ├─ Enums/
 │  ├─ OpenVpnOpcode.cs             5-bit opcode (P_CONTROL/P_ACK/HARD_RESET/SOFT_RESET/P_DATA…)
+│  ├─ OpenVpnKeyDirection.cs       Bidirectional / Normal / Inverse cho tls-auth (key-direction)
 │  ├─ OpenVpnProtocol.cs           Udp / Tcp
 │  └─ OpenVpnDeviceType.cs         Tun / Tap
 └─ Models/
@@ -50,8 +56,13 @@ TqkLibrary.VpnClient.OpenVpn/
 | `OpenVpnReliableSendWindow` | `Queue`(gán id 0,1,2…) → `CollectDue(nowMs)` (gửi mới + retransmit hết interval, mark sent) → `Acknowledge(id/ids)`; `CanQueue`/`InFlight`/`IsExhausted(nowMs)` | [OpenVpnReliableSendWindow.cs:11](OpenVpnReliableSendWindow.cs#L11) |
 | `OpenVpnReliableReceiveWindow` | `Offer(id,payload)` (dedup + buffer trong window) → `TryDeliver` (in-order cho TLS) → `TakeAcks(max)` (≤8 cho P_ACK / ≤4 piggyback); `NextExpectedId`/`PendingAcks` | [OpenVpnReliableReceiveWindow.cs:11](OpenVpnReliableReceiveWindow.cs#L11) |
 | `IOpenVpnTransport` | cổng `SendAsync(packet)` + event `DatagramReceived` — 1 gói OpenVPN/đơn vị (driver UDP/TCP; in-process pair cho test) | [IOpenVpnTransport.cs:9](IOpenVpnTransport.cs#L9) |
-| `OpenVpnControlChannel` | control channel client: `ConnectAsync(host, clientCerts?, serverCertValidation?)` làm reset rồi `SslStream` AuthenticateAsClient trên reliability layer; `LocalSessionId`/`RemoteSessionId`/`KeyId`/`TlsStream`/`RemoteCertificate` | [OpenVpnControlChannel.cs:30](OpenVpnControlChannel.cs#L30) |
+| `OpenVpnControlChannel` | control channel client: ctor nhận `controlWrap?` (tls-auth/tls-crypt); `ConnectAsync(host, clientCerts?, serverCertValidation?)` làm reset rồi `SslStream` AuthenticateAsClient trên reliability layer; `LocalSessionId`/`RemoteSessionId`/`KeyId`/`TlsStream`/`RemoteCertificate` | [OpenVpnControlChannel.cs:21](OpenVpnControlChannel.cs#L21) |
 | `OpenVpnTlsBridgeStream` *(internal)* | `Stream` in-memory cho SslStream: `WriteAsync`→fragment+gửi reliable (callback), `ReadAsync`←payload in-order qua `EnqueueInbound`; `CompleteInbound` đóng | [OpenVpnTlsBridgeStream.cs:15](OpenVpnTlsBridgeStream.cs#L15) |
+| `IOpenVpnControlWrap` | seam bọc control packet trên dây: `Wrap(controlPacket)` / `TryUnwrap(wire, out controlPacket)` (byte→byte quanh codec; unwrap-fail ⇒ drop) | [IOpenVpnControlWrap.cs:12](IOpenVpnControlWrap.cs#L12) |
+| `OpenVpnTlsAuthWrap` | `--tls-auth`: HMAC (mặc định SHA1) bọc — `op\|sid\|HMAC\|replay_id\|net_time\|body`, key out/in theo `OpenVpnKeyDirection`; `FixedTimeEquals` so tag | [OpenVpnTlsAuthWrap.cs:19](OpenVpnTlsAuthWrap.cs#L19) |
+| `OpenVpnTlsCryptWrap` | `--tls-crypt`: HMAC-SHA256 + AES-256-CTR (`Crypto.AesCtr`, IV=tag[0..16]) — `op\|sid\|packet_id(8)\|tag(32)\|E(body)`, hướng cố định theo role | [OpenVpnTlsCryptWrap.cs:21](OpenVpnTlsCryptWrap.cs#L21) |
+| `OpenVpnStaticKey` | parse `ta.key` 2048-bit (`Parse`/`FromBytes`); `key2` = 2 bộ `cipher[64]\|hmac[64]`; `ResolveDirection`/`HmacKey`/`CipherKey` | [OpenVpnStaticKey.cs:17](OpenVpnStaticKey.cs#L17) |
+| `OpenVpnKeyDirection` | enum hướng key tls-auth: `Bidirectional`(0,0)/`Normal`(0,1)/`Inverse`(1,0) | [Enums/OpenVpnKeyDirection.cs:10](Enums/OpenVpnKeyDirection.cs#L10) |
 | `OpenVpnProfile` | config lập trình driver tiêu thụ: `Remotes`/`Protocol`/`Port`/`Device`/`IsClient`, TLS material (`Ca`/`Cert`/`Key`/`TlsAuth`/`TlsCrypt`/`KeyDirection`), `Cipher`/`DataCiphers`/`Auth`, `AuthUserPass`, `Compression`/`RenegSec`/`TunMtu`, `OtherDirectives` (raw chưa model) | [Config/OpenVpnProfile.cs:14](Config/OpenVpnProfile.cs#L14) |
 | `OpenVpnConfigParser` | static `Parse(text)` → `OpenVpnProfile`: inline `<ca>…</ca>` → PEM, dạng path → `FilePath`; bỏ comment `#`/`;`, hỗ trợ arg trong `"…"`, flatten `<connection>`, directive lạ giữ raw | [Config/OpenVpnConfigParser.cs:16](Config/OpenVpnConfigParser.cs#L16) |
 | `OpenVpnRemote` / `OpenVpnFileOrInline` | endpoint `remote host [port] [proto]` / cert-key inline-hoặc-path | [Config/OpenVpnRemote.cs:6](Config/OpenVpnRemote.cs#L6) · [Config/OpenVpnFileOrInline.cs:9](Config/OpenVpnFileOrInline.cs#L9) |
@@ -84,6 +95,14 @@ OpenVPN chạy TLS **bên trong** một lớp tin cậy tự chế trên control
 - **Pump (timer)**: gom gói `CollectDue` (gửi mới + retransmit) đính kèm ack piggyback (≤4), phần ack còn lại (hoặc khi rảnh) gửi **P_ACK_V1** riêng (≤8). Ack đến từ peer xóa gói khỏi send window + nhả slot backpressure. `RemoteSessionId` chỉ kèm khi gói mang ≥1 ack.
 - **Thuần client**: vai trò responder (đáp reset + TLS server) chỉ nằm trong test harness.
 
+## Control packet wrap — tls-auth / tls-crypt (V2.c)
+
+`OpenVpnControlChannel` nhận một `IOpenVpnControlWrap?` ở ctor (null = gửi gói verbatim, mặc định OpenVPN không có chỉ thị nào). Wrap là **codec byte→byte** quanh `EncodeControl`/`TryDecodeControl`: Pump bọc trước khi `SendAsync`, `OnDatagram` giải-bọc trước khi decode (giải-bọc thất bại ⇒ **drop datagram**, vì xác thực sai/không-phải-của-ta). Áp cho **mọi** gói control kể cả `HARD_RESET` đầu tiên. Cả hai là crypto đối xứng — client cần cả wrap (gói gửi) lẫn unwrap (gói server) — không thêm code server.
+
+- **`OpenVpnStaticKey`** — parse `ta.key` 2048-bit (block `-----BEGIN OpenVPN Static key V1-----`, 16 dòng × 32 hex = 256 B). 256 B là cấu trúc `key2`: 2 bộ `cipher[64] | hmac[64]`. `ResolveDirection(dir)` → cặp (set out, set in); `HmacKey`/`CipherKey(set, len)` cắt khóa.
+- **`OpenVpnTlsAuthWrap`** (`--tls-auth`) — HMAC xác thực (gói vẫn rõ), thêm replay-id + timestamp gộp vào HMAC. Wire `op(1)|sid(8)|HMAC(N)|replay_id(4)|net_time(4)|body`; `HMAC = H(K_out, replay_id|net_time|op|sid|body)`. Digest mặc định **SHA1** (theo `--auth`), dùng được SHA256… (key = N byte đầu của hmac-half). Hướng key theo `OpenVpnKeyDirection`: client thường `Inverse` (`key-direction 1`) hoặc `Bidirectional` (khi profile bỏ trống).
+- **`OpenVpnTlsCryptWrap`** (`--tls-crypt`) — xác thực **+ mã hóa**, thuật toán **cố định** HMAC-SHA256 (tag 32 B) + AES-256-CTR (tái dùng [`Crypto.AesCtr`](../TqkLibrary.VpnClient.Crypto/AesCtr.cs)). Wire `op(1)|sid(8)|packet_id(4)|net_time(4)|tag(32)|E(body)`; `tag = HMAC256(Ka, op|sid|packet_id|net_time|body)`, **IV = tag[0..16]**, chỉ `body` (acks + control-id + mảnh TLS) được mã, header + packet-id rõ để xác thực. Không có `key-direction` — hướng **cố định theo role** (client mã bằng set 1, giải bằng set 0; server ngược lại).
+
 ## Config (`.ovpn` + model lập trình)
 
 Hai lớp tách bạch để vừa dùng được file `.ovpn` vừa cấu hình tay, mà **lõi driver chỉ phụ thuộc model** (test offline sạch):
@@ -97,9 +116,11 @@ Hai lớp tách bạch để vừa dùng được file `.ovpn` vừa cấu hình
 |---------------|--------|---------|
 | OpenVPN wire protocol (WIP RFC) | codec | https://openvpn.github.io/openvpn-rfc/openvpn-wire-protocol.html |
 | OpenVPN network protocol (doxygen) | reliability (phase sau) | https://build.openvpn.net/doxygen/network_protocol.html |
+| tls-crypt wire format (spec) | `OpenVpnTlsCryptWrap` | HMAC-SHA256 + AES-256-CTR, IV = tag[0..16]; doc/tls-crypt-v2.txt (v1 format) |
+| tls-auth (HMAC firewall) | `OpenVpnTlsAuthWrap` | HMAC bọc control packet + replay-id/timestamp; `key2` direction theo `--key-direction` |
 
 ## Trạng thái & ghi chú
 
 - **Thuần client**, thuần protocol: không I/O, không server. Đọc spec/behavior từ nguồn OpenVPN (**không copy GPL source**).
-- Build xanh cả `netstandard2.0` + `net8.0`. Codec dùng `System.Buffers.Binary.BinaryPrimitives` (có ở cả 2 TFM qua `System.Memory`), Span trong method non-async (an toàn C# 12). `OpenVpnControlChannel` xử lý `SslStream` theo TFM giống [`TlsByteStream`](../TqkLibrary.VpnClient.Drivers.Sstp/Transport/TlsByteStream.cs): net5+ dùng `SslClientAuthenticationOptions` + `ct`; netstandard2.0 dùng overload cũ + cancel-bằng-dispose.
+- Build xanh cả `netstandard2.0` + `net8.0`. Codec dùng `System.Buffers.Binary.BinaryPrimitives` (có ở cả 2 TFM qua `System.Memory`), Span trong method non-async (an toàn C# 12). Wrap V2.c dùng `IncrementalHash.CreateHMAC` (HMAC nhiều đoạn, có ở cả 2 TFM) + `Crypto.AesCtr`; so tag bằng `FixedTimeEquals` tự viết (constant-time, không phụ thuộc `CryptographicOperations` của net5+). `OpenVpnControlChannel` xử lý `SslStream` theo TFM giống [`TlsByteStream`](../TqkLibrary.VpnClient.Drivers.Sstp/Transport/TlsByteStream.cs): net5+ dùng `SslClientAuthenticationOptions` + `ct`; netstandard2.0 dùng overload cũ + cancel-bằng-dispose.
 - Lộ trình V.2 đầy đủ ở [`.docs/11`](../../.docs/11-todo-roadmap.md) §V.2; thiết kế ở [`.docs/06-openvpn.md`](../../.docs/06-openvpn.md).

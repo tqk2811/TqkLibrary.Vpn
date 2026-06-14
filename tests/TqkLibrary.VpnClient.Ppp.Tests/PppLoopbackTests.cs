@@ -86,5 +86,32 @@ namespace TqkLibrary.VpnClient.Ppp.Tests
 
             Assert.Equal(ipPacket, received);
         }
+
+        [Fact]
+        public void DualStack_Ipv6PacketIsRelayedOnTheSameChannel()
+        {
+            var (ca, cb) = LoopbackPppChannel.CreatePair();
+            var client = new PppEngine(ca, 0x11111111, IPAddress.Any, enableIpv6: true);
+            var server = new PppEngine(cb, 0x22222222, ServerIp, ClientIp, Dns,
+                enableIpv6: true, assignPeerInterfaceId: new byte[] { 0x02, 0, 0, 0, 0, 0, 0, 0x42 });
+
+            client.Start();
+            server.Start();
+            LoopbackPppChannel.Pump(ca, cb);
+            Assert.True(client.IsIpv6Up);
+
+            byte[]? received = null;
+            server.PacketChannel.InboundIpPacket += p => received = p.ToArray();
+
+            // A minimal 40-byte IPv6 header (version nibble 6) — PPP must carry it as protocol 0x0057, not 0x0021.
+            byte[] ipv6Packet = new byte[40];
+            ipv6Packet[0] = 0x60;                 // version 6, traffic class/flow 0
+            ipv6Packet[6] = 59;                   // NextHeader = No Next Header
+
+            client.PacketChannel.WriteIpPacketAsync(ipv6Packet);
+            LoopbackPppChannel.Pump(ca, cb);
+
+            Assert.Equal(ipv6Packet, received);   // demuxed back into the one L3 channel on the server side
+        }
     }
 }

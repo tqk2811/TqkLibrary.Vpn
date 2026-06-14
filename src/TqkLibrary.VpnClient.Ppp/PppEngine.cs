@@ -162,14 +162,22 @@ namespace TqkLibrary.VpnClient.Ppp
                         break;
                     case PppProtocol.Ipcp: _ipcp.HandlePacket(info.Span); break;
                     case PppProtocol.Ipv6cp: _ipv6cp?.HandlePacket(info.Span); break;
-                    case PppProtocol.Ip: _packetChannel.RaiseInbound(info); break;
+                    case PppProtocol.Ip:
+                    case PppProtocol.Ipv6: _packetChannel.RaiseInbound(info); break; // one L3 channel carries both families
                 }
             }
         }
 
         void SendControl(PppProtocol proto, byte[] payload) => _ = _channel.SendAsync(BuildFrame((ushort)proto, payload));
 
-        ValueTask SendIpAsync(ReadOnlyMemory<byte> ipPacket) => _channel.SendAsync(BuildFrame((ushort)PppProtocol.Ip, ipPacket.Span));
+        // Frame an outbound IP packet with the matching PPP protocol: 0x0021 for IPv4, 0x0057 for IPv6 (chosen by the
+        // version nibble). The stack hands us raw IP packets of either family on one channel; PPP carries them apart.
+        ValueTask SendIpAsync(ReadOnlyMemory<byte> ipPacket)
+        {
+            ReadOnlySpan<byte> span = ipPacket.Span;
+            PppProtocol proto = span.Length > 0 && (span[0] >> 4) == 6 ? PppProtocol.Ipv6 : PppProtocol.Ip;
+            return _channel.SendAsync(BuildFrame((ushort)proto, span));
+        }
 
         // A deterministic, non-zero, locally-administered 8-byte Interface-Identifier derived from the PPP magic
         // number (EUI-64 layout with the fffe fill). Servers usually Nak it with their own value anyway.

@@ -1,7 +1,7 @@
-using TqkLibrary.VpnClient.Ipsec.Esp;
+using TqkLibrary.VpnClient.Crypto;
 using Xunit;
 
-namespace TqkLibrary.VpnClient.Ipsec.Esp.Tests
+namespace TqkLibrary.VpnClient.Crypto.Tests
 {
     public class AntiReplayWindowTests
     {

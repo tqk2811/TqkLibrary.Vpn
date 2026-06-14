@@ -1,3 +1,5 @@
+using TqkLibrary.VpnClient.Crypto;
+
 namespace TqkLibrary.VpnClient.Ipsec.Esp
 {
     /// <summary>

@@ -1,8 +1,9 @@
-namespace TqkLibrary.VpnClient.Ipsec.Esp
+namespace TqkLibrary.VpnClient.Crypto
 {
     /// <summary>
-    /// A 64-packet sliding anti-replay window over 32-bit ESP sequence numbers (RFC 4303 §3.4.3).
-    /// Bit 0 of the bitmap tracks the highest sequence seen; bit N tracks the packet N positions behind it.
+    /// A 64-packet sliding anti-replay window over 32-bit sequence/packet-id numbers (RFC 4303 §3.4.3 model).
+    /// Bit 0 of the bitmap tracks the highest sequence seen; bit N tracks the packet N positions behind it. Shared by
+    /// ESP (IPsec data plane) and the OpenVPN AEAD data channel — both number their first packet 1.
     /// </summary>
     public sealed class AntiReplayWindow
     {
@@ -19,7 +20,7 @@ namespace TqkLibrary.VpnClient.Ipsec.Esp
         /// </summary>
         public bool Check(uint sequence)
         {
-            if (sequence == 0) return false; // RFC 4303: a (non-ESN) sender's first packet is sequence 1.
+            if (sequence == 0) return false; // the first packet is sequence 1 (RFC 4303; OpenVPN packet-id likewise).
             if (sequence > _highest) return true; // ahead of the window — always fresh.
             uint behind = _highest - sequence;
             if (behind >= WindowSize) return false; // older than the window — assume replay.

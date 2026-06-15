@@ -36,16 +36,9 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn.Tests
             Assert.Throws<ArgumentNullException>(() => new OpenVpnDriver(null!));
         }
 
-        [Fact]
-        public async Task ConnectAsync_TapDevice_IsRejected_BecauseL2FabricIsNotWired()
-        {
-            // tap-mode needs an L2 Ethernet fabric (DHCP/ARP — roadmap L2.5); the driver refuses it before any handshake.
-            var driver = new OpenVpnDriver(new OpenVpnProfile { Protocol = OpenVpnProtocol.Udp, Device = OpenVpnDeviceType.Tap });
-            var endpoint = new VpnEndpoint("127.0.0.1", 1194);
-
-            await Assert.ThrowsAsync<TqkLibrary.VpnClient.Abstractions.Drivers.VpnConnectionException>(
-                () => driver.ConnectAsync(endpoint, new VpnCredentials()));
-        }
+        // tap-mode is no longer rejected — it bridges the Ethernet data channel through the userspace L2 fabric. Its
+        // end-to-end behaviour (address bind, IP round-trip over ARP, and the no-ifconfig → DHCP/L2.5 guard) is driven
+        // against an in-process responder in OpenVpnConnectionTapHandshakeTests.
 
         [Fact]
         public async Task OpenSessionAsync_IsRejected_BecauseTunModeIsSingleSession()

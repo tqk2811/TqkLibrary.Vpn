@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Security;
+using System.Net.Sockets;
 using System.Security.Cryptography.X509Certificates;
 using TqkLibrary.VpnClient.Abstractions.Channels;
 using TqkLibrary.VpnClient.Abstractions.Channels.Interfaces;
@@ -9,6 +10,7 @@ using TqkLibrary.VpnClient.Abstractions.Net;
 using TqkLibrary.VpnClient.Drivers.OpenVpn.Enums;
 using TqkLibrary.VpnClient.Drivers.OpenVpn.Models;
 using TqkLibrary.VpnClient.Drivers.OpenVpn.Transport;
+using TqkLibrary.VpnClient.Ethernet;
 using TqkLibrary.VpnClient.OpenVpn;
 using TqkLibrary.VpnClient.OpenVpn.DataChannel;
 using TqkLibrary.VpnClient.OpenVpn.Enums;
@@ -22,8 +24,11 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
     /// (HARD_RESET → TLS → key-method-2 → PUSH_REQUEST), P_DATA_V2 packets feed the AEAD data plane. The negotiated data
     /// channel is bound to an <see cref="OpenVpnTunChannel"/> exposed through a stable <see cref="PacketChannel"/>; a
     /// keepalive ping + ping-restart dead-peer detector run for the tunnel's lifetime, and (when enabled) a dropped
-    /// tunnel is re-established behind that same channel. tun-mode (bare IP) is wired; tap-mode (Ethernet) needs the L2
-    /// fabric (roadmap L2.5) and is refused. Not a server — the responder role lives only in tests.
+    /// tunnel is re-established behind that same channel. tun-mode binds the data channel straight to an L3 IP channel;
+    /// tap-mode bridges the Ethernet data channel down to that same L3 facade through the userspace L2 fabric
+    /// (<see cref="OpenVpnTapChannel"/> → <see cref="ArpResolver"/> + <see cref="VirtualHost"/>), using the address a
+    /// <c>server-bridge</c> managed pool pushes in <c>ifconfig</c>; a pure DHCP bridge (no pushed ifconfig) still needs
+    /// the userspace DHCPv4 client (roadmap L2.5). Not a server — the responder role lives only in tests.
     /// </summary>
     public sealed class OpenVpnConnection : IDisposable, IAsyncDisposable
     {
@@ -49,6 +54,7 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
         readonly SwappablePacketChannel _facade = new();
         readonly CancellationTokenSource _lifetimeCts = new();
         readonly Random _random = new();
+        readonly MacAddress _tapMac;      // a stable locally-administered MAC for the tap endpoint (kept across reconnects)
         readonly object _stateLock = new();
 
         IPAddress? _assignedAddress;
@@ -61,7 +67,9 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
         OpenVpnControlChannel? _control;
         OpenVpnDataPlane? _dataPlane;
         OpenVpnCompression? _compression;
-        OpenVpnTunChannel? _dataLink;
+        OpenVpnDataLink? _dataLink;       // tun: OpenVpnTunChannel; tap: OpenVpnTapChannel
+        VirtualHost? _tapHost;            // tap only: the L2↔L3 bridge whose IPacketChannel feeds the facade
+        ArpResolver? _tapArp;             // tap only: IPv4 neighbour resolver sharing the tap port
         OpenVpnKeepalive? _keepalive;
         CancellationTokenSource? _loopCts;
         Task? _receiveTask;
@@ -114,6 +122,17 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
             if (tunMtu < 1) throw new ArgumentOutOfRangeException(nameof(tunMtu));
             _tunMtu = tunMtu;
             _clock = clock ?? DefaultClock;
+            _tapMac = GenerateLocalMac(_random);
+        }
+
+        // A locally-administered unicast MAC for the virtual tap endpoint: clear the I/G (multicast) bit and set the
+        // U/L (locally-administered) bit of octet 0, the rest random — exactly what OpenVPN does for a software TAP.
+        static MacAddress GenerateLocalMac(Random random)
+        {
+            byte[] bytes = new byte[MacAddress.Size];
+            random.NextBytes(bytes);
+            bytes[0] = (byte)((bytes[0] & 0xFE) | 0x02);
+            return MacAddress.FromBytes(bytes);
         }
 
         /// <summary>The stable L3 packet channel (valid after a successful connect; survives reconnect).</summary>
@@ -152,10 +171,6 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
             await CleanupAttemptResourcesAsync().ConfigureAwait(false);
             _dataActive = false;
 
-            if (_device == OpenVpnDeviceType.Tap)
-                throw new VpnConnectionException(
-                    "OpenVPN tap-mode (dev tap) needs an L2 Ethernet fabric (DHCP/ARP — roadmap L2.5); only tun-mode is wired in this driver.");
-
             IPAddress serverIp = await _hostResolver.ResolveAsync(_host, _addressFamilyPreference, cancellationToken).ConfigureAwait(false);
             _loopCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token, cancellationToken);
             CancellationToken loopToken = _loopCts.Token;
@@ -186,7 +201,9 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
             // --- PUSH_REQUEST → PUSH_REPLY (address, routes, DNS, peer-id, keepalive, cipher) ---
             OpenVpnPushReply push = await control.RequestConfigAsync(cancellationToken).ConfigureAwait(false);
             if (push.IfconfigLocal is null)
-                throw new VpnServerRejectedException("OpenVPN server PUSH_REPLY carried no tunnel address (no ifconfig).");
+                throw new VpnServerRejectedException(_device == OpenVpnDeviceType.Tap
+                    ? "OpenVPN tap-mode PUSH_REPLY carried no ifconfig: a pure DHCP bridge needs the userspace DHCPv4 client (roadmap L2.5). This driver bridges tap only with a server-bridge managed pool that pushes ifconfig."
+                    : "OpenVPN server PUSH_REPLY carried no tunnel address (no ifconfig).");
 
             // --- NCP: honour the server's cipher pick, then slice the data-channel keys for it ---
             OpenVpnDataCipher cipher = ResolveCipher(push.Cipher);
@@ -200,23 +217,50 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
             OpenVpnCompression compression = OpenVpnCompression.FromPushReply(push);
             _compression = compression;
 
-            // --- bind the data channel to the tun L3 channel (outbound user sends also feed the keepalive send timer) ---
-            int mtu = _tunMtu;
-            var tun = new OpenVpnTunChannel(dataPlane, compression, wire =>
+            // The data-channel payload sink is identical for tun and tap; an outbound send also feeds the keepalive timer.
+            Func<ReadOnlyMemory<byte>, ValueTask> sink = wire =>
             {
                 _keepalive?.OnDataSent(_clock());
                 return new ValueTask(transport.SendAsync(wire));
-            }, mtu);
-            _dataLink = tun;
-            _dataActive = true;
+            };
 
+            int mtu = _tunMtu;
             TunnelConfig config = push.ToTunnelConfig();
-            config.Mtu = mtu;
+
+            if (_device == OpenVpnDeviceType.Tap)
+            {
+                // tap-mode: the data channel carries Ethernet frames. Plug it in as an IEthernetChannel and bridge it down
+                // to a bare L3 IPacketChannel through the userspace L2 fabric — the IP stack still binds the same facade.
+                // The tunnel IP comes from the pushed ifconfig (a server-bridge managed pool); ARP is IPv4-only (L2.3),
+                // so an IPv6 tunnel address needs NDISC (roadmap L2.4) and is refused here.
+                if (push.IfconfigLocal.AddressFamily != AddressFamily.InterNetwork)
+                    throw new VpnConnectionException(
+                        "OpenVPN tap-mode bridges IPv4 only (ARP); an IPv6 tunnel address needs NDISC (roadmap L2.4).");
+
+                var tap = new OpenVpnTapChannel(dataPlane, compression, sink, _tapMac.ToArray(), mtu);
+                var arp = new ArpResolver(_tapMac, push.IfconfigLocal, tap);
+                var host = new VirtualHost(_tapMac, tap, arp);
+                host.InboundNonIpFrame += arp.HandleInboundFrame;   // ARP replies/requests arrive on the non-IP seam
+                _dataLink = tap;                                    // OnTransportDatagram delivers P_DATA_V2 frames here
+                _tapArp = arp;
+                _tapHost = host;
+                _dataActive = true;
+                config.Mtu = host.Mtu;                              // link − 14: the bound stack clamps MSS for the Ethernet header
+                _facade.SetInner(host);
+            }
+            else
+            {
+                // tun-mode: the data channel carries bare IP packets — bind it straight to the L3 facade.
+                var tun = new OpenVpnTunChannel(dataPlane, compression, sink, mtu);
+                _dataLink = tun;
+                _dataActive = true;
+                config.Mtu = mtu;
+                _facade.SetInner(tun);
+            }
+
             _config = config;
             _assignedAddress = config.AssignedAddress;
             _assignedDns = config.DnsServers.Count > 0 ? config.DnsServers[0] : null;
-
-            _facade.SetInner(tun);
             StartKeepalive(push.Ping ?? 0, push.PingRestart ?? 0);
         }
 
@@ -412,6 +456,15 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
             OpenVpnTransportHandle? handle = _transportHandle;
             _transportHandle = null;
             if (handle?.Underlying != null) { try { await handle.Underlying.DisposeAsync().ConfigureAwait(false); } catch { } }
+
+            // tap-mode fabric: disposing the host detaches + disposes the tap port; the resolver releases any pending ARP.
+            VirtualHost? tapHost = _tapHost;
+            _tapHost = null;
+            if (tapHost != null) { try { await tapHost.DisposeAsync().ConfigureAwait(false); } catch { } }
+
+            ArpResolver? tapArp = _tapArp;
+            _tapArp = null;
+            if (tapArp != null) { try { await tapArp.DisposeAsync().ConfigureAwait(false); } catch { } }
 
             _transport = null;
             _dataLink = null;

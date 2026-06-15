@@ -1,10 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <Description>Managed crypto: primitive contracts (Interfaces/), MD4/DES/SHA-0/DH-MODP/AES-CBC/CTR/HMAC/RNG, and AEAD (AES-GCM: native on net8.0, BouncyCastle on netstandard2.0).</Description>
+    <Description>Managed crypto: primitive contracts (Interfaces/), MD4/DES/SHA-0/DH-MODP/AES-CBC/CTR/HMAC/RNG, and AEAD (AES-GCM + ChaCha20-Poly1305: native on net8.0, BouncyCastle on netstandard2.0).</Description>
   </PropertyGroup>
 
-  <!-- AES-GCM is absent from the netstandard2.0 BCL -> BouncyCastle fallback (used only by Aead/AesGcmCipher). -->
+  <!-- AES-GCM and ChaCha20-Poly1305 are absent from the netstandard2.0 BCL -> BouncyCastle fallback (Aead/AesGcmCipher, Aead/ChaCha20Poly1305Cipher). -->
   <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
     <PackageReference Include="BouncyCastle.Cryptography" Version="2.4.0" />
   </ItemGroup>

@@ -101,8 +101,11 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn.Tests
             _ = RunAsync(certificate);
         }
 
-        /// <summary>The PUSH_REPLY options string (override per scenario). Default: a /24 subnet pool + peer-id + cipher.</summary>
-        protected virtual string PushReply => $"PUSH_REPLY,ifconfig 10.8.0.2 255.255.255.0,topology subnet,peer-id {PeerId},cipher AES-256-GCM";
+        /// <summary>The data-channel AEAD the server "selects" (override to exercise NCP; default AES-256-GCM).</summary>
+        protected virtual OpenVpnDataCipher DataCipher => OpenVpnDataCipher.Aes256Gcm;
+
+        /// <summary>The PUSH_REPLY options string (override per scenario). Default: a /24 subnet pool + peer-id + the selected cipher.</summary>
+        protected virtual string PushReply => $"PUSH_REPLY,ifconfig 10.8.0.2 255.255.255.0,topology subnet,peer-id {PeerId},cipher {DataCipher.Name}";
 
         /// <summary>Handles one decrypted data-channel payload from the client (tun: a bare IP packet; tap: an Ethernet frame).</summary>
         protected abstract void OnData(byte[] plaintext);
@@ -134,12 +137,13 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn.Tests
                 await ReadStringAsync(); // peer-info (the connection always sends IV_* peer-info)
 
                 var serverKs = ServerKeySource();
-                byte[] reply = BuildServerKeyMethod2(serverKs, "V4,cipher AES-256-GCM");
+                byte[] reply = BuildServerKeyMethod2(serverKs, $"V4,cipher {DataCipher.Name}");
                 await _ssl.WriteAsync(reply, 0, reply.Length);
                 await _ssl.FlushAsync();
 
-                OpenVpnDataChannelKeys serverKeys = OpenVpnKeyMethod2.DeriveDataKeys(clientKs, serverKs, _clientSessionId, SessionId, isServer: true);
-                _serverDc = new OpenVpnDataChannel(serverKeys, keyId: 0, peerId: PeerId);
+                byte[] key2 = OpenVpnKeyMethod2.DeriveKey2(clientKs, serverKs, _clientSessionId, SessionId);
+                OpenVpnDataChannelKeys serverKeys = OpenVpnKeyMethod2.SliceDataKeys(key2, DataCipher, isServer: true);
+                _serverDc = new OpenVpnDataChannel(serverKeys, keyId: 0, peerId: PeerId, cipher: DataCipher.CreateCipher());
 
                 // PUSH: read PUSH_REQUEST, push the tunnel config (address /24, peer-id, cipher).
                 await OpenVpnControlMessage.ReadAsync(_ssl);

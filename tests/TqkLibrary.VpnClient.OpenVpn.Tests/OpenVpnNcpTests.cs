@@ -17,16 +17,18 @@ namespace TqkLibrary.VpnClient.OpenVpn.Tests
             Assert.Equal(16, c128.KeySizeBytes);
             Assert.True(OpenVpnDataCipher.TryResolve("aes-256-gcm", out OpenVpnDataCipher c256)); // case-insensitive
             Assert.Equal(32, c256.KeySizeBytes);
+            Assert.True(OpenVpnDataCipher.TryResolve("chacha20-poly1305", out OpenVpnDataCipher cChaCha)); // case-insensitive
+            Assert.Equal(32, cChaCha.KeySizeBytes);
             Assert.False(OpenVpnDataCipher.TryResolve("BF-CBC", out _)); // unsupported
 
-            Assert.Equal("AES-256-GCM:AES-128-GCM", OpenVpnDataCipher.AdvertisedList);
+            Assert.Equal("AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305", OpenVpnDataCipher.AdvertisedList);
         }
 
         [Fact]
         public void PeerInfo_CarriesCiphersAndProto()
         {
             string peerInfo = OpenVpnPeerInfo.Build();
-            Assert.Contains("IV_CIPHERS=AES-256-GCM:AES-128-GCM", peerInfo);
+            Assert.Contains("IV_CIPHERS=AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305", peerInfo);
             Assert.Contains("IV_NCP=2", peerInfo);
             Assert.Contains($"IV_PROTO={OpenVpnPeerInfo.IvProtoDataV2 | OpenVpnPeerInfo.IvProtoRequestPush}", peerInfo);
         }
@@ -34,6 +36,7 @@ namespace TqkLibrary.VpnClient.OpenVpn.Tests
         [Theory]
         [InlineData("AES-256-GCM", 32)]
         [InlineData("AES-128-GCM", 16)]
+        [InlineData("CHACHA20-POLY1305", 32)]
         public void NegotiatedCipher_DerivesComplementaryKeys_AndDataFlows(string cipherName, int expectedKeyLen)
         {
             Assert.True(OpenVpnDataCipher.TryResolve(cipherName, out OpenVpnDataCipher cipher));
@@ -52,9 +55,9 @@ namespace TqkLibrary.VpnClient.OpenVpn.Tests
             Assert.Equal(clientKeys.SendCipherKey, serverKeys.ReceiveCipherKey);
             Assert.Equal(clientKeys.ReceiveCipherKey, serverKeys.SendCipherKey);
 
-            // The data channel auto-sizes its AES-GCM to the key length; a packet round-trips.
-            var clientDc = new OpenVpnDataChannel(clientKeys);
-            var serverDc = new OpenVpnDataChannel(serverKeys);
+            // Drive the data channel with the negotiated AEAD (so CHACHA20-POLY1305 is genuinely exercised); a packet round-trips.
+            var clientDc = new OpenVpnDataChannel(clientKeys, cipher: cipher.CreateCipher());
+            var serverDc = new OpenVpnDataChannel(serverKeys, cipher: cipher.CreateCipher());
             byte[] payload = Encoding.ASCII.GetBytes($"data over {cipherName}");
             Assert.True(serverDc.TryUnprotect(clientDc.Protect(payload), out byte[] got));
             Assert.Equal(payload, got);

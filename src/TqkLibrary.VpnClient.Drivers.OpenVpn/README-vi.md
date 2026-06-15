@@ -71,18 +71,18 @@ TqkLibrary.VpnClient.Drivers.OpenVpn/
 | Khối | Chuẩn | Ghi chú |
 |------|-------|---------|
 | Control reliability + TLS-in-control | OpenVPN wire protocol | reset/P_CONTROL/P_ACK + key-method-2 (xem [OpenVpn README](../TqkLibrary.VpnClient.OpenVpn/README-vi.md)) |
-| Data channel AEAD | P_DATA_V2 + AES-256/128-GCM | NCP `data-ciphers` đàm phán qua `IV_CIPHERS`/PUSH `cipher` |
+| Data channel AEAD | P_DATA_V2 + AES-256/128-GCM + CHACHA20-POLY1305 | NCP `data-ciphers` đàm phán qua `IV_CIPHERS`/PUSH `cipher` |
 | Transport UDP/TCP | OpenVPN `proto udp`/`proto tcp` | UDP 1 datagram = 1 gói; TCP 16-bit length framing (seam F.2) |
 | TLS PRF key derivation | TLS 1.0 PRF | `tls-ekm` (RFC 5705) chờ **F.5** |
 
 ## Trạng thái & ghi chú
 
-- **Đã có (V2.h)**: tun **và** tap end-to-end UDP/TCP — handshake reset→TLS→key-method-2→PUSH, demux opcode, NCP AES-GCM, keepalive ping/ping-restart, teardown, supervisor reconnect; tap bắc cầu Ethernet→L3 qua `OpenVpnTapChannel`+`ArpResolver`+`VirtualHost` (1 host, IPv4/ARP, IP từ server-bridge ifconfig); `UseOpenVpn(profile)`. Test offline: capabilities + `OpenSessionAsync` guard + **end-to-end tun** (handshake → bind địa chỉ → IP round-trip + demux → drop ping) + **end-to-end tap** (handshake → ARP gateway → IP round-trip trong khung Ethernet lên facade L3 → drop ping; và không-ifconfig ⇒ `VpnServerRejectedException` trỏ L2.5).
+- **Đã có (V2.h)**: tun **và** tap end-to-end UDP/TCP — handshake reset→TLS→key-method-2→PUSH, demux opcode, NCP AES-GCM/ChaCha20-Poly1305, keepalive ping/ping-restart, teardown, supervisor reconnect; tap bắc cầu Ethernet→L3 qua `OpenVpnTapChannel`+`ArpResolver`+`VirtualHost` (1 host, IPv4/ARP, IP từ server-bridge ifconfig); `UseOpenVpn(profile)`. Test offline: capabilities + `OpenSessionAsync` guard + **end-to-end tun** (handshake → bind địa chỉ → IP round-trip + demux → drop ping) + **end-to-end tap** (handshake → ARP gateway → IP round-trip trong khung Ethernet lên facade L3 → drop ping; và không-ifconfig ⇒ `VpnServerRejectedException` trỏ L2.5).
 - **Chưa**:
   - **tap pure-DHCP-bridge** (server `dev tap` không push ifconfig) — cần **L2.5** DHCPv4; driver từ chối kèm gợi ý. **tap IPv6** (ifconfig v6) — cần **L2.4** NDISC. **tap multi-host** (phơi cả broadcast domain) — cần **L2.7+** `EthernetAdapter` + `VpnLinkLayer.L2Ethernet`.
   - **soft-reset make-before-break** (rekey không gián đoạn) — hiện rekey bằng re-establish; cần control-channel khởi tạo SOFT_RESET.
   - **client-cert auto-load từ profile PEM** (`cert`/`key`) — hiện nhận `X509CertificateCollection` dựng sẵn từ caller; tự nạp PEM cross-TFM là việc sau.
-  - **CHACHA20-POLY1305** trong NCP (chờ **F.4**), `tls-ekm` (chờ **F.5**), explicit-exit-notify khi teardown.
+  - `tls-ekm` (chờ **F.5**), explicit-exit-notify khi teardown.
   - **validate live** (lab **Q.1** — OpenVPN community server Docker): OCC options string strict, direction key tls-auth, interop UDP/TCP thật.
 - **Tham chiếu**: doc protocol OpenVPN (openvpn.net + source GPL **chỉ đọc spec/behavior, không copy code**); thiết kế [`06`](../../.docs/06-openvpn.md) + roadmap [`11`](../../.docs/11-todo-roadmap.md) §V.2.
 

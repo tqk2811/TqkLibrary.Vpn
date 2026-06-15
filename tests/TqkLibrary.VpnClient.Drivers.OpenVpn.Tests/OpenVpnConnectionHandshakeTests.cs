@@ -59,10 +59,46 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn.Tests
             await connection.DisposeAsync();
         }
 
+        [Fact]
+        public async Task Connect_NcpSelectsChaCha20Poly1305_RoundTripsIp()
+        {
+            var link = new LoopbackLink();
+            using var serverCert = OpenVpnTestPki.CreateSelfSignedServerCert();
+            using var server = new ChaChaSimulatedOpenVpnServer(link.Server, serverCert);
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var connection = new OpenVpnConnection("127.0.0.1", 1194, new InProcessTransportFactory(link.Client),
+                optionsString: "V4,cipher AES-256-GCM",
+                serverCertificateValidation: (_, _, _, _) => true,
+                reliabilityOptions: new OpenVpnReliabilityOptions { Interval = TimeSpan.FromSeconds(30) });
+
+            var inbound = Channel.CreateUnbounded<byte[]>();
+            connection.PacketChannel.InboundIpPacket += m => inbound.Writer.TryWrite(m.ToArray());
+
+            await connection.ConnectAsync(cts.Token);
+            Assert.Equal(IPAddress.Parse("10.8.0.2"), connection.AssignedAddress);
+
+            // The server picked CHACHA20-POLY1305 in PUSH_REPLY; the client must drive its data channel with ChaCha or the tag fails.
+            byte[] packet = Encoding.ASCII.GetBytes("a tunnelled IP packet over ChaCha20-Poly1305");
+            await connection.PacketChannel.WriteIpPacketAsync(packet, cts.Token);
+            byte[] echoed = await inbound.Reader.ReadAsync(cts.Token);
+            Assert.Equal(packet, echoed);
+
+            await connection.DisposeAsync();
+        }
+
         /// <summary>tun responder: every decrypted P_DATA payload is a bare IP packet, echoed straight back.</summary>
         sealed class SimulatedOpenVpnServer : SimulatedOpenVpnServerBase
         {
             public SimulatedOpenVpnServer(IOpenVpnTransport transport, X509Certificate2 certificate) : base(transport, certificate) { }
+            protected override void OnData(byte[] plaintext) => SendData(plaintext);
+        }
+
+        /// <summary>tun responder that "selects" CHACHA20-POLY1305 via NCP (peer-info → PUSH cipher), echoing IP packets.</summary>
+        sealed class ChaChaSimulatedOpenVpnServer : SimulatedOpenVpnServerBase
+        {
+            public ChaChaSimulatedOpenVpnServer(IOpenVpnTransport transport, X509Certificate2 certificate) : base(transport, certificate) { }
+            protected override OpenVpnDataCipher DataCipher => OpenVpnDataCipher.ChaCha20Poly1305;
             protected override void OnData(byte[] plaintext) => SendData(plaintext);
         }
     }

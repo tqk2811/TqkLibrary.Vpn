@@ -35,8 +35,11 @@ namespace TqkLibrary.VpnClient.OpenVpn.DataChannel
         /// <summary>AES-128-GCM.</summary>
         public static OpenVpnDataCipher Aes128Gcm { get; } = new("AES-128-GCM", 16, () => new AesGcmCipher(16));
 
-        /// <summary>The ciphers this client advertises, in preference order. (CHACHA20-POLY1305 awaits F.4's AEAD.)</summary>
-        public static IReadOnlyList<OpenVpnDataCipher> Supported { get; } = new[] { Aes256Gcm, Aes128Gcm };
+        /// <summary>ChaCha20-Poly1305 (RFC 8439; 32-byte key, same 12-byte nonce / 16-byte tag shape as AES-256-GCM).</summary>
+        public static OpenVpnDataCipher ChaCha20Poly1305 { get; } = new("CHACHA20-POLY1305", 32, () => new ChaCha20Poly1305Cipher());
+
+        /// <summary>The ciphers this client advertises, in preference order (matches OpenVPN 2.6's default <c>data-ciphers</c>).</summary>
+        public static IReadOnlyList<OpenVpnDataCipher> Supported { get; } = new[] { Aes256Gcm, Aes128Gcm, ChaCha20Poly1305 };
 
         /// <summary>The colon-separated <c>IV_CIPHERS</c> list advertised in peer-info (e.g. <c>AES-256-GCM:AES-128-GCM</c>).</summary>
         public static string AdvertisedList => string.Join(":", Supported.Select(c => c.Name));

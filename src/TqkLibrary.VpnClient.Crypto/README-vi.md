@@ -41,7 +41,8 @@ TqkLibrary.VpnClient.Crypto/
 │   ├── Blake2s.cs           # BLAKE2s-256 unkeyed (RFC 7693) — IHashAlgo
 │   ├── Blake2sKeyedMac.cs   # keyed BLAKE2s output tùy chỉnh (WG mac1/mac2 16B) — static
 │   ├── HmacBlake2sPrf.cs     # HMAC-BLAKE2s (RFC 2104, block 64) — IPrf
-│   └── NoiseKdf.cs          # KDF Noise/WireGuard (HKDF RFC 5869 trên HMAC-BLAKE2s) — static
+│   ├── NoiseKdf.cs          # KDF Noise/WireGuard (HKDF RFC 5869 trên HMAC-BLAKE2s) — static
+│   └── NoiseSymmetricState.cs # Noise SymmetricState (spec §5.2) cho WireGuard Noise_IKpsk2 — class state machine
 ├── AesCbcCipher.cs        # AES-CBC no-padding (IBlockCipher)
 ├── AesCtr.cs              # AES-CTR (static, dựng từ AES-ECB)
 ├── Md4.cs                 # MD4 (IHashAlgo) — NT hash cho MS-CHAPv2
@@ -88,6 +89,7 @@ TqkLibrary.VpnClient.Crypto/
 | `Blake2sKeyedMac` | Keyed BLAKE2s output 1..32B (WG mac1/mac2 16B), `static ComputeMac(key, input, output)` | [Noise/Blake2sKeyedMac.cs:11](Noise/Blake2sKeyedMac.cs#L11) |
 | `HmacBlake2sPrf` | HMAC-BLAKE2s (RFC 2104, block 64, **không** phải keyed-BLAKE2s), output 32B (`IPrf`) | [Noise/HmacBlake2sPrf.cs:14](Noise/HmacBlake2sPrf.cs#L14) |
 | `NoiseKdf` | KDF Noise/WireGuard (HKDF RFC 5869 trên HMAC-BLAKE2s); `static Derive/Kdf1/Kdf2/Kdf3` | [Noise/NoiseKdf.cs:11](Noise/NoiseKdf.cs#L11) |
+| `NoiseSymmetricState` | Noise SymmetricState (spec §5.2) cho WireGuard `Noise_IKpsk2_25519_ChaCha20Poly1305_BLAKE2s`: `InitializeWireGuard`/`InitializeSymmetric`/`MixHash`/`MixKey` (Kdf2)/`MixKeyAndHash` (Kdf3, PSK)/`EncryptAndHash`+`DecryptAndHash` (ChaCha20-Poly1305 nonce `0^4‖counter` LE, AAD = `h`)/`Split` (Kdf2 → cặp transport key 32B); DI `IPrf`/`IHashAlgo`/`IAeadCipher` (tái dùng nguyên primitive Noise/) | [Noise/NoiseSymmetricState.cs:21](Noise/NoiseSymmetricState.cs#L21) |
 
 ## Chuẩn / RFC tuân thủ
 
@@ -109,6 +111,7 @@ TqkLibrary.VpnClient.Crypto/
 | RFC 7748 (X25519) + RFC 8031 (Curve25519 IKE group 31) | `Curve25519DhGroup` | [Noise/Curve25519DhGroup.cs:11](Noise/Curve25519DhGroup.cs#L11) | Comment; test vector RFC 7748 §5.2/§6.1 (KAT) |
 | RFC 7693 (BLAKE2) | `Blake2s`, `Blake2sKeyedMac` | [Noise/Blake2s.cs:8](Noise/Blake2s.cs#L8), [Noise/Blake2sKeyedMac.cs:7](Noise/Blake2sKeyedMac.cs#L7) | Comment; KAT BLAKE2s-256 + keyed-KAT (blake2s-kat) |
 | RFC 5869 (HKDF) — Noise/WireGuard KDF | `NoiseKdf` | [Noise/NoiseKdf.cs:6](Noise/NoiseKdf.cs#L6) | Comment; extract t0=HMAC(key,input) rồi expand ti=HMAC(t0,t(i-1)\|i) |
+| Noise Protocol Framework §5.2 (SymmetricState) + WireGuard whitepaper §5.4 (handshake) | `NoiseSymmetricState` | [Noise/NoiseSymmetricState.cs:7](Noise/NoiseSymmetricState.cs#L7) | Comment; CONSTRUCTION/IDENTIFIER WireGuard, nonce AEAD `0^4‖counter` LE + AAD = `h`; test đối chiếu hằng trung gian `ck0`/`h0` |
 | RFC 2104 / FIPS 198-1 (HMAC) | `HmacUtil`, `HmacPrf`, `HmacIntegrity` | [HmacUtil.cs:6](HmacUtil.cs#L6) | (suy luận) dùng `HMAC*` của BCL |
 | RFC 2759 (MS-CHAPv2) | `MsChapV2` (codec) trên `Md4`+`Des`+SHA-1 | [MsChapV2.cs:11](MsChapV2.cs#L11) | NtPasswordHash §8.3 [L14](MsChapV2.cs#L14), ChallengeHash §8.2 [L18](MsChapV2.cs#L18), ChallengeResponse §8.5 [L34](MsChapV2.cs#L34), GenerateNTResponse §8.1 [L50](MsChapV2.cs#L50), GenerateAuthenticatorResponse §8.7 [L130](MsChapV2.cs#L130) |
 | RFC 3079 (dẫn xuất khoá MPPE / EAP-MSK) | `MsChapV2.DeriveHlak` / `MsChapV2.DeriveMsk` | [MsChapV2.cs:86](MsChapV2.cs#L86), [DeriveMsk L106](MsChapV2.cs#L106) | HLAK 32B (SSTP crypto binding) + EAP-MSK 64B = recv\|\|send\|\|zeros (khớp strongSwan/wpa_supplicant) cho IKEv2 EAP AUTH |
@@ -171,7 +174,7 @@ integ.ComputeIcv(key, data, icv);
 ## Trạng thái & ghi chú
 
 - **Đã hiện thực & dùng thật:** MD4, DES, AES-CBC, AES-CTR, AES-GCM, ChaCha20-Poly1305, MODP DH (group 2/14), HMAC-PRF, HMAC-integrity, prf+ — tiêu thụ bởi `Ipsec` (IKE/ESP), `Ppp` (MS-CHAPv2) và `OpenVpn` (NCP data channel: AES-GCM + ChaCha20-Poly1305).
-- **Noise primitives ([Noise/](Noise)) — đã hiện thực + KAT, chưa có consumer:** `Curve25519DhGroup` (X25519), `Blake2s`, `Blake2sKeyedMac`, `HmacBlake2sPrf`, `NoiseKdf` là nền cho WireGuard (roadmap V.3) và Nebula (V.7). KAT byte-chính-xác: X25519 (RFC 7748 §5.2/§6.1), BLAKE2s-256 + keyed-KAT, HMAC-BLAKE2s đối chiếu HMAC-textbook trên `Blake2s` đã KAT, `NoiseKdf` kiểm cấu trúc extract/expand. **Chưa** có `NoiseSymmetricState` + handshake Noise_IKpsk2 (làm cùng driver V.3 để KAT trọn handshake).
+- **Noise primitives ([Noise/](Noise)) — đã hiện thực + KAT, chưa có consumer:** `Curve25519DhGroup` (X25519), `Blake2s`, `Blake2sKeyedMac`, `HmacBlake2sPrf`, `NoiseKdf`, **`NoiseSymmetricState` (V3.a)** là nền cho WireGuard (roadmap V.3) và Nebula (V.7). KAT byte-chính-xác: X25519 (RFC 7748 §5.2/§6.1), BLAKE2s-256 + keyed-KAT, HMAC-BLAKE2s đối chiếu HMAC-textbook trên `Blake2s` đã KAT, `NoiseKdf` kiểm cấu trúc extract/expand. `NoiseSymmetricState` là Noise SymmetricState (spec §5.2) đối xứng thuần cho `Noise_IKpsk2_25519_ChaCha20Poly1305_BLAKE2s` (InitializeWireGuard/MixHash/MixKey/MixKeyAndHash/EncryptAndHash/DecryptAndHash/Split) — tái dùng nguyên primitive Noise/ qua DI, test cấu trúc offline đối chiếu hằng trung gian WireGuard `ck0`/`h0` + round-trip + Split 2×32B. **Chưa** có handshake state machine Noise_IKpsk2 (initiation/response/transport keys — làm cùng driver V.3 để KAT trọn handshake).
 - **Khác biệt netstandard2.0 vs net8.0:** chỉ ở `AesGcmCipher` + `ChaCha20Poly1305Cipher` — net8.0 dùng `AesGcm`/`ChaCha20Poly1305` của BCL, netstandard2.0 fallback BouncyCastle. Các primitive `Noise/` (X25519/BLAKE2s/HMAC-BLAKE2s) dùng BouncyCastle **giống nhau trên cả 2 TFM** (BCL không có sẵn ⇒ không nhánh `#if`). `BouncyCastle.Cryptography` nay là PackageReference **không điều kiện** (cả 2 TFM). Các primitive còn lại dùng BCL chung cho cả hai TFM.
 - **MODP group 2 (1024-bit)** giữ lại cho tương thích IKEv1/VPN Gate dù đã yếu theo tiêu chuẩn hiện đại; **group 14 (2048-bit)** là lựa chọn mặc định khuyến nghị.
 - **MD4 & DES** cố ý dùng thuật toán đã "vỡ" về mặt mật mã — chỉ vì MS-CHAPv2 bắt buộc; **không** dùng cho mục đích bảo mật mới.

@@ -3,8 +3,8 @@ using System.Net;
 using System.Net.Sockets;
 using TqkLibrary.Proxy.Exceptions;
 using TqkLibrary.Proxy.Interfaces;
-using TqkLibrary.Vpn.IpStack;
-using TqkLibrary.Vpn.Sockets;
+using TqkLibrary.VpnClient.IpStack;
+using TqkLibrary.VpnClient.Sockets;
 
 namespace Vpn2ProxyDemo
 {

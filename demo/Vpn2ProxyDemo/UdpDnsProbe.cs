@@ -5,8 +5,8 @@ using System.Net;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using TqkLibrary.Vpn.IpStack;
-using TqkLibrary.Vpn.Sockets;
+using TqkLibrary.VpnClient.IpStack;
+using TqkLibrary.VpnClient.Sockets;
 
 namespace Vpn2ProxyDemo
 {

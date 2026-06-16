@@ -12,7 +12,7 @@ tunnel sống tới khi nhấn Enter** (Ctrl+C cũng dừng) để test VPN duy 
 client trỏ traffic vào proxy.
 
 Đây là **project demo** ([`demo/Vpn2ProxyDemo`](../demo/Vpn2ProxyDemo)), **không** phải project `src/`. Adapter
-`IProxySource`/`IConnectSource` viết **inline trong demo** (chưa tách thành `TqkLibrary.Vpn.Proxy` — xem roadmap
+`IProxySource`/`IConnectSource` viết **inline trong demo** (chưa tách thành `TqkLibrary.VpnClient.Proxy` — xem roadmap
 [`11`](11-todo-roadmap.md) mục "Adapter proxy"). Tham chiếu project: `Drivers.L2tpIpsec` + `Drivers.Sstp` + `Sockets`;
 NuGet `TqkLibrary.Proxy` 1.0.35 + `Microsoft.Extensions.Logging`/`.Console` 10.0.x (console log cho `ProxyServer` + `VpnProxySource`).
 
@@ -35,8 +35,8 @@ NuGet `TqkLibrary.Proxy` 1.0.35 + `Microsoft.Extensions.Logging`/`.Console` 10.0
 **Panel "VPN này hỗ trợ gì"** (in tự động sau MỌI lần connect, trước hành động — [`CommandModuleBase.PrintCapabilitiesAsync` @ :95](../demo/Vpn2ProxyDemo/CommandModules/CommandModuleBase.cs#L95)
 gọi [`VpnCapabilityProbe.RunAsync` @ :26](../demo/Vpn2ProxyDemo/VpnCapabilityProbe.cs#L26)): gộp **3 nguồn** — (1) **probe thật** qua tunnel: UDP =
 DNS-over-UDP (tái dùng [`UdpDnsProbe.ResolveAsync`](../demo/Vpn2ProxyDemo/UdpDnsProbe.cs#L29)), LAN ảo = ICMP ping gateway nội bộ
-([`TcpIpStack.PingAsync`](../src/TqkLibrary.Vpn.IpStack/TcpIpStack.cs#L107) — [`ProbeVirtualLanAsync` @ :99](../demo/Vpn2ProxyDemo/VpnCapabilityProbe.cs#L99); **phát hiện LAN ảo thì panel thêm dòng "Gateway nội bộ"** ở phần Info); (2) **năng lực
-driver tĩnh** đọc thẳng từ [`SstpDriver.Capabilities`](../src/TqkLibrary.Vpn.Drivers.Sstp/SstpDriver.cs#L29)/[`L2tpIpsecDriver.Capabilities`](../src/TqkLibrary.Vpn.Drivers.L2tpIpsec/L2tpIpsecDriver.cs#L27)
+([`TcpIpStack.PingAsync`](../src/TqkLibrary.VpnClient.IpStack/TcpIpStack.cs#L107) — [`ProbeVirtualLanAsync` @ :99](../demo/Vpn2ProxyDemo/VpnCapabilityProbe.cs#L99); **phát hiện LAN ảo thì panel thêm dòng "Gateway nội bộ"** ở phần Info); (2) **năng lực
+driver tĩnh** đọc thẳng từ [`SstpDriver.Capabilities`](../src/TqkLibrary.VpnClient.Drivers.Sstp/SstpDriver.cs#L29)/[`L2tpIpsecDriver.Capabilities`](../src/TqkLibrary.VpnClient.Drivers.L2tpIpsec/L2tpIpsecDriver.cs#L27)
 (transport/bảo mật/auth/cấp địa chỉ); (3) **heuristic** từ IP cấp: phân loại public/private (RFC1918/CGNAT) ⇒ suy listen-external,
 IPv6 = No vì chưa có IPv6CP. Panel tự bao timeout (mỗi sub-probe ngắn + chặn-trên 20s) và **nuốt mọi lỗi** (trừ hủy của caller) nên
 không bao giờ làm hỏng hành động chính. Các khả năng thư viện chưa hỗ trợ ⇒ xem §6.
@@ -130,7 +130,7 @@ Bind `0.0.0.0` thì client vẫn nối qua `127.0.0.1`; bind IP cụ thể thì 
   trước hành động. Gộp probe thật (UDP, LAN ảo ICMP) + năng lực driver (transport/bảo mật/auth) + heuristic NAT/IPv6.
   Các khả năng thư viện chưa hỗ trợ ⇒ §6.
 - ⏳ **Chưa:** BIND (stack active-open-only + địa chỉ tunnel private không routable từ internet ⇒ peer ngoài không
-  dial vào được), proxy resolve host vẫn bằng host DNS, IPv6. Tách adapter thành project `TqkLibrary.Vpn.Proxy` nếu
+  dial vào được), proxy resolve host vẫn bằng host DNS, IPv6. Tách adapter thành project `TqkLibrary.VpnClient.Proxy` nếu
   cần tái dùng — xem [`11`](11-todo-roadmap.md).
 
 ## 6. Khả năng VPN hiển thị & phần thư viện chưa hỗ trợ (roadmap/plan)

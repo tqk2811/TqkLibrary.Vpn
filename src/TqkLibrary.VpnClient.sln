@@ -72,6 +72,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Driver
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Drivers.OpenVpn.Tests", "..\tests\TqkLibrary.VpnClient.Drivers.OpenVpn.Tests\TqkLibrary.VpnClient.Drivers.OpenVpn.Tests.csproj", "{2EBD6850-444B-4E08-8035-7502C23580C6}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.WireGuard", "TqkLibrary.VpnClient.WireGuard\TqkLibrary.VpnClient.WireGuard.csproj", "{4F6A2FC0-0648-4A4B-9C6A-726D0B620EA5}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.WireGuard.Tests", "..\tests\TqkLibrary.VpnClient.WireGuard.Tests\TqkLibrary.VpnClient.WireGuard.Tests.csproj", "{49EA8CBC-B061-4DF8-94D3-873CD446A5A8}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -430,6 +434,30 @@ Global
 		{2EBD6850-444B-4E08-8035-7502C23580C6}.Release|x64.Build.0 = Release|Any CPU
 		{2EBD6850-444B-4E08-8035-7502C23580C6}.Release|x86.ActiveCfg = Release|Any CPU
 		{2EBD6850-444B-4E08-8035-7502C23580C6}.Release|x86.Build.0 = Release|Any CPU
+		{4F6A2FC0-0648-4A4B-9C6A-726D0B620EA5}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{4F6A2FC0-0648-4A4B-9C6A-726D0B620EA5}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{4F6A2FC0-0648-4A4B-9C6A-726D0B620EA5}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{4F6A2FC0-0648-4A4B-9C6A-726D0B620EA5}.Debug|x64.Build.0 = Debug|Any CPU
+		{4F6A2FC0-0648-4A4B-9C6A-726D0B620EA5}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{4F6A2FC0-0648-4A4B-9C6A-726D0B620EA5}.Debug|x86.Build.0 = Debug|Any CPU
+		{4F6A2FC0-0648-4A4B-9C6A-726D0B620EA5}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{4F6A2FC0-0648-4A4B-9C6A-726D0B620EA5}.Release|Any CPU.Build.0 = Release|Any CPU
+		{4F6A2FC0-0648-4A4B-9C6A-726D0B620EA5}.Release|x64.ActiveCfg = Release|Any CPU
+		{4F6A2FC0-0648-4A4B-9C6A-726D0B620EA5}.Release|x64.Build.0 = Release|Any CPU
+		{4F6A2FC0-0648-4A4B-9C6A-726D0B620EA5}.Release|x86.ActiveCfg = Release|Any CPU
+		{4F6A2FC0-0648-4A4B-9C6A-726D0B620EA5}.Release|x86.Build.0 = Release|Any CPU
+		{49EA8CBC-B061-4DF8-94D3-873CD446A5A8}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{49EA8CBC-B061-4DF8-94D3-873CD446A5A8}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{49EA8CBC-B061-4DF8-94D3-873CD446A5A8}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{49EA8CBC-B061-4DF8-94D3-873CD446A5A8}.Debug|x64.Build.0 = Debug|Any CPU
+		{49EA8CBC-B061-4DF8-94D3-873CD446A5A8}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{49EA8CBC-B061-4DF8-94D3-873CD446A5A8}.Debug|x86.Build.0 = Debug|Any CPU
+		{49EA8CBC-B061-4DF8-94D3-873CD446A5A8}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{49EA8CBC-B061-4DF8-94D3-873CD446A5A8}.Release|Any CPU.Build.0 = Release|Any CPU
+		{49EA8CBC-B061-4DF8-94D3-873CD446A5A8}.Release|x64.ActiveCfg = Release|Any CPU
+		{49EA8CBC-B061-4DF8-94D3-873CD446A5A8}.Release|x64.Build.0 = Release|Any CPU
+		{49EA8CBC-B061-4DF8-94D3-873CD446A5A8}.Release|x86.ActiveCfg = Release|Any CPU
+		{49EA8CBC-B061-4DF8-94D3-873CD446A5A8}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

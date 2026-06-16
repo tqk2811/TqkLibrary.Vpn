@@ -1,8 +1,8 @@
 # TqkLibrary.VpnClient.WireGuard
 
-Thư viện **protocol WireGuard** thuần .NET — hiện thực handshake `Noise_IKpsk2_25519_ChaCha20Poly1305_BLAKE2s` (initiation + response + transport keys), timestamp TAI64N và codec gói type-1/type-2 đúng từng byte. Đây là project protocol-level cho driver **V.3** (đang xây theo phase, xem [`.docs/11`](../../.docs/11-todo-roadmap.md) §V.3).
+Thư viện **protocol WireGuard** thuần .NET — hiện thực handshake `Noise_IKpsk2_25519_ChaCha20Poly1305_BLAKE2s` (initiation + response + transport keys), timestamp TAI64N, codec gói type-1/type-2 đúng từng byte và **data channel type-4** (transport-data + counter u64 + anti-replay). Đây là project protocol-level cho driver **V.3** (đang xây theo phase, xem [`.docs/11`](../../.docs/11-todo-roadmap.md) §V.3).
 
-> **Trạng thái:** **V3.a (NoiseSymmetricState, ở [Crypto](../TqkLibrary.VpnClient.Crypto)) + V3.b handshake Noise_IKpsk2 + V3.c mac1/mac2 + cookie-reply xong.** Đã có: (1) [`WireGuardConstants`](WireGuardConstants.cs#L17) — hằng `CONSTRUCTION`/`IDENTIFIER` (re-export từ `NoiseSymmetricState` để không lệch) + `LABEL_MAC1`/`LABEL_COOKIE` + kích thước/offset gói; (2) [`WireGuardTai64n`](Handshake/WireGuardTai64n.cs#L19) — encode thời điểm thành timestamp TAI64N 12B (8B giây TAI big-endian + 4B nanosecond) + `Compare` đơn điệu; (3) [`WireGuardMessageCodec`](Handshake/WireGuardMessageCodec.cs#L13) — dựng/đọc gói type-1 initiation (148B) + type-2 response (92B) + **type-3 cookie-reply (64B)** đúng từng byte, cộng `ApplyMacs`/`VerifyMac1`/`ReadMac1` thao tác mac1/mac2 in-place trên buffer đã encode; (4) [`WireGuardHandshake`](Handshake/WireGuardHandshake.cs#L23) — chạy 1 phía handshake (initiator `CreateInitiation`→`ConsumeResponse`, responder `ConsumeInitiation`→`CreateResponse`) + `DeriveTransportKeys` (Split + hoán đổi theo role) + **wire mac/cookie** (`StampOutgoingMacs`/`VerifyIncomingMac1`/`CreateCookieReply`/`ConsumeCookieReply`), tái dùng nguyên `NoiseSymmetricState` (V3.a) + `Curve25519DhGroup` (F.4) + `ChaCha20Poly1305Cipher`; (5) [`WireGuardMac`](Handshake/WireGuardMac.cs#L24) — keyed-BLAKE2s-128 cho mac1/mac2 (so sánh constant-time); (6) [`WireGuardCookie`](Handshake/WireGuardCookie.cs#L21) — cookie `MAC(secret, addr)` + cookie-reply XChaCha20-Poly1305 (build/read). **Chưa**: data channel type-4 + counter nonce + anti-replay (V3.d), timers/state machine (V3.e), UDP transport + driver + config tĩnh end-to-end (V3.f).
+> **Trạng thái:** **V3.a (NoiseSymmetricState, ở [Crypto](../TqkLibrary.VpnClient.Crypto)) + V3.b handshake Noise_IKpsk2 + V3.c mac1/mac2 + cookie-reply + V3.d data channel type-4 xong.** Đã có: (1) [`WireGuardConstants`](WireGuardConstants.cs#L17) — hằng `CONSTRUCTION`/`IDENTIFIER` (re-export từ `NoiseSymmetricState` để không lệch) + `LABEL_MAC1`/`LABEL_COOKIE` + kích thước/offset gói; (2) [`WireGuardTai64n`](Handshake/WireGuardTai64n.cs#L19) — encode thời điểm thành timestamp TAI64N 12B (8B giây TAI big-endian + 4B nanosecond) + `Compare` đơn điệu; (3) [`WireGuardMessageCodec`](Handshake/WireGuardMessageCodec.cs#L13) — dựng/đọc gói type-1 initiation (148B) + type-2 response (92B) + **type-3 cookie-reply (64B)** đúng từng byte, cộng `ApplyMacs`/`VerifyMac1`/`ReadMac1` thao tác mac1/mac2 in-place trên buffer đã encode; (4) [`WireGuardHandshake`](Handshake/WireGuardHandshake.cs#L23) — chạy 1 phía handshake (initiator `CreateInitiation`→`ConsumeResponse`, responder `ConsumeInitiation`→`CreateResponse`) + `DeriveTransportKeys` (Split + hoán đổi theo role) + **wire mac/cookie** (`StampOutgoingMacs`/`VerifyIncomingMac1`/`CreateCookieReply`/`ConsumeCookieReply`), tái dùng nguyên `NoiseSymmetricState` (V3.a) + `Curve25519DhGroup` (F.4) + `ChaCha20Poly1305Cipher`; (5) [`WireGuardMac`](Handshake/WireGuardMac.cs#L22) — keyed-BLAKE2s-128 cho mac1/mac2 (so sánh constant-time); (6) [`WireGuardCookie`](Handshake/WireGuardCookie.cs#L21) — cookie `MAC(secret, addr)` + cookie-reply XChaCha20-Poly1305 (build/read); (7) [`WireGuardDataCodec`](DataChannel/WireGuardDataCodec.cs#L17) — dựng/đọc gói transport-data type-4 (header `receiver|counter` + nonce `0^4‖counter LE`); (8) [`WireGuardTransport`](DataChannel/WireGuardTransport.cs#L24) — `Seal`/`TryOpen`/`Keepalive` theo cặp transport key, ChaCha20-Poly1305 AAD rỗng, counter u64 đơn điệu; (9) [`WireGuardReplayProtector`](DataChannel/WireGuardReplayProtector.cs#L19) — anti-replay 64-gói trên counter u64 đầy đủ (tái dùng `AntiReplayWindow` cho 32-bit thấp). **Chưa**: timers/state machine rekey/keepalive (V3.e), UDP transport + driver + config tĩnh end-to-end (V3.f).
 
 ## Vị trí kiến trúc
 
@@ -12,8 +12,8 @@ Thư viện **protocol WireGuard** thuần .NET — hiện thực handshake `Noi
 
 | Hướng | Project | Lý do |
 |-------|---------|-------|
-| Dùng | [Crypto](../TqkLibrary.VpnClient.Crypto) | [`NoiseSymmetricState`](../TqkLibrary.VpnClient.Crypto/Noise/NoiseSymmetricState.cs) (V3.a), [`Curve25519DhGroup`](../TqkLibrary.VpnClient.Crypto/Noise/Curve25519DhGroup.cs)/[`HmacBlake2sPrf`](../TqkLibrary.VpnClient.Crypto/Noise/HmacBlake2sPrf.cs)/[`Blake2s`](../TqkLibrary.VpnClient.Crypto/Noise/Blake2s.cs)/[`Blake2sKeyedMac`](../TqkLibrary.VpnClient.Crypto/Noise/Blake2sKeyedMac.cs) (F.4), [`ChaCha20Poly1305Cipher`](../TqkLibrary.VpnClient.Crypto/Aead/ChaCha20Poly1305Cipher.cs), [`XChaCha20Poly1305Cipher`](../TqkLibrary.VpnClient.Crypto/Aead/XChaCha20Poly1305Cipher.cs) (V3.c cookie-reply) |
-| Dùng | [Abstractions](../TqkLibrary.VpnClient.Abstractions) | (chuẩn bị cho V3.d–f: `TunnelConfig`, `IDatagramTransport`, `IPacketChannel`) |
+| Dùng | [Crypto](../TqkLibrary.VpnClient.Crypto) | [`NoiseSymmetricState`](../TqkLibrary.VpnClient.Crypto/Noise/NoiseSymmetricState.cs) (V3.a), [`Curve25519DhGroup`](../TqkLibrary.VpnClient.Crypto/Noise/Curve25519DhGroup.cs)/[`HmacBlake2sPrf`](../TqkLibrary.VpnClient.Crypto/Noise/HmacBlake2sPrf.cs)/[`Blake2s`](../TqkLibrary.VpnClient.Crypto/Noise/Blake2s.cs)/[`Blake2sKeyedMac`](../TqkLibrary.VpnClient.Crypto/Noise/Blake2sKeyedMac.cs) (F.4), [`ChaCha20Poly1305Cipher`](../TqkLibrary.VpnClient.Crypto/Aead/ChaCha20Poly1305Cipher.cs) (handshake + data channel V3.d), [`XChaCha20Poly1305Cipher`](../TqkLibrary.VpnClient.Crypto/Aead/XChaCha20Poly1305Cipher.cs) (V3.c cookie-reply), [`AntiReplayWindow`](../TqkLibrary.VpnClient.Crypto/AntiReplayWindow.cs) (V3.d anti-replay, dùng chung ESP/OpenVPN) |
+| Dùng | [Abstractions](../TqkLibrary.VpnClient.Abstractions) | (chuẩn bị cho V3.e–f: `TunnelConfig`, `IDatagramTransport`, `IPacketChannel`) |
 | Được dùng bởi | `Drivers.WireGuard` (V3.f, **chưa có**) | driver lắp ráp control/data plane |
 
 ## Cấu trúc thư mục
@@ -21,18 +21,22 @@ Thư viện **protocol WireGuard** thuần .NET — hiện thực handshake `Noi
 ```
 TqkLibrary.VpnClient.WireGuard/
 ├─ WireGuardConstants.cs              Hằng CONSTRUCTION/IDENTIFIER/LABEL_MAC1/LABEL_COOKIE + kích thước/offset gói + message type 1–4
-└─ Handshake/
-   ├─ WireGuardTai64n.cs             Encode thời điểm → TAI64N 12B (8B giây TAI BE + 4B ns BE) + Compare đơn điệu
-   ├─ WireGuardMessageCodec.cs       Dựng/đọc gói type-1 (148B) + type-2 (92B) + type-3 cookie-reply (64B) + mac1/mac2 in-place
-   ├─ WireGuardHandshake.cs          State machine Noise_IKpsk2 1 phía + DeriveTransportKeys (Split) + wire mac/cookie
-   ├─ WireGuardMac.cs                keyed-BLAKE2s-128 mac1 (key HASH(LABEL_MAC1‖pub)) + mac2 (key cookie), so sánh constant-time
-   ├─ WireGuardCookie.cs             cookie MAC(secret, addr) + cookie-reply XChaCha20-Poly1305 (CreateReply/TryReadCookie)
-   └─ Models/
-      ├─ WireGuardInitiationMessage.cs  POCO gói type-1 (sender, ephemeral, enc_static, enc_timestamp, mac1, mac2)
-      ├─ WireGuardResponseMessage.cs    POCO gói type-2 (sender, receiver, ephemeral, enc_empty, mac1, mac2)
-      ├─ WireGuardCookieReplyMessage.cs POCO gói type-3 (receiver, nonce 24B, encrypted_cookie 16+16)
-      ├─ WireGuardKeyPair.cs            Cặp khóa X25519 (private 32 + public 32)
-      └─ WireGuardTransportKeys.cs      Cặp transport key cuối handshake (send/receive 32B mỗi chiều)
+├─ Handshake/
+│  ├─ WireGuardTai64n.cs             Encode thời điểm → TAI64N 12B (8B giây TAI BE + 4B ns BE) + Compare đơn điệu
+│  ├─ WireGuardMessageCodec.cs       Dựng/đọc gói type-1 (148B) + type-2 (92B) + type-3 cookie-reply (64B) + mac1/mac2 in-place
+│  ├─ WireGuardHandshake.cs          State machine Noise_IKpsk2 1 phía + DeriveTransportKeys (Split) + wire mac/cookie
+│  ├─ WireGuardMac.cs                keyed-BLAKE2s-128 mac1 (key HASH(LABEL_MAC1‖pub)) + mac2 (key cookie), so sánh constant-time
+│  ├─ WireGuardCookie.cs             cookie MAC(secret, addr) + cookie-reply XChaCha20-Poly1305 (CreateReply/TryReadCookie)
+│  └─ Models/
+│     ├─ WireGuardInitiationMessage.cs  POCO gói type-1 (sender, ephemeral, enc_static, enc_timestamp, mac1, mac2)
+│     ├─ WireGuardResponseMessage.cs    POCO gói type-2 (sender, receiver, ephemeral, enc_empty, mac1, mac2)
+│     ├─ WireGuardCookieReplyMessage.cs POCO gói type-3 (receiver, nonce 24B, encrypted_cookie 16+16)
+│     ├─ WireGuardKeyPair.cs            Cặp khóa X25519 (private 32 + public 32)
+│     └─ WireGuardTransportKeys.cs      Cặp transport key cuối handshake (send/receive 32B mỗi chiều)
+└─ DataChannel/                       (V3.d) data channel type-4
+   ├─ WireGuardDataCodec.cs          Dựng/đọc header type-4 (type|reserved|receiver 4 LE|counter 8 LE) + WriteNonce (0^4‖counter LE)
+   ├─ WireGuardTransport.cs          Seal/TryOpen/Keepalive theo cặp transport key (ChaCha20-Poly1305 AAD rỗng, counter u64 từ 0)
+   └─ WireGuardReplayProtector.cs    Anti-replay 64-gói trên counter u64 (bọc AntiReplayWindow cho 32-bit thấp + theo dõi high-32)
 ```
 
 ## Bảng type
@@ -45,6 +49,9 @@ TqkLibrary.VpnClient.WireGuard/
 | `WireGuardHandshake` | state machine 1 phía: `CreateInitiation`/`ConsumeResponse` (initiator), `ConsumeInitiation`/`CreateResponse` (responder), `DeriveTransportKeys` (Split + swap theo role); wire mac/cookie `StampOutgoingMacs`/`VerifyIncomingMac1`/`CreateCookieReply`/`ConsumeCookieReply`/`CurrentCookie`; `GenerateKeyPair`/`KeyPairFromPrivate`; ctor nhận static keypair + remote static + PSK + primitive DI | [Handshake/WireGuardHandshake.cs:23](Handshake/WireGuardHandshake.cs#L23) |
 | `WireGuardMac` | keyed-BLAKE2s-128 mac1/mac2; `ForRecipient(pub)` tiền-hash `mac1Key=HASH(LABEL_MAC1‖pub)` + `CookieKey=HASH(LABEL_COOKIE‖pub)`; `ComputeMac1`/`VerifyMac1` + `ComputeMac2`/`VerifyMac2` (cookie-keyed), so sánh constant-time | [Handshake/WireGuardMac.cs:22](Handshake/WireGuardMac.cs#L22) |
 | `WireGuardCookie` | cookie machinery: `ComputeCookie(secret, addr)` = MAC keyed-BLAKE2s-128; `CreateReply` (responder seal cookie XChaCha20-Poly1305, AAD = mac1) / `TryReadCookie` (initiator mở) ; nonce 24B từ RNG (inject được) | [Handshake/WireGuardCookie.cs:21](Handshake/WireGuardCookie.cs#L21) |
+| `WireGuardDataCodec` | codec gói transport-data type-4: `WriteHeader`/`TryReadHeader` (type|reserved|receiver 4 LE|counter 8 LE) + `WriteNonce` (nonce 12B = `0^4‖counter 8 LE`); `HeaderLength`16/`MinimumLength`32/`NonceLength`12; length/type/reserved sai ⇒ false | [DataChannel/WireGuardDataCodec.cs:17](DataChannel/WireGuardDataCodec.cs#L17) |
+| `WireGuardTransport` | data channel stateful theo `WireGuardTransportKeys`: `Seal`(counter u64 từ 0, ChaCha20-Poly1305 AAD rỗng, overflow⇒ném)/`TryOpen`(kiểm receiver-index→anti-replay→AEAD)/`Keepalive`(payload rỗng); `SentPacketCount`/`HighestReceivedCounter`; cipher mặc định ChaCha20-Poly1305 | [DataChannel/WireGuardTransport.cs:24](DataChannel/WireGuardTransport.cs#L24) |
+| `WireGuardReplayProtector` | anti-replay 64-gói trên counter u64 đầy đủ: `Check`/`Commit`/`Highest`; bọc `AntiReplayWindow` (Crypto) cho 32-bit thấp (counter 0-based → window 1-based) + tự theo dõi high-32 (epoch tiến⇒reset, epoch cũ⇒replay) | [DataChannel/WireGuardReplayProtector.cs:19](DataChannel/WireGuardReplayProtector.cs#L19) |
 | `WireGuardInitiationMessage` | record gói type-1 đã decode: `SenderIndex`/`UnencryptedEphemeral`/`EncryptedStatic`/`EncryptedTimestamp`/`Mac1`/`Mac2` | [Handshake/Models/WireGuardInitiationMessage.cs:11](Handshake/Models/WireGuardInitiationMessage.cs#L11) |
 | `WireGuardResponseMessage` | record gói type-2 đã decode: `SenderIndex`/`ReceiverIndex`/`UnencryptedEphemeral`/`EncryptedNothing`/`Mac1`/`Mac2` | [Handshake/Models/WireGuardResponseMessage.cs:10](Handshake/Models/WireGuardResponseMessage.cs#L10) |
 | `WireGuardCookieReplyMessage` | record gói type-3 đã decode: `ReceiverIndex`/`Nonce`(24B)/`EncryptedCookie`(16+16) | [Handshake/Models/WireGuardCookieReplyMessage.cs:11](Handshake/Models/WireGuardCookieReplyMessage.cs#L11) |
@@ -62,9 +69,15 @@ Type-2 response (92B):
 
 Type-3 cookie-reply (64B):
   type(1) | reserved(3) | receiver(4 LE) | nonce(24) | encrypted_cookie(16+16)
+
+Type-4 transport-data (16 + N + 16):
+  type(1) | reserved(3) | receiver(4 LE) | counter(8 LE) | enc_packet(N+16)
+  nonce(12) = 0^4 ‖ counter(8 LE)     (4 byte 0 rồi counter little-endian)
+  AAD       = ∅                        (rỗng)
 ```
 
-- **type byte** = 1 (initiation) / 2 (response) / 3 (cookie-reply); 3 byte reserved phải 0; index 32-bit **little-endian**.
+- **type byte** = 1 (initiation) / 2 (response) / 3 (cookie-reply) / 4 (transport-data); 3 byte reserved phải 0; index 32-bit **little-endian**.
+- **transport-data** (type-4): `receiver` = sender-index phía nhận đã quảng cáo trong handshake (để định tuyến session); `counter` = u64 little-endian đơn điệu **từ 0**, vừa là trường wire vừa là phần đếm của nonce nên **không bao giờ lặp** cho một key (overflow ⇒ ném, phải rekey trước). `enc_packet` = ChaCha20-Poly1305(send-key, nonce, inner-packet, AAD=∅) → ciphertext‖tag16; **keepalive** = payload rỗng ⇒ `enc_packet` chỉ còn tag (gói 32B). Anti-replay 64-gói trên counter u64 đầy đủ.
 - `enc_*` = AEAD ChaCha20-Poly1305 (ciphertext || tag 16B), nonce counter 0 (mỗi `MixKey` reset nonce), AAD = transcript hash `h` hiện tại.
 - **mac1** = keyed-BLAKE2s-128(`HASH(LABEL_MAC1‖recipient.static_public)`, msg[0:mac1_offset]) — chứng minh người gửi biết public-key người nhận; verify rẻ trước mọi DH (drop nếu sai).
 - **mac2** = keyed-BLAKE2s-128(cookie, msg[0:mac2_offset]) khi đã có cookie từ cookie-reply; **0** khi chưa có.
@@ -86,6 +99,14 @@ DoS-mitigation chồng lên handshake — gắn vào **gói đã encode** chứ 
 2. **Nhận**: [`VerifyIncomingMac1`](Handshake/WireGuardHandshake.cs#L279) verify mac1 bằng key của **chính mình** ([`WireGuardMessageCodec.VerifyMac1`](Handshake/WireGuardMessageCodec.cs)) → sai ⇒ drop trước DH.
 3. **Responder quá tải**: [`CreateCookieReply`](Handshake/WireGuardHandshake.cs#L288) tính `cookie=MAC(secret, addr)` rồi seal vào cookie-reply (AAD = mac1 gói kích hoạt) thay vì làm response.
 4. **Initiator**: [`ConsumeCookieReply`](Handshake/WireGuardHandshake.cs#L302) mở cookie với mac1 nó vừa gửi làm AAD (sai ⇒ false, không đổi state), cache cookie → lần `StampOutgoingMacs` kế mang mac2 hợp lệ mà responder recompute cùng cookie verify được.
+
+## Luồng data channel type-4 (whitepaper §5.4.6, V3.d)
+
+Sau handshake, mỗi phía dựng một [`WireGuardTransport`](DataChannel/WireGuardTransport.cs#L24) trên cặp [`WireGuardTransportKeys`](Handshake/Models/WireGuardTransportKeys.cs#L11) từ `Split` (send-key bên này = receive-key bên kia). State machine đối xứng thuần, không socket:
+
+1. **Gửi** ([`Seal`](DataChannel/WireGuardTransport.cs#L70)): lấy `counter` u64 hiện tại (đơn điệu từ 0, overflow ⇒ ném), [`WireGuardDataCodec.WriteHeader`](DataChannel/WireGuardDataCodec.cs#L39) ghi `type 4|reserved|receiver(peer-index)|counter LE`, `WriteNonce` ra `0^4‖counter LE`, rồi ChaCha20-Poly1305 seal inner-packet với **AAD rỗng** → ciphertext‖tag sau header. [`Keepalive`](DataChannel/WireGuardTransport.cs#L96) = `Seal(empty)`.
+2. **Nhận** ([`TryOpen`](DataChannel/WireGuardTransport.cs#L104)): `TryReadHeader` (length/type/reserved sai ⇒ drop) → kiểm `receiver` == index của mình → [`WireGuardReplayProtector.Check`](DataChannel/WireGuardReplayProtector.cs#L32) (replay/ngoài cửa sổ ⇒ drop) → ChaCha20-Poly1305 open (tag sai ⇒ drop) → `Commit` counter. Keepalive mở ra payload rỗng (caller không forward).
+3. **Anti-replay u64** ([`WireGuardReplayProtector`](DataChannel/WireGuardReplayProtector.cs#L19)): vì [`AntiReplayWindow`](../TqkLibrary.VpnClient.Crypto/AntiReplayWindow.cs#L7) (dùng chung ESP/OpenVPN) chỉ nhận `uint` và đánh số từ 1, protector ánh xạ counter-0-based → window-1-based (`low+1`) trong một **epoch** high-32 và tự theo dõi high-32: epoch tiến (counter vượt 2³²) ⇒ reset window mới; epoch cũ ⇒ luôn loại như replay. Thực tế WG rekey trước `2⁶⁰` gói nên epoch hầu như không đổi, nhưng vẫn đúng spec u64.
 
 ## Bảng chuẩn / nguồn
 

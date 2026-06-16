@@ -47,6 +47,7 @@ TqkLibrary.VpnClient.Crypto/
 ├── AesCbcCipher.cs        # AES-CBC no-padding (IBlockCipher)
 ├── AesCtr.cs              # AES-CTR (static, dựng từ AES-ECB)
 ├── Md4.cs                 # MD4 (IHashAlgo) — NT hash cho MS-CHAPv2
+├── Sha0.cs                # SHA-0 (IHashAlgo, FIPS 180 1993) — SoftEther auth password (V.4)
 ├── Des.cs                 # DES 1 block ECB-encrypt, không check weak key — MS-CHAPv2
 ├── MsChapV2.cs            # Codec MS-CHAPv2 (RFC 2759) + dẫn xuất khoá MPPE/MSK (RFC 3079) — dùng chung Ppp + IKEv2 EAP
 ├── ModpDhGroup.cs         # DH MODP group 2 / 14 (IDhGroup)
@@ -74,6 +75,7 @@ TqkLibrary.VpnClient.Crypto/
 | Type | Vai trò | Vị trí |
 |------|---------|--------|
 | `Md4` | MD4 digest (16 byte) — NT hash cho MS-CHAPv2; có `static Hash(...)` tiện dụng | [Md4.cs:9](Md4.cs#L9) |
+| `Sha0` | SHA-0 digest (20 byte, FIPS 180 1993 — SHA-1 **bỏ ROTL1** trong message schedule); auth password SoftEther (V.4); có `static Hash(...)` | [Sha0.cs:12](Sha0.cs#L12) |
 | `Des` | DES 1 block, ECB-encrypt, **không** check weak-key; `static EncryptBlock(key8, block8)` | [Des.cs:8](Des.cs#L8) |
 | `AesCbcCipher` | AES-CBC no-padding (`IBlockCipher`, block 16 byte) | [AesCbcCipher.cs:10](AesCbcCipher.cs#L10) |
 | `AesCtr` | AES-CTR `static Transform(...)` dựng từ AES-ECB, counter big-endian | [AesCtr.cs:9](AesCtr.cs#L9) |
@@ -98,6 +100,7 @@ TqkLibrary.VpnClient.Crypto/
 | Chuẩn | Class/Namespace áp dụng | Vị trí (link code) | Ghi chú |
 |-------|------------------------|--------------------|---------|
 | RFC 1320 (MD4) | `Md4` | [Md4.cs:6](Md4.cs#L6) | Ghi rõ trong comment; cần cho NT hash MS-CHAPv2 |
+| FIPS 180 (SHA-0, 1993) | `Sha0` | [Sha0.cs:6](Sha0.cs#L6) | Comment; = SHA-1 bỏ `ROTL1` ở schedule `W[t]=W[t-3]^W[t-8]^W[t-14]^W[t-16]`; auth password SoftEther; KAT "abc"/rỗng/2-block + đối chiếu khác SHA-1 |
 | FIPS 46-3 (DES) | `Des` | [Des.cs:4](Des.cs#L4) | Comment; ECB-encrypt 1 block, bỏ check weak-key cho MS-CHAPv2 |
 | NIST SP 800-38A (CTR mode) | `AesCtr` | [AesCtr.cs:7](AesCtr.cs#L7) | Comment; counter 128-bit tăng big-endian |
 | RFC 3686 (AES-CTR cho ESP) | `AesCtr` | [AesCtr.cs:7](AesCtr.cs#L7) | Comment; framing counter đặc thù ESP nằm ở tầng trên |
@@ -173,15 +176,17 @@ integ.ComputeIcv(key, data, icv);
 - **MODP DH** ([ModpDhGroup.cs:57-83](ModpDhGroup.cs#L57-L83)): private key là số mũ ngẫu nhiên trong `[2, p-2]`; public/shared dùng `BigInteger.ModPow`. Mọi giá trị wire là big-endian cố định độ dài modulus; chuyển đổi big-endian ↔ `BigInteger` (chèn byte 0x00 để giữ dấu dương) tại [ModpDhGroup.cs:93-114](ModpDhGroup.cs#L93-L114).
 - **prf+** ([PrfPlus.cs:12-44](PrfPlus.cs#L12-L44)): lặp `Tn = prf(K, T(n-1) | S | n)`, nối khối cho tới khi đủ `length`; ném lỗi nếu vượt 255 vòng (counter byte tràn về 0).
 - **MD4** ([Md4.cs:15-43](Md4.cs#L15-L43)): xử lý từng khối 64 byte + tail có padding 0x80 và độ dài bit 64-bit little-endian; mỗi khối qua 3 round F/G/H ([Md4.cs:53-90](Md4.cs#L53-L90)).
+- **SHA-0** ([Sha0.cs:17-49](Sha0.cs#L17-L49)): cấu trúc Merkle–Damgård big-endian giống SHA-1 (khối 64 byte + tail 0x80 + độ dài bit 64-bit **big-endian**); 80 vòng 4 hàm f/k. Khác biệt **duy nhất** so với SHA-1 nằm ở message schedule ([Sha0.cs:64-65](Sha0.cs#L64-L65)): `W[t]=W[t-3]^W[t-8]^W[t-14]^W[t-16]` **không** bọc trong `ROTL1(...)` — đây chính là lỗ hổng FIPS 180-1 vá lại. Dùng cho auth password SoftEther (hash cục bộ, không lên wire).
 
 ## Trạng thái & ghi chú
 
-- **Đã hiện thực & dùng thật:** MD4, DES, AES-CBC, AES-CTR, AES-GCM, ChaCha20-Poly1305, XChaCha20-Poly1305, MODP DH (group 2/14), HMAC-PRF, HMAC-integrity, prf+ — tiêu thụ bởi `Ipsec` (IKE/ESP), `Ppp` (MS-CHAPv2), `OpenVpn` (NCP data channel: AES-GCM + ChaCha20-Poly1305) và `WireGuard` (XChaCha20-Poly1305 cho cookie-reply V3.c).
+- **Đã hiện thực & dùng thật:** MD4, DES, AES-CBC, AES-CTR, AES-GCM, ChaCha20-Poly1305, XChaCha20-Poly1305, MODP DH (group 2/14), HMAC-PRF, HMAC-integrity, prf+, `Tls1Prf` (PRF TLS 1.0 cho OpenVPN key-method-2) — tiêu thụ bởi `Ipsec` (IKE/ESP), `Ppp` (MS-CHAPv2), `OpenVpn` (NCP data channel: AES-GCM + ChaCha20-Poly1305) và `WireGuard` (XChaCha20-Poly1305 cho cookie-reply V3.c).
+- **SHA-0 ([Sha0.cs](Sha0.cs)) — đã hiện thực + KAT, consumer SoftEther (V.4) còn ở roadmap:** `Sha0` (`IHashAlgo`, 20 byte, FIPS 180 1993) = SHA-1 **bỏ ROTL1** ở message schedule, mirror cách viết `Md4`/`Des`. Dùng cho auth password SoftEther SSL-VPN (hash password+username **cục bộ**, hash không lên wire). KAT FIPS-180: "abc" `0164b8a9…`, chuỗi rỗng `f96cea19…`, ví dụ 2-block `d2516ee1…` + đối chiếu **khác** SHA-1 cho mọi padding ([Sha0Tests](../../tests/TqkLibrary.VpnClient.Crypto.Tests/Sha0Tests.cs)).
 - **Noise primitives ([Noise/](Noise)) — đã hiện thực + KAT, chưa có consumer:** `Curve25519DhGroup` (X25519), `Blake2s`, `Blake2sKeyedMac`, `HmacBlake2sPrf`, `NoiseKdf`, **`NoiseSymmetricState` (V3.a)** là nền cho WireGuard (roadmap V.3) và Nebula (V.7). KAT byte-chính-xác: X25519 (RFC 7748 §5.2/§6.1), BLAKE2s-256 + keyed-KAT, HMAC-BLAKE2s đối chiếu HMAC-textbook trên `Blake2s` đã KAT, `NoiseKdf` kiểm cấu trúc extract/expand. `NoiseSymmetricState` là Noise SymmetricState (spec §5.2) đối xứng thuần cho `Noise_IKpsk2_25519_ChaCha20Poly1305_BLAKE2s` (InitializeWireGuard/MixHash/MixKey/MixKeyAndHash/EncryptAndHash/DecryptAndHash/Split) — tái dùng nguyên primitive Noise/ qua DI, test cấu trúc offline đối chiếu hằng trung gian WireGuard `ck0`/`h0` + round-trip + Split 2×32B. **Chưa** có handshake state machine Noise_IKpsk2 (initiation/response/transport keys — làm cùng driver V.3 để KAT trọn handshake).
 - **Khác biệt netstandard2.0 vs net8.0:** chỉ ở `AesGcmCipher` + `ChaCha20Poly1305Cipher` — net8.0 dùng `AesGcm`/`ChaCha20Poly1305` của BCL, netstandard2.0 fallback BouncyCastle. Các primitive `Noise/` (X25519/BLAKE2s/HMAC-BLAKE2s) dùng BouncyCastle **giống nhau trên cả 2 TFM** (BCL không có sẵn ⇒ không nhánh `#if`). `BouncyCastle.Cryptography` nay là PackageReference **không điều kiện** (cả 2 TFM). Các primitive còn lại dùng BCL chung cho cả hai TFM.
 - **MODP group 2 (1024-bit)** giữ lại cho tương thích IKEv1/VPN Gate dù đã yếu theo tiêu chuẩn hiện đại; **group 14 (2048-bit)** là lựa chọn mặc định khuyến nghị.
-- **MD4 & DES** cố ý dùng thuật toán đã "vỡ" về mặt mật mã — chỉ vì MS-CHAPv2 bắt buộc; **không** dùng cho mục đích bảo mật mới.
-- **Ghi chú "SHA-0" trong `<Description>` csproj** mang tính liệt kê họ thuật toán; trong code, SHA-1/256/384/512 được dùng gián tiếp qua HMAC của BCL ([HmacUtil.cs:24-32](HmacUtil.cs#L24-L32)), không có file SHA độc lập trong project.
+- **MD4, DES & SHA-0** cố ý dùng thuật toán đã "vỡ" về mặt mật mã — MD4/DES vì MS-CHAPv2 bắt buộc, SHA-0 vì SoftEther auth bắt buộc; **không** dùng cho mục đích bảo mật mới.
+- **SHA-1/256/384/512** vẫn được dùng gián tiếp qua HMAC của BCL ([HmacUtil.cs:24-32](HmacUtil.cs#L24-L32)) — không có file SHA-1/2 độc lập (BCL đã có); chỉ **SHA-0** mới cần file riêng ([Sha0.cs](Sha0.cs)) vì vắng mặt trong BCL.
 - **`HmacPrf`/`HmacIntegrity`** hiện cấp factory cho SHA-256 (PRF, ICV-128) và SHA-1-96 (ICV); họ HMAC khác (MD5/SHA384/SHA512) đã sẵn trong `HmacUtil` nếu cần mở rộng.
 - Không có khoá/khử cấp phát: nhiều API dùng `ReadOnlySpan<byte>` ở biên ngoài nhưng bên trong vẫn `ToArray()` (do BCL/BigInteger yêu cầu mảng) — chưa zeroize bộ đệm trung gian; đây là hạn chế đã biết.
 - Tài liệu as-built tổng thể: [10-codebase-architecture-and-flow.md](../../.docs/10-codebase-architecture-and-flow.md).

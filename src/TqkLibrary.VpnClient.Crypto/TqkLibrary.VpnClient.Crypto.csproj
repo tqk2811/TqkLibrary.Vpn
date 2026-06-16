@@ -1,11 +1,15 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <Description>Managed crypto: primitive contracts (Interfaces/), MD4/DES/SHA-0/DH-MODP/AES-CBC/CTR/HMAC/RNG, and AEAD (AES-GCM + ChaCha20-Poly1305: native on net8.0, BouncyCastle on netstandard2.0).</Description>
+    <Description>Managed crypto: primitive contracts (Interfaces/), MD4/DES/SHA-0/DH-MODP/AES-CBC/CTR/HMAC/RNG, AEAD (AES-GCM + ChaCha20-Poly1305: native on net8.0, BouncyCastle on netstandard2.0), and Noise primitives (X25519/BLAKE2s/HMAC-BLAKE2s/Noise-KDF via BouncyCastle on both TFMs).</Description>
   </PropertyGroup>
 
-  <!-- AES-GCM and ChaCha20-Poly1305 are absent from the netstandard2.0 BCL -> BouncyCastle fallback (Aead/AesGcmCipher, Aead/ChaCha20Poly1305Cipher). -->
-  <ItemGroup Condition="'$(TargetFramework)' == 'netstandard2.0'">
+  <!--
+    BouncyCastle is referenced on BOTH target frameworks:
+      * netstandard2.0 — AES-GCM and ChaCha20-Poly1305 are absent from its BCL (Aead/AesGcmCipher, Aead/ChaCha20Poly1305Cipher fall back to BouncyCastle).
+      * net8.0 AND netstandard2.0 — X25519 and BLAKE2s have no native BCL implementation in either, so the Noise/ primitives use BouncyCastle unconditionally.
+  -->
+  <ItemGroup>
     <PackageReference Include="BouncyCastle.Cryptography" Version="2.4.0" />
   </ItemGroup>
 

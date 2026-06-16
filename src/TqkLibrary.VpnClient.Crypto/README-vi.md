@@ -1,6 +1,6 @@
 # TqkLibrary.VpnClient.Crypto
 
-> Managed crypto: primitive contracts (Interfaces/), MD4/DES/SHA-0/DH-MODP/AES-CBC/CTR/HMAC/RNG, và AEAD (AES-GCM + ChaCha20-Poly1305: native trên net8.0, BouncyCastle trên netstandard2.0).
+> Managed crypto: primitive contracts (Interfaces/), MD4/DES/SHA-0/DH-MODP/AES-CBC/CTR/HMAC/RNG, AEAD (AES-GCM + ChaCha20-Poly1305: native trên net8.0, BouncyCastle trên netstandard2.0), và Noise primitives (X25519/BLAKE2s/HMAC-BLAKE2s/Noise-KDF qua BouncyCastle trên cả 2 TFM — nền cho WireGuard/Nebula).
 
 ## Mục đích
 
@@ -17,7 +17,7 @@ Project này là tầng **CRYPTO** thuần — gom mọi *primitive* mật mã m
 - **Target frameworks:** `netstandard2.0; net8.0` (xem [src/Directory.Build.props](../Directory.Build.props)); `record`/`init` khả dụng cả 2 TFM nhờ polyfill `TqkLibrary.CompilerServices` (`IsExternalInit`).
 - **Phụ thuộc:**
   - ProjectReference: **không có** (tầng đáy, tự chứa).
-  - PackageReference (đặc thù): `BouncyCastle.Cryptography 2.4.0` — **chỉ** khi `TargetFramework == netstandard2.0`, và **chỉ** được dùng bởi [Aead/AesGcmCipher.cs](Aead/AesGcmCipher.cs) + [Aead/ChaCha20Poly1305Cipher.cs](Aead/ChaCha20Poly1305Cipher.cs) (BCL netstandard2.0 không có AES-GCM lẫn ChaCha20-Poly1305). Xem [TqkLibrary.VpnClient.Crypto.csproj:7-10](TqkLibrary.VpnClient.Crypto.csproj#L7-L10).
+  - PackageReference (đặc thù): `BouncyCastle.Cryptography 2.4.0` — ref trên **cả 2 TFM**. Hai lý do: (1) BCL `netstandard2.0` không có AES-GCM lẫn ChaCha20-Poly1305 → fallback ở [Aead/AesGcmCipher.cs](Aead/AesGcmCipher.cs) + [Aead/ChaCha20Poly1305Cipher.cs](Aead/ChaCha20Poly1305Cipher.cs) (chỉ nhánh `netstandard2.0`); (2) **cả net8.0 lẫn netstandard2.0 đều thiếu X25519 + BLAKE2s** → các primitive trong [Noise/](Noise) dùng BouncyCastle **không điều kiện** (không có nhánh native). Xem [TqkLibrary.VpnClient.Crypto.csproj:7-18](TqkLibrary.VpnClient.Crypto.csproj#L7-L18).
 - **Được dùng bởi:** `TqkLibrary.VpnClient.Ipsec`, `TqkLibrary.VpnClient.Ppp`, `TqkLibrary.VpnClient` (project entry-point).
 
 > Lưu ý: namespace của các interface là `TqkLibrary.VpnClient.Crypto.Abstractions.Interfaces` (không phải `...Crypto.Interfaces`) — đây là các hợp đồng primitive *cục bộ* của project Crypto, **không** liên quan tới project `TqkLibrary.VpnClient.Abstractions`.
@@ -36,6 +36,12 @@ TqkLibrary.VpnClient.Crypto/
 ├── Aead/
 │   ├── AesGcmCipher.cs           # AES-GCM: native net8.0 / BouncyCastle netstandard2.0
 │   └── ChaCha20Poly1305Cipher.cs # ChaCha20-Poly1305 (RFC 8439): native net5+ / BouncyCastle netstandard2.0
+├── Noise/                 # Primitive cho Noise/WireGuard — BouncyCastle trên CẢ 2 TFM (BCL không có X25519/BLAKE2s)
+│   ├── Curve25519DhGroup.cs # X25519 (RFC 7748, IANA group 31) — IDhGroup
+│   ├── Blake2s.cs           # BLAKE2s-256 unkeyed (RFC 7693) — IHashAlgo
+│   ├── Blake2sKeyedMac.cs   # keyed BLAKE2s output tùy chỉnh (WG mac1/mac2 16B) — static
+│   ├── HmacBlake2sPrf.cs     # HMAC-BLAKE2s (RFC 2104, block 64) — IPrf
+│   └── NoiseKdf.cs          # KDF Noise/WireGuard (HKDF RFC 5869 trên HMAC-BLAKE2s) — static
 ├── AesCbcCipher.cs        # AES-CBC no-padding (IBlockCipher)
 ├── AesCtr.cs              # AES-CTR (static, dựng từ AES-ECB)
 ├── Md4.cs                 # MD4 (IHashAlgo) — NT hash cho MS-CHAPv2
@@ -77,6 +83,11 @@ TqkLibrary.VpnClient.Crypto/
 | `PrfPlus` | IKEv2 `prf+` key expansion, `static Expand(IPrf, key, seed, length)` | [PrfPlus.cs:9](PrfPlus.cs#L9) |
 | `MsChapV2` | Codec MS-CHAPv2 client-side (RFC 2759): NT hash (MD4), challenge hash (SHA-1), NT-Response (3×DES), Authenticator-Response §8.7 (`GenerateAuthenticatorResponse`) + dẫn xuất HLAK/MPPE (RFC 3079) & EAP-MSK 64B (`DeriveMsk`); dùng chung cho PPP auth & IKEv2 EAP | [MsChapV2.cs:11](MsChapV2.cs#L11) |
 | `HmacUtil` | Internal: chọn `HMACMD5/SHA1/SHA256/SHA384/SHA512` theo `HashAlgorithmName` | [HmacUtil.cs:6](HmacUtil.cs#L6) |
+| `Curve25519DhGroup` | X25519 (RFC 7748, IANA group 31), key 32B (`IDhGroup`); BouncyCastle `Rfc7748.X25519` cả 2 TFM | [Noise/Curve25519DhGroup.cs:15](Noise/Curve25519DhGroup.cs#L15) |
+| `Blake2s` | BLAKE2s-256 unkeyed (RFC 7693), digest 32B (`IHashAlgo`); BouncyCastle `Blake2sDigest` | [Noise/Blake2s.cs:12](Noise/Blake2s.cs#L12) |
+| `Blake2sKeyedMac` | Keyed BLAKE2s output 1..32B (WG mac1/mac2 16B), `static ComputeMac(key, input, output)` | [Noise/Blake2sKeyedMac.cs:11](Noise/Blake2sKeyedMac.cs#L11) |
+| `HmacBlake2sPrf` | HMAC-BLAKE2s (RFC 2104, block 64, **không** phải keyed-BLAKE2s), output 32B (`IPrf`) | [Noise/HmacBlake2sPrf.cs:14](Noise/HmacBlake2sPrf.cs#L14) |
+| `NoiseKdf` | KDF Noise/WireGuard (HKDF RFC 5869 trên HMAC-BLAKE2s); `static Derive/Kdf1/Kdf2/Kdf3` | [Noise/NoiseKdf.cs:11](Noise/NoiseKdf.cs#L11) |
 
 ## Chuẩn / RFC tuân thủ
 
@@ -95,6 +106,9 @@ TqkLibrary.VpnClient.Crypto/
 | FIPS 197 (AES) | `AesCbcCipher`, `AesCtr`, `AesGcmCipher` | [AesCbcCipher.cs:10](AesCbcCipher.cs#L10), [AesCtr.cs:9](AesCtr.cs#L9), [Aead/AesGcmCipher.cs:18](Aead/AesGcmCipher.cs#L18) | (suy luận) AES không ghi tên FIPS trong comment |
 | NIST SP 800-38D (AES-GCM / GCM) | `AesGcmCipher` | [Aead/AesGcmCipher.cs:18](Aead/AesGcmCipher.cs#L18) | (suy luận) comment chỉ nói "AES-GCM AEAD" |
 | RFC 8439 (ChaCha20-Poly1305) | `ChaCha20Poly1305Cipher` | [Aead/ChaCha20Poly1305Cipher.cs:18](Aead/ChaCha20Poly1305Cipher.cs#L18) | Comment; test vector §2.8.2 |
+| RFC 7748 (X25519) + RFC 8031 (Curve25519 IKE group 31) | `Curve25519DhGroup` | [Noise/Curve25519DhGroup.cs:11](Noise/Curve25519DhGroup.cs#L11) | Comment; test vector RFC 7748 §5.2/§6.1 (KAT) |
+| RFC 7693 (BLAKE2) | `Blake2s`, `Blake2sKeyedMac` | [Noise/Blake2s.cs:8](Noise/Blake2s.cs#L8), [Noise/Blake2sKeyedMac.cs:7](Noise/Blake2sKeyedMac.cs#L7) | Comment; KAT BLAKE2s-256 + keyed-KAT (blake2s-kat) |
+| RFC 5869 (HKDF) — Noise/WireGuard KDF | `NoiseKdf` | [Noise/NoiseKdf.cs:6](Noise/NoiseKdf.cs#L6) | Comment; extract t0=HMAC(key,input) rồi expand ti=HMAC(t0,t(i-1)\|i) |
 | RFC 2104 / FIPS 198-1 (HMAC) | `HmacUtil`, `HmacPrf`, `HmacIntegrity` | [HmacUtil.cs:6](HmacUtil.cs#L6) | (suy luận) dùng `HMAC*` của BCL |
 | RFC 2759 (MS-CHAPv2) | `MsChapV2` (codec) trên `Md4`+`Des`+SHA-1 | [MsChapV2.cs:11](MsChapV2.cs#L11) | NtPasswordHash §8.3 [L14](MsChapV2.cs#L14), ChallengeHash §8.2 [L18](MsChapV2.cs#L18), ChallengeResponse §8.5 [L34](MsChapV2.cs#L34), GenerateNTResponse §8.1 [L50](MsChapV2.cs#L50), GenerateAuthenticatorResponse §8.7 [L130](MsChapV2.cs#L130) |
 | RFC 3079 (dẫn xuất khoá MPPE / EAP-MSK) | `MsChapV2.DeriveHlak` / `MsChapV2.DeriveMsk` | [MsChapV2.cs:86](MsChapV2.cs#L86), [DeriveMsk L106](MsChapV2.cs#L106) | HLAK 32B (SSTP crypto binding) + EAP-MSK 64B = recv\|\|send\|\|zeros (khớp strongSwan/wpa_supplicant) cho IKEv2 EAP AUTH |
@@ -157,7 +171,8 @@ integ.ComputeIcv(key, data, icv);
 ## Trạng thái & ghi chú
 
 - **Đã hiện thực & dùng thật:** MD4, DES, AES-CBC, AES-CTR, AES-GCM, ChaCha20-Poly1305, MODP DH (group 2/14), HMAC-PRF, HMAC-integrity, prf+ — tiêu thụ bởi `Ipsec` (IKE/ESP), `Ppp` (MS-CHAPv2) và `OpenVpn` (NCP data channel: AES-GCM + ChaCha20-Poly1305).
-- **Khác biệt netstandard2.0 vs net8.0:** chỉ ở `AesGcmCipher` + `ChaCha20Poly1305Cipher`. net8.0 dùng `AesGcm`/`ChaCha20Poly1305` của BCL; netstandard2.0 fallback BouncyCastle (PackageReference chỉ kéo vào ở TFM này). Các primitive còn lại dùng BCL chung cho cả hai TFM.
+- **Noise primitives ([Noise/](Noise)) — đã hiện thực + KAT, chưa có consumer:** `Curve25519DhGroup` (X25519), `Blake2s`, `Blake2sKeyedMac`, `HmacBlake2sPrf`, `NoiseKdf` là nền cho WireGuard (roadmap V.3) và Nebula (V.7). KAT byte-chính-xác: X25519 (RFC 7748 §5.2/§6.1), BLAKE2s-256 + keyed-KAT, HMAC-BLAKE2s đối chiếu HMAC-textbook trên `Blake2s` đã KAT, `NoiseKdf` kiểm cấu trúc extract/expand. **Chưa** có `NoiseSymmetricState` + handshake Noise_IKpsk2 (làm cùng driver V.3 để KAT trọn handshake).
+- **Khác biệt netstandard2.0 vs net8.0:** chỉ ở `AesGcmCipher` + `ChaCha20Poly1305Cipher` — net8.0 dùng `AesGcm`/`ChaCha20Poly1305` của BCL, netstandard2.0 fallback BouncyCastle. Các primitive `Noise/` (X25519/BLAKE2s/HMAC-BLAKE2s) dùng BouncyCastle **giống nhau trên cả 2 TFM** (BCL không có sẵn ⇒ không nhánh `#if`). `BouncyCastle.Cryptography` nay là PackageReference **không điều kiện** (cả 2 TFM). Các primitive còn lại dùng BCL chung cho cả hai TFM.
 - **MODP group 2 (1024-bit)** giữ lại cho tương thích IKEv1/VPN Gate dù đã yếu theo tiêu chuẩn hiện đại; **group 14 (2048-bit)** là lựa chọn mặc định khuyến nghị.
 - **MD4 & DES** cố ý dùng thuật toán đã "vỡ" về mặt mật mã — chỉ vì MS-CHAPv2 bắt buộc; **không** dùng cho mục đích bảo mật mới.
 - **Ghi chú "SHA-0" trong `<Description>` csproj** mang tính liệt kê họ thuật toán; trong code, SHA-1/256/384/512 được dùng gián tiếp qua HMAC của BCL ([HmacUtil.cs:24-32](HmacUtil.cs#L24-L32)), không có file SHA độc lập trong project.

@@ -104,6 +104,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Transp
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Transport.Dtls.Tests", "..\tests\TqkLibrary.VpnClient.Transport.Dtls.Tests\TqkLibrary.VpnClient.Transport.Dtls.Tests.csproj", "{8B5218B6-2892-45D6-91FD-096602E3C4F0}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Drivers.Core", "TqkLibrary.VpnClient.Drivers.Core\TqkLibrary.VpnClient.Drivers.Core.csproj", "{3631546D-7452-4613-ABA2-2B18740CCCE6}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Drivers.Core.Tests", "..\tests\TqkLibrary.VpnClient.Drivers.Core.Tests\TqkLibrary.VpnClient.Drivers.Core.Tests.csproj", "{AE50F710-3D71-4A00-8B0E-F56BCF7E2508}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -654,6 +658,30 @@ Global
 		{8B5218B6-2892-45D6-91FD-096602E3C4F0}.Release|x64.Build.0 = Release|Any CPU
 		{8B5218B6-2892-45D6-91FD-096602E3C4F0}.Release|x86.ActiveCfg = Release|Any CPU
 		{8B5218B6-2892-45D6-91FD-096602E3C4F0}.Release|x86.Build.0 = Release|Any CPU
+		{3631546D-7452-4613-ABA2-2B18740CCCE6}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3631546D-7452-4613-ABA2-2B18740CCCE6}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3631546D-7452-4613-ABA2-2B18740CCCE6}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{3631546D-7452-4613-ABA2-2B18740CCCE6}.Debug|x64.Build.0 = Debug|Any CPU
+		{3631546D-7452-4613-ABA2-2B18740CCCE6}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{3631546D-7452-4613-ABA2-2B18740CCCE6}.Debug|x86.Build.0 = Debug|Any CPU
+		{3631546D-7452-4613-ABA2-2B18740CCCE6}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3631546D-7452-4613-ABA2-2B18740CCCE6}.Release|Any CPU.Build.0 = Release|Any CPU
+		{3631546D-7452-4613-ABA2-2B18740CCCE6}.Release|x64.ActiveCfg = Release|Any CPU
+		{3631546D-7452-4613-ABA2-2B18740CCCE6}.Release|x64.Build.0 = Release|Any CPU
+		{3631546D-7452-4613-ABA2-2B18740CCCE6}.Release|x86.ActiveCfg = Release|Any CPU
+		{3631546D-7452-4613-ABA2-2B18740CCCE6}.Release|x86.Build.0 = Release|Any CPU
+		{AE50F710-3D71-4A00-8B0E-F56BCF7E2508}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{AE50F710-3D71-4A00-8B0E-F56BCF7E2508}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{AE50F710-3D71-4A00-8B0E-F56BCF7E2508}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{AE50F710-3D71-4A00-8B0E-F56BCF7E2508}.Debug|x64.Build.0 = Debug|Any CPU
+		{AE50F710-3D71-4A00-8B0E-F56BCF7E2508}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{AE50F710-3D71-4A00-8B0E-F56BCF7E2508}.Debug|x86.Build.0 = Debug|Any CPU
+		{AE50F710-3D71-4A00-8B0E-F56BCF7E2508}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{AE50F710-3D71-4A00-8B0E-F56BCF7E2508}.Release|Any CPU.Build.0 = Release|Any CPU
+		{AE50F710-3D71-4A00-8B0E-F56BCF7E2508}.Release|x64.ActiveCfg = Release|Any CPU
+		{AE50F710-3D71-4A00-8B0E-F56BCF7E2508}.Release|x64.Build.0 = Release|Any CPU
+		{AE50F710-3D71-4A00-8B0E-F56BCF7E2508}.Release|x86.ActiveCfg = Release|Any CPU
+		{AE50F710-3D71-4A00-8B0E-F56BCF7E2508}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

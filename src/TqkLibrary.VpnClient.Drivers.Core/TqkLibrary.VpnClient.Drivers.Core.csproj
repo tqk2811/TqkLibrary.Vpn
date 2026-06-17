@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Shared driver scaffolding (roadmap F.6): the auto-reconnect supervisor base class (ReconnectingVpnConnection) that gathers the EstablishAsync/ReconnectLoopAsync/backoff-jitter/StateChanged/link-loss/teardown machinery every protocol driver duplicates, plus the common reconnect/backoff policy model (VpnReconnectOptions). Drivers subclass the supervisor and implement only the protocol-specific establish/cleanup; the loop, the backoff, the state events and the monotonic clock are inherited.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Abstractions\TqkLibrary.VpnClient.Abstractions.csproj" />
+  </ItemGroup>
+
+</Project>

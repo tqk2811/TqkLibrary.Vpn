@@ -16,6 +16,7 @@ Driver **WireGuard** — ráp các khối protocol thuần ở [`WireGuard`](../
 | Hướng | Project | Lý do |
 |-------|---------|-------|
 | Dùng | [Abstractions](../TqkLibrary.VpnClient.Abstractions) | `IVpnProtocolDriver`/`IVpnConnection`/`IVpnSession`, `IPacketChannel`, `SwappablePacketChannel`, `IDatagramTransport`, exceptions, `IHostResolver`, **`Diagnostics`** (`VpnEventIds`/`VpnDropReason`/`VpnLogExtensions` — log handshake/rekey/drop, Q.2) |
+| Dùng | [Drivers.Core](../TqkLibrary.VpnClient.Drivers.Core) | **`ReconnectingVpnConnection<TState>`** (base supervisor F.6: facade/lifetime/`OnLinkLost`/`ReconnectLoopAsync`/backoff-jitter/`SetState`/clock) + **`VpnReconnectOptions`** (`WireGuardReconnectOptions` kế thừa) |
 | Dùng | [WireGuard](../TqkLibrary.VpnClient.WireGuard) | `WireGuardHandshake`/`WireGuardMessageCodec` (handshake + codec), `WireGuardTransport`/`WireGuardChannel` (data channel), `WireGuardPeerState`/`WireGuardTimers` (timer state machine), `WireGuardConfig` (config tĩnh) |
 | Dùng | [Crypto](../TqkLibrary.VpnClient.Crypto) | `Curve25519DhGroup` (derive public key từ private key trong config) |
 | Được dùng bởi | [TqkLibrary.VpnClient](../TqkLibrary.VpnClient) (façade) | `VpnClientBuilder.UseWireGuard(config)` đăng ký driver |
@@ -25,10 +26,10 @@ Driver **WireGuard** — ráp các khối protocol thuần ở [`WireGuard`](../
 ```
 TqkLibrary.VpnClient.Drivers.WireGuard/
 ├─ WireGuardDriver.cs                    IVpnProtocolDriver: capabilities (L3Ip/Noise/OutOfBand/Udp) + ConnectAsync(config+endpoint) → WireGuardConnection
-├─ WireGuardConnection.cs                Điều phối: UDP transport → handshake initiator → bind data channel → timer loop (keepalive + rekey) + demux + reconnect
+├─ WireGuardConnection.cs                Điều phối (kế thừa ReconnectingVpnConnection<…> F.6): UDP transport → handshake initiator → bind data channel → timer loop (keepalive + rekey) + demux; supervisor/reconnect ở base
 ├─ WireGuardVpnConnection.cs             IVpnConnection: 1 session; OpenSessionAsync ném NotSupportedException (point-to-point = 1 IP)
 ├─ WireGuardVpnSession.cs                IVpnSession: PacketChannel ổn định + TunnelConfig tĩnh (không đổi khi rekey/reconnect)
-├─ WireGuardReconnectOptions.cs          Chính sách auto-reconnect (backoff + jitter, mirror OpenVPN/IKEv2/L2TP)
+├─ WireGuardReconnectOptions.cs          Kế thừa VpnReconnectOptions (Drivers.Core, F.6) — giữ type tên riêng cho public API
 ├─ Transport/
 │  ├─ IWireGuardTransportFactory.cs      Seam dựng UDP transport tới endpoint (production socket / test loopback)
 │  ├─ WireGuardTransportHandle.cs        IDatagramTransport + SetReceiver + receive-pump trả về từ factory
@@ -42,10 +43,10 @@ TqkLibrary.VpnClient.Drivers.WireGuard/
 | Type | Vai trò | Vị trí |
 |------|---------|--------|
 | `WireGuardDriver` | `IVpnProtocolDriver`: capabilities (`L3Ip`, **không PPP**, `Noise`, **PreSharedKey** (static keys + PSK), `Udp`, `OutOfBand`); `ConnectAsync` dựng `WireGuardConnection` từ `WireGuardConfig` + endpoint (host/port) | [WireGuardDriver.cs:17](WireGuardDriver.cs#L17) |
-| `WireGuardConnection` | Bộ điều phối: resolve → `IWireGuardTransportFactory.ConnectAsync` (UDP) → handshake **initiator** (type-1 + mac1, đợi type-2) → bind `WireGuardTransport` vào `WireGuardChannel` qua `SwappablePacketChannel` → timer loop bơm `WireGuardPeerState` (keepalive + **rekey make-before-break**: handshake mới trên index mới, swap channel khi response về) + **demux** gói vào (type-2 hoàn tất, type-3 cookie-reply, type-4 data); phiên chết (handshake quá `REKEY_ATTEMPT_TIME` / fault) → supervisor reconnect | [WireGuardConnection.cs:31](WireGuardConnection.cs#L31) |
+| `WireGuardConnection` | Bộ điều phối — kế thừa [`ReconnectingVpnConnection<WireGuardConnectionState>`](../TqkLibrary.VpnClient.Drivers.Core/ReconnectingVpnConnection.cs#L25) (supervisor F.6): override `EstablishAsync` (resolve → `IWireGuardTransportFactory.ConnectAsync` (UDP) → handshake **initiator** type-1 + mac1, đợi type-2 → bind `WireGuardTransport` vào `WireGuardChannel` qua `Facade` (`SwappablePacketChannel`) → `MarkConnected`) + `CleanupAttemptResourcesAsync`/`StopAttemptLoop`; timer loop riêng (`_timerRunning`) bơm `WireGuardPeerState` (keepalive + **rekey make-before-break**: handshake mới trên index mới, swap channel khi response về) + **demux** gói vào (type-2 hoàn tất, type-3 cookie-reply, type-4 data); phiên chết (handshake quá `REKEY_ATTEMPT_TIME` / fault) → `OnLinkLost` của base arm reconnect | [WireGuardConnection.cs:37](WireGuardConnection.cs#L37) |
 | `WireGuardVpnConnection` | `IVpnConnection`: 1 session; `OpenSessionAsync` ⇒ `NotSupportedException` (1 IP point-to-point; multi-peer routing để sau) | [WireGuardVpnConnection.cs:6](WireGuardVpnConnection.cs#L6) |
 | `WireGuardVpnSession` | `IVpnSession`: `PacketChannel` (facade) + `Config` tĩnh — cả hai không đổi khi rekey/reconnect (địa chỉ là config, không đàm phán) | [WireGuardVpnSession.cs:13](WireGuardVpnSession.cs#L13) |
-| `WireGuardReconnectOptions` | `Enabled`/`MaxAttempts`/backoff/jitter (mirror OpenVPN) | [WireGuardReconnectOptions.cs:14](WireGuardReconnectOptions.cs#L14) |
+| `WireGuardReconnectOptions` | Kế thừa [`VpnReconnectOptions`](../TqkLibrary.VpnClient.Drivers.Core/Models/VpnReconnectOptions.cs#L17) (F.6) — `Enabled`/`MaxAttempts`/backoff/jitter ở base; giữ tên riêng cho public API | [WireGuardReconnectOptions.cs:12](WireGuardReconnectOptions.cs#L12) |
 | `IWireGuardTransportFactory` / `WireGuardTransportHandle` | Seam dựng UDP transport: trả `IDatagramTransport` + `SetReceiver` (đăng ký handler demux) + receive-pump (null nếu self-pump loopback) | [Transport/IWireGuardTransportFactory.cs:11](Transport/IWireGuardTransportFactory.cs#L11) |
 | `WireGuardSocketTransportFactory` | Production: UDP qua `UdpClient` connected (1 datagram = 1 message, **không framing**) + receive loop raise handler; cross-TFM (net5+ overload ct, ns2.0 cancel-by-dispose) — **live-only** | [Transport/WireGuardSocketTransportFactory.cs:18](Transport/WireGuardSocketTransportFactory.cs#L18) |
 | `WireGuardConnectionState` | `Disconnected`/`Connecting`/`Connected`/`Reconnecting` | [Enums/WireGuardConnectionState.cs:5](Enums/WireGuardConnectionState.cs#L5) |
@@ -55,9 +56,9 @@ TqkLibrary.VpnClient.Drivers.WireGuard/
 
 1. **Resolve** host qua [`IHostResolver`](../TqkLibrary.VpnClient.Abstractions/Net/IHostResolver.cs) theo `AddressFamilyPreference`; IP-literal verbatim không-DNS.
 2. **Transport**: `IWireGuardTransportFactory.ConnectAsync(IPEndPoint, ct)` dựng UDP socket → `IDatagramTransport`; `SetReceiver(OnInboundDatagram)` gắn handler demux; chạy receive-pump nền (socket transport) — loopback tự pump.
-3. **Handshake initiator** ([`StartHandshake`](WireGuardConnection.cs#L31)): cấp **local index** random → `WireGuardHandshake.CreateInitiation(localIndex)` → `WireGuardMessageCodec.EncodeInitiation` → `StampOutgoingMacs` (mac1 key-peer, mac2 nếu đã có cookie) → gửi gói type-1. Bật **timer loop trước khi đợi** (để initiation chưa được trả lời — vd responder trả cookie-reply — được resend kèm mac2 hợp lệ qua `ResendHandshake`).
+3. **Handshake initiator** ([`StartHandshake`](WireGuardConnection.cs#L158)): cấp **local index** random → `WireGuardHandshake.CreateInitiation(localIndex)` → `WireGuardMessageCodec.EncodeInitiation` → `StampOutgoingMacs` (mac1 key-peer, mac2 nếu đã có cookie) → gửi gói type-1. Bật **timer loop trước khi đợi** (để initiation chưa được trả lời — vd responder trả cookie-reply — được resend kèm mac2 hợp lệ qua `ResendHandshake`).
 4. **Đợi type-2** (`WaitForHandshakeAsync`, cap `REKEY_ATTEMPT_TIME`): demux gói vào — `OnResponse` decode type-2 + `VerifyIncomingMac1` (key-self) + `ConsumeResponse` (sai tag/PSK ⇒ drop); `OnCookieReply` decode type-3 + `ConsumeCookieReply` (cache cookie → mac2 lần resend). Hết cap ⇒ `VpnConnectionException`.
-5. **Bind session** ([`BindSession`](WireGuardConnection.cs#L31)): `DeriveTransportKeys` → `WireGuardTransport(keys, peerIndex, localIndex)` → `WireGuardChannel(transport, send=transport.SendAsync, mtu, onSealed/onReceived → WireGuardPeerState)` → `_facade.SetInner(channel)`. `OnHandshakeCompleted` mở `_hasSession`.
+5. **Bind session** ([`BindSession`](WireGuardConnection.cs#L180)): `DeriveTransportKeys` → `WireGuardTransport(keys, peerIndex, localIndex)` → `WireGuardChannel(transport, send=transport.SendAsync, mtu, onSealed/onReceived → WireGuardPeerState)` → `Facade.SetInner(channel)`. `OnHandshakeCompleted` đánh dấu session sống.
 6. **TunnelConfig**: `WireGuardConfig.ToTunnelConfig()` (address out-of-band, allowed-ips thành routes, MTU 1420) — tĩnh, không đàm phán.
 
 ## Vòng đời
@@ -67,7 +68,7 @@ TqkLibrary.VpnClient.Drivers.WireGuard/
 - **Timer loop** (250ms tick, `WireGuardPeerState.Evaluate(nowMs)`): `SendKeepalive` ⇒ `WireGuardChannel.SendKeepaliveAsync` (type-4 rỗng); `InitiateHandshake` ⇒ **rekey make-before-break** (`StartRekey`: handshake mới trên index mới chạy nền `_pending`, session cũ vẫn tải data tới khi response về thì `BindSession` swap channel); `ResendHandshake` ⇒ resend initiation (kèm mac2 nếu có cookie); `AbandonHandshake`/`SessionDead` ⇒ link lost.
 - **Rekey make-before-break**: khác OpenVPN (re-establish) — WireGuard chạy handshake thứ 2 song song, `_active` cũ vẫn nhận/gửi tới khi `_pending` hoàn tất, rồi swap `_facade` sang channel mới (không gián đoạn). Make-before-break đúng tinh thần whitepaper §6.2.
 - **Teardown** (`DisconnectAsync`): hủy reconnect đang chờ, hủy receive loop + timer, dispose transport.
-- **Reconnect** (supervisor): mirror OpenVPN/IKEv2 — `EstablishAsync`/`ReconnectLoopAsync` backoff+jitter sau `SwappablePacketChannel` ổn định; địa chỉ tĩnh nên `Reconnected` cờ `AddressChanged=false`.
+- **Reconnect** (supervisor): nay nằm ở base [`ReconnectingVpnConnection`](../TqkLibrary.VpnClient.Drivers.Core/ReconnectingVpnConnection.cs#L25) (F.6) — `OnLinkLost` arm `ReconnectLoopAsync` (backoff+jitter) gọi `EstablishAsync` của driver sau `SwappablePacketChannel` ổn định; địa chỉ tĩnh nên `OnReconnected` raise `Reconnected` cờ `AddressChanged=false`.
 - **Logging/diagnostics (Q.2)**: ctor `WireGuardConnection`/`WireGuardDriver` nhận `ILoggerFactory?` (mặc định [`NullLogger`](../TqkLibrary.VpnClient.Abstractions/Diagnostics/Extensions/VpnLogExtensions.cs) ⇒ no-op, **ADDITIVE không đổi hành vi**). Log qua [`VpnLogExtensions`](../TqkLibrary.VpnClient.Abstractions/Diagnostics/Extensions/VpnLogExtensions.cs): `SetState`→StateChanged; gửi/nhận type-1/type-2 + bind→Handshake/HandshakeCompleted; quá `REKEY_ATTEMPT_TIME`→HandshakeFailed; rekey start/swap→Rekey; keepalive type-4→Keepalive; demux drop type-2 (mac1/AEAD/no-match)/type-4 không-deliver→PacketDropped (`VpnDropReason`); `OnLinkLost`→LinkLost; reconnect attempt/success→ReconnectAttempt/Reconnected.
 
 ## Bảng chuẩn / RFC

@@ -1,7 +1,6 @@
 using System.Net;
 using System.Text;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 using TqkLibrary.VpnClient.Abstractions.Channels;
 using TqkLibrary.VpnClient.Abstractions.Channels.Interfaces;
 using TqkLibrary.VpnClient.Abstractions.Diagnostics.Extensions;
@@ -9,6 +8,7 @@ using TqkLibrary.VpnClient.Abstractions.Drivers;
 using TqkLibrary.VpnClient.Abstractions.Drivers.Models;
 using TqkLibrary.VpnClient.Abstractions.Net;
 using TqkLibrary.VpnClient.Abstractions.Transport.Interfaces;
+using TqkLibrary.VpnClient.Drivers.Core;
 using TqkLibrary.VpnClient.Drivers.OpenConnect.Enums;
 using TqkLibrary.VpnClient.Drivers.OpenConnect.Models;
 using TqkLibrary.VpnClient.Drivers.OpenConnect.Transport;
@@ -38,12 +38,11 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
     /// plane stays on CSTP-over-TLS (fallback). Not a server — the responder role lives only in tests.
     /// </para>
     /// </summary>
-    public sealed class OpenConnectConnection : IDisposable, IAsyncDisposable
+    public sealed class OpenConnectConnection : ReconnectingVpnConnection<OpenConnectConnectionState>, IDisposable, IAsyncDisposable
     {
         static readonly TimeSpan TimerTick = TimeSpan.FromSeconds(1);
-        const string DriverName = "openconnect";
+        const string DriverNameConst = "openconnect";
 
-        readonly ILogger _logger;
         readonly string _host;
         readonly int _port;
         readonly string? _username;
@@ -53,16 +52,9 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
         readonly IOpenConnectDatagramTransportFactory? _datagramFactory;
         readonly DtlsServerCertificateValidationCallback? _dtlsCertificateValidation;
         readonly TimeSpan _dtlsHandshakeTimeout;
-        readonly OpenConnectReconnectOptions _opts;
         readonly AddressFamilyPreference _addressFamilyPreference;
         readonly IHostResolver _hostResolver;
         readonly int _requestedMtu;
-        readonly Func<long> _clock;
-
-        readonly SwappablePacketChannel _facade = new();
-        readonly CancellationTokenSource _lifetimeCts = new();
-        readonly Random _random = new();
-        readonly object _stateLock = new();
 
         IByteStreamTransport? _stream;
         CstpChannel? _channel;
@@ -79,12 +71,6 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
         IPAddress? _lastAssignedAddress;
         TunnelConfig _config = new();
 
-        volatile bool _running;
-        volatile bool _userTeardown;
-        bool _supervisorActive;   // guarded by _stateLock
-        Task? _supervisor;
-        OpenConnectConnectionState _state = OpenConnectConnectionState.Disconnected;
-
         /// <summary>
         /// Creates a connection. <paramref name="username"/>/<paramref name="password"/> answer the ocserv auth form
         /// (both null = no-credential / cookie-only gateway); <paramref name="groupSelect"/> picks an auth group when the
@@ -96,7 +82,7 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
         /// data plane falls back to TLS (default 10s). <paramref name="requestedMtu"/> is advertised in
         /// <c>X-CSTP-Base-MTU</c>; <paramref name="clock"/> supplies the DPD/keep-alive millisecond clock (default: the
         /// system tick clock) — tests inject a deterministic one. <paramref name="loggerFactory"/> receives diagnostic
-        /// traces (auth/connect/DTLS/DPD/drop); null logs to <see cref="NullLogger"/> (a no-op).
+        /// traces (auth/connect/DTLS/DPD/drop); null logs to a no-op logger.
         /// </summary>
         public OpenConnectConnection(string host, int port, IOpenConnectTransportFactory transportFactory,
             string? username = null, string? password = null, string groupSelect = "",
@@ -109,6 +95,7 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
             DtlsServerCertificateValidationCallback? dtlsCertificateValidation = null,
             TimeSpan? dtlsHandshakeTimeout = null,
             ILoggerFactory? loggerFactory = null)
+            : base(DriverNameConst, reconnectOptions ?? new OpenConnectReconnectOptions(), clock, loggerFactory)
         {
             _host = host ?? throw new ArgumentNullException(nameof(host));
             _port = port;
@@ -119,17 +106,11 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
             _username = username;
             _password = password;
             _groupSelect = groupSelect ?? string.Empty;
-            _opts = reconnectOptions ?? new OpenConnectReconnectOptions();
             _addressFamilyPreference = addressFamilyPreference;
             _hostResolver = hostResolver ?? DnsHostResolver.Default;
             if (requestedMtu < 1) throw new ArgumentOutOfRangeException(nameof(requestedMtu));
             _requestedMtu = requestedMtu;
-            _clock = clock ?? DefaultClock;
-            _logger = (loggerFactory ?? NullLoggerFactory.Instance).CreateLogger("TqkLibrary.VpnClient.Drivers.OpenConnect");
         }
-
-        /// <summary>The stable L3 packet channel (valid after a successful connect; survives reconnect).</summary>
-        public IPacketChannel PacketChannel => _facade;
 
         /// <summary>The tunnel configuration the gateway pushed in the X-CSTP-* CONNECT headers (address, DNS, routes, MTU).</summary>
         public TunnelConfig Config => _config;
@@ -140,31 +121,34 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
         /// <summary>True when the data plane is running over the DTLS datagram channel; false when it is on CSTP-over-TLS (the fallback).</summary>
         public bool IsDtlsDataPlane => _dtlsActive;
 
-        /// <summary>Raised whenever the connection state changes (auth/connect progress, drop, reconnect).</summary>
-        public event Action<OpenConnectConnectionState>? StateChanged;
-
         /// <summary>Raised after a successful auto-reconnect, carrying the new address and whether it changed.</summary>
         public event Action<OpenConnectReconnectInfo>? Reconnected;
 
-        /// <summary>The current lifecycle state.</summary>
-        public OpenConnectConnectionState State => _state;
+        /// <inheritdoc/>
+        protected override OpenConnectConnectionState DisconnectedState => OpenConnectConnectionState.Disconnected;
+        /// <inheritdoc/>
+        protected override OpenConnectConnectionState ConnectingState => OpenConnectConnectionState.Connecting;
+        /// <inheritdoc/>
+        protected override OpenConnectConnectionState ConnectedState => OpenConnectConnectionState.Connected;
+        /// <inheritdoc/>
+        protected override OpenConnectConnectionState ReconnectingState => OpenConnectConnectionState.Reconnecting;
 
         /// <summary>Runs auth + CONNECT and returns once the CSTP tunnel is carrying traffic.</summary>
         public async Task ConnectAsync(CancellationToken cancellationToken = default)
         {
-            SetState(OpenConnectConnectionState.Connecting);
-            await EstablishAsync(cancellationToken).ConfigureAwait(false);
+            await ConnectCoreAsync(cancellationToken).ConfigureAwait(false);
             _lastAssignedAddress = _assignedAddress;
         }
 
         // ---- one full tunnel attempt (reused by the first connect and every reconnect) ----
 
-        async Task EstablishAsync(CancellationToken cancellationToken)
+        /// <inheritdoc/>
+        protected override async Task EstablishAsync(CancellationToken cancellationToken)
         {
             await CleanupAttemptResourcesAsync().ConfigureAwait(false);
 
             IPAddress serverIp = await _hostResolver.ResolveAsync(_host, _addressFamilyPreference, cancellationToken).ConfigureAwait(false);
-            _loopCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token, cancellationToken);
+            _loopCts = CancellationTokenSource.CreateLinkedTokenSource(LifetimeToken, cancellationToken);
             CancellationToken loopToken = _loopCts.Token;
 
             OpenConnectTransportHandle handle = await _transportFactory
@@ -175,9 +159,9 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
             var http = new OpenConnectHttpTransactor(stream, _host);
 
             // --- HTTPS config-auth: init → (form → reply)* → success carrying the webvpn cookie ---
-            _logger.LogHandshake(DriverName, "HTTPS config-auth (POST /)");
+            Logger.LogHandshake(DriverName, "HTTPS config-auth (POST /)");
             string cookie = await AuthenticateAsync(http, cancellationToken).ConfigureAwait(false);
-            _logger.LogHandshake(DriverName, "config-auth accepted; session cookie received");
+            Logger.LogHandshake(DriverName, "config-auth accepted; session cookie received");
 
             // --- HTTP CONNECT /CSCOSSLC/tunnel: the response X-CSTP-* headers are the in-band tunnel config ---
             // Advertise the DTLS data path only when a datagram factory is wired (otherwise stay TLS-only).
@@ -204,15 +188,15 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
 
             _config = config;
             _assignedAddress = config.AssignedAddress;
-            _facade.SetInner(channel);
+            Facade.SetInner(channel);
 
             // Start the CSTP-over-TLS receive loop and the DPD/keep-alive timer (seeded from X-CSTP-DPD/Keepalive).
-            _dpd = new CstpDpdState(tunnelInfo.Dpd ?? 0, tunnelInfo.Keepalive ?? 0, _clock());
-            _running = true;
+            _dpd = new CstpDpdState(tunnelInfo.Dpd ?? 0, tunnelInfo.Keepalive ?? 0, Now());
+            MarkRunning(); // a peer-close/fault from the receive loop below must now arm reconnect (before MarkConnected)
             _dtlsActive = false;
             _receiveTask = Task.Run(() => channel.RunReceiveLoopAsync(loopToken));
 
-            _logger.LogHandshake(DriverName, $"CSTP CONNECT accepted; tunnel address {config.AssignedAddress} (CSTP-over-TLS bound)");
+            Logger.LogHandshake(DriverName, $"CSTP CONNECT accepted; tunnel address {config.AssignedAddress} (CSTP-over-TLS bound)");
 
             // --- try to swap the data plane onto a parallel DTLS datagram channel (fallback to TLS on any failure) ---
             if (requestDtls && tunnelInfo.HasDtls)
@@ -220,8 +204,8 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
 
             _timer = new System.Threading.Timer(_ => _ = TimerTickAsync(), null, TimerTick, TimerTick);
 
-            _logger.LogHandshakeCompleted(DriverName);
-            SetState(OpenConnectConnectionState.Connected);
+            Logger.LogHandshakeCompleted(DriverName);
+            MarkConnected();
         }
 
         // Opens UDP → DTLS → CstpDatagramChannel and swaps the data plane onto it. Any failure leaves the data plane on
@@ -252,13 +236,13 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
                 _dtls = dtls;
                 _dtlsChannel = dtlsChannel;
                 _dtlsActive = true;
-                _facade.SetInner(dtlsChannel); // data now rides DTLS; TLS channel stays as the control/fallback path
+                Facade.SetInner(dtlsChannel); // data now rides DTLS; TLS channel stays as the control/fallback path
                 _dtlsReceiveTask = Task.Run(() => dtlsChannel.RunReceiveLoopAsync(loopToken));
-                _logger.LogHandshake(DriverName, "DTLS 1.2 data path established (data plane swapped to DTLS)");
+                Logger.LogHandshake(DriverName, "DTLS 1.2 data path established (data plane swapped to DTLS)");
             }
             catch
             {
-                _logger.LogHandshake(DriverName, "DTLS data path unavailable; staying on CSTP-over-TLS (fallback)");
+                Logger.LogHandshake(DriverName, "DTLS data path unavailable; staying on CSTP-over-TLS (fallback)");
                 // DTLS handshake / socket failed (or hit the handshake timeout) — fall back to CSTP-over-TLS (already
                 // bound). Clean up the half-open DTLS first.
                 _dtlsActive = false;
@@ -276,7 +260,7 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
         string GenerateDtlsMasterSecretHex()
         {
             byte[] secret = new byte[48];
-            lock (_random) _random.NextBytes(secret);
+            NextRandomBytes(secret);
             var sb = new StringBuilder(secret.Length * 2);
             foreach (byte b in secret) sb.Append(b.ToString("x2"));
             return sb.ToString();
@@ -293,7 +277,7 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
                 OpenConnectHttpResponse response = await http.PostAsync("/", requestBody, cookie, cancellationToken).ConfigureAwait(false);
                 if (response.StatusCode != 200)
                 {
-                    _logger.LogHandshakeFailed(DriverName, $"auth POST returned HTTP {response.StatusCode} {response.Reason}");
+                    Logger.LogHandshakeFailed(DriverName, $"auth POST returned HTTP {response.StatusCode} {response.Reason}");
                     throw new VpnAuthenticationException($"OpenConnect auth POST failed: HTTP {response.StatusCode} {response.Reason}.");
                 }
 
@@ -313,14 +297,14 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
 
                 if (!OpenConnectAuthCodec.TryParseForm(response.Body, out OpenConnectAuthForm form))
                 {
-                    _logger.LogHandshakeFailed(DriverName, "auth rejected: non-form, non-success response (bad credentials)");
+                    Logger.LogHandshakeFailed(DriverName, "auth rejected: non-form, non-success response (bad credentials)");
                     throw new VpnAuthenticationException("OpenConnect gateway returned a non-form, non-success auth response.");
                 }
 
                 FillForm(form);
                 requestBody = OpenConnectAuthCodec.BuildReplyRequest(form);
             }
-            _logger.LogHandshakeFailed(DriverName, "auth did not complete within the allowed number of steps");
+            Logger.LogHandshakeFailed(DriverName, "auth did not complete within the allowed number of steps");
             throw new VpnAuthenticationException("OpenConnect auth did not complete within the allowed number of steps.");
         }
 
@@ -389,20 +373,20 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
 
         void OnPeerClosed() => OnLinkLost("OpenConnect gateway closed the CSTP session (DISCONNECT/TERMINATE or stream EOF).");
 
-        void OnPacketReceived() => _dpd?.OnDataReceived(_clock());
+        void OnPacketReceived() => _dpd?.OnDataReceived(Now());
 
-        void OnPacketSent() => _dpd?.OnDataSent(_clock());
+        void OnPacketSent() => _dpd?.OnDataSent(Now());
 
         // ---- timer loop: DPD probe + dead detection + idle keep-alive (driven by CstpDpdState) ----
 
         async Task TimerTickAsync()
         {
-            if (!_running) return;
+            if (!IsRunning) return;
             CstpDpdState? dpd = _dpd;
             Func<CancellationToken, ValueTask>? dpdRequest = ActiveDpdRequest;
             if (dpd is null || dpdRequest is null) return;
 
-            long now = _clock();
+            long now = Now();
             if (dpd.IsPeerDead(now))
             {
                 OnLinkLost("X-CSTP-DPD: no traffic from the OpenConnect gateway within the dead-peer-detection window.");
@@ -411,7 +395,7 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
             if (dpd.ShouldSendDpd(now))
             {
                 dpd.OnDpdSent(now);
-                _logger.LogKeepalive(DriverName, "X-CSTP-DPD probe sent");
+                Logger.LogKeepalive(DriverName, "X-CSTP-DPD probe sent");
                 await SafeSendAsync(dpdRequest).ConfigureAwait(false);
             }
             else if (dpd.ShouldSendKeepalive(now))
@@ -419,7 +403,7 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
                 Func<CancellationToken, ValueTask>? keepalive = ActiveKeepalive;
                 if (keepalive != null)
                 {
-                    _logger.LogKeepalive(DriverName, "X-CSTP-Keepalive sent");
+                    Logger.LogKeepalive(DriverName, "X-CSTP-Keepalive sent");
                     await SafeSendAsync(keepalive).ConfigureAwait(false);
                 }
             }
@@ -431,75 +415,11 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
             catch { /* a missed control frame trips DPD/keep-alive later; never crash the timer */ }
         }
 
-        // ---- link-loss handling + auto-reconnect supervisor (mirrors the WireGuard / OpenVPN driver) ----
+        // ---- link-loss handling + auto-reconnect supervisor live in ReconnectingVpnConnection (roadmap F.6). ----
+        // OnPeerClosed / the DPD-dead path call the inherited OnLinkLost, which arms the shared ReconnectLoopAsync.
 
-        void OnLinkLost(string reason)
-        {
-            bool goDisconnected = false;
-            bool startSupervisor = false;
-            lock (_stateLock)
-            {
-                if (!_running) return;
-                _logger.LogLinkLost(DriverName, reason);
-                StopTimer();
-                _running = false;
-
-                if (_userTeardown || !_opts.Enabled)
-                    goDisconnected = true;
-                else if (!_supervisorActive)
-                {
-                    _supervisorActive = true;
-                    startSupervisor = true;
-                }
-            }
-
-            if (goDisconnected) { SetState(OpenConnectConnectionState.Disconnected); return; }
-            if (startSupervisor)
-            {
-                SetState(OpenConnectConnectionState.Reconnecting);
-                _supervisor = Task.Run(() => ReconnectLoopAsync(_lifetimeCts.Token));
-            }
-        }
-
-        async Task ReconnectLoopAsync(CancellationToken cancellationToken)
-        {
-            TimeSpan delay = _opts.InitialBackoff;
-            int failures = 0;
-            while (!_userTeardown && !cancellationToken.IsCancellationRequested)
-            {
-                bool established = false;
-                _logger.LogReconnectAttempt(DriverName, failures + 1);
-                try { await EstablishAsync(cancellationToken).ConfigureAwait(false); established = true; }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { break; }
-                catch { /* attempt failed — back off and retry */ }
-
-                if (established)
-                {
-                    bool healthy;
-                    lock (_stateLock)
-                    {
-                        healthy = _running;
-                        if (healthy) _supervisorActive = false;
-                    }
-                    if (healthy) { _logger.LogReconnected(DriverName); RaiseReconnected(); return; }
-
-                    SetState(OpenConnectConnectionState.Reconnecting);
-                    delay = _opts.InitialBackoff;
-                    failures = 0;
-                    continue;
-                }
-
-                if (_opts.MaxAttempts != 0 && ++failures >= _opts.MaxAttempts) break;
-                try { await Task.Delay(WithJitter(delay), cancellationToken).ConfigureAwait(false); }
-                catch (OperationCanceledException) { break; }
-                delay = _opts.NextBackoff(delay);
-            }
-
-            lock (_stateLock) { _supervisorActive = false; }
-            if (!_userTeardown) SetState(OpenConnectConnectionState.Disconnected);
-        }
-
-        void RaiseReconnected()
+        /// <inheritdoc/>
+        protected override void OnReconnected()
         {
             IPAddress newAddress = _assignedAddress ?? IPAddress.Any;
             bool changed = _lastAssignedAddress != null && !newAddress.Equals(_lastAssignedAddress);
@@ -510,32 +430,25 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
         // ---- teardown ----
 
         /// <summary>
-        /// Tears the tunnel down permanently (no reconnect): sends a best-effort CSTP DISCONNECT, cancels any reconnect
-        /// in flight, then cancels the receive loop and disposes the stream. Best-effort and time-boxed; safe to call
-        /// more than once.
+        /// Tears the tunnel down permanently (no reconnect): sends a best-effort CSTP DISCONNECT on both data paths, then
+        /// runs the shared teardown (cancel any reconnect in flight, cancel the receive loop, dispose the stream).
+        /// Best-effort and time-boxed; safe to call more than once.
         /// </summary>
-        public async Task DisconnectAsync(CancellationToken cancellationToken = default)
+        public override async Task DisconnectAsync(CancellationToken cancellationToken = default)
         {
-            _userTeardown = true;
             CstpChannel? channel = _channel;
             CstpDatagramChannel? dtlsChannel = _dtlsChannel;
-            lock (_stateLock) { StopTimer(); _running = false; }
             // Best-effort DISCONNECT on both paths (the active data plane and the TLS control/fallback channel).
             if (dtlsChannel != null) { try { await dtlsChannel.SendDisconnectAsync(cancellationToken).ConfigureAwait(false); } catch { } }
             if (channel != null) { try { await channel.SendDisconnectAsync(cancellationToken).ConfigureAwait(false); } catch { } }
 
-            _lifetimeCts.Cancel();
-            Task? supervisor = _supervisor;
-            if (supervisor != null) { try { await supervisor.ConfigureAwait(false); } catch { } }
-
-            await CleanupAttemptResourcesAsync().ConfigureAwait(false);
-            SetState(OpenConnectConnectionState.Disconnected);
+            await DisconnectCoreAsync().ConfigureAwait(false);
         }
 
-        async Task CleanupAttemptResourcesAsync()
+        /// <inheritdoc/>
+        protected override async Task CleanupAttemptResourcesAsync()
         {
-            StopTimer();
-            _running = false;
+            StopAttemptLoop();
             _dtlsActive = false;
 
             CstpChannel? channel = _channel;
@@ -587,45 +500,20 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
             _dpd = null;
         }
 
-        void StopTimer()
+        /// <inheritdoc/>
+        protected override void StopAttemptLoop()
         {
             _timer?.Dispose();
             _timer = null;
         }
 
-        // ---- helpers ----
-
-        TimeSpan WithJitter(TimeSpan delay)
-        {
-            double fraction = _opts.JitterFraction;
-            if (fraction <= 0) return delay;
-            double r;
-            lock (_random) r = _random.NextDouble();
-            double jitter = delay.TotalMilliseconds * fraction * (r * 2 - 1);
-            return TimeSpan.FromMilliseconds(Math.Max(0, delay.TotalMilliseconds + jitter));
-        }
-
-        void SetState(OpenConnectConnectionState state)
-        {
-            if (_state == state) return;
-            _state = state;
-            _logger.LogStateChanged(DriverName, state.ToString());
-            StateChanged?.Invoke(state);
-        }
-
-#if NET5_0_OR_GREATER
-        static long DefaultClock() => Environment.TickCount64;
-#else
-        static readonly System.Diagnostics.Stopwatch _stopwatch = System.Diagnostics.Stopwatch.StartNew();
-        static long DefaultClock() => _stopwatch.ElapsedMilliseconds;
-#endif
+        // ---- teardown / dispose ----
 
         /// <inheritdoc/>
         public async ValueTask DisposeAsync()
         {
             try { await DisconnectAsync().ConfigureAwait(false); } catch { }
-            _lifetimeCts.Dispose();
-            await _facade.DisposeAsync().ConfigureAwait(false);
+            await DisposeCoreAsync().ConfigureAwait(false);
         }
 
         /// <inheritdoc/>

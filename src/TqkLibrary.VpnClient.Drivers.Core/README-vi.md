@@ -18,8 +18,9 @@
 | Dùng | [Abstractions](../TqkLibrary.VpnClient.Abstractions) | `SwappablePacketChannel`/`IPacketChannel` (facade ổn định), **`Diagnostics`** (`VpnLogExtensions` — log state/link-lost/reconnect), `Microsoft.Extensions.Logging.Abstractions` (transitive) |
 | Được dùng bởi | [Drivers.WireGuard](../TqkLibrary.VpnClient.Drivers.WireGuard) | `WireGuardConnection : ReconnectingVpnConnection<WireGuardConnectionState>` (consumer F.6 #1) |
 | Được dùng bởi | [Drivers.OpenConnect](../TqkLibrary.VpnClient.Drivers.OpenConnect) | `OpenConnectConnection : ReconnectingVpnConnection<OpenConnectConnectionState>` (consumer F.6 #2) |
+| Được dùng bởi | [Drivers.OpenVpn](../TqkLibrary.VpnClient.Drivers.OpenVpn) | `OpenVpnConnection : ReconnectingVpnConnection<OpenVpnConnectionState>` (consumer F.6 #3) |
 
-> Các driver còn lại (OpenVPN/IKEv2/SoftEther/SSTP/L2TP-IPsec) **chưa** migrate — ghi follow-up ở [Trạng thái](#trạng-thái--ghi-chú). `XxxReconnectOptions` của 5 driver đó vẫn là class độc lập (chưa kế thừa `VpnReconnectOptions`).
+> Các driver còn lại (IKEv2/SoftEther/SSTP/L2TP-IPsec) **chưa** migrate — ghi follow-up ở [Trạng thái](#trạng-thái--ghi-chú). `XxxReconnectOptions` của 4 driver đó vẫn là class độc lập (chưa kế thừa `VpnReconnectOptions`).
 
 ## Cấu trúc thư mục
 
@@ -58,9 +59,8 @@ Driver cụ thể chỉ cần:
 
 ## Trạng thái & ghi chú
 
-- **Đã có (F.6)**: base `ReconnectingVpnConnection<TState>` + `VpnReconnectOptions`; **migrate 2 driver đại diện** WireGuard (UDP/Noise) + OpenConnect (TLS+DTLS/CSTP) sang base — chứng minh hợp đồng đủ cho cả transport datagram lẫn byte-stream, cả make-before-break (WG: timer-loop riêng `_timerRunning`) lẫn DTLS-fallback window (OC: `MarkRunning` sớm). Test offline [`ReconnectingVpnConnectionTests`](../../tests/TqkLibrary.VpnClient.Drivers.Core.Tests/ReconnectingVpnConnectionTests.cs) (fake driver: connect/connect-fail/reconnect/reconnect-disabled/max-attempts/teardown-mid-loop + default policy) + toàn bộ test WireGuard/OpenConnect cũ **vẫn xanh** (không đổi hành vi).
-- **Chưa (follow-up)**: migrate 5 driver còn lại sang base —
-  - **OpenVPN** (`OpenVpnConnection`): rekey = re-establish, không make-before-break — hợp với hook hiện tại.
+- **Đã có (F.6)**: base `ReconnectingVpnConnection<TState>` + `VpnReconnectOptions`; **migrate 3 driver** WireGuard (UDP/Noise) + OpenConnect (TLS+DTLS/CSTP) + OpenVPN (UDP/TCP, rekey = re-establish) sang base — chứng minh hợp đồng đủ cho cả transport datagram lẫn byte-stream, cả make-before-break (WG: timer-loop riêng `_timerRunning`) lẫn DTLS-fallback window (OC: `MarkRunning` sớm) lẫn keepalive ping/ping-restart trong timer riêng (OpenVPN: `StopAttemptLoop` dispose timer + tắt `_dataActive`, rekey re-establish gọi `OnLinkLost`). Test offline [`ReconnectingVpnConnectionTests`](../../tests/TqkLibrary.VpnClient.Drivers.Core.Tests/ReconnectingVpnConnectionTests.cs) (fake driver: connect/connect-fail/reconnect/reconnect-disabled/max-attempts/teardown-mid-loop + default policy) + toàn bộ test WireGuard/OpenConnect/OpenVPN cũ **vẫn xanh** (không đổi hành vi).
+- **Chưa (follow-up)**: migrate 4 driver còn lại sang base —
   - **IKEv2** (`Ikev2Connection`): rekey IKE/CHILD SA in-place trên kênh SK — `EstablishAsync`/`CleanupAttemptResourcesAsync` map được, nhưng rekey không phải re-establish nên cần giữ logic riêng ngoài supervisor.
   - **SoftEther** (`SoftEtherConnection`): TLS byte-stream + L2 bridge — thẳng theo mẫu OpenConnect.
   - **SSTP** (`SstpConnection`): `SstpReconnectOptions` có thêm `ReadTimeout` → khi migrate cho kế thừa `VpnReconnectOptions` + thêm knob; supervisor map được.

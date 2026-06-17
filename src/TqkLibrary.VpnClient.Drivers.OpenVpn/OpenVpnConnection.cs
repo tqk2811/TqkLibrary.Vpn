@@ -3,14 +3,12 @@ using System.Net.Security;
 using System.Net.Sockets;
 using System.Security.Cryptography.X509Certificates;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
-using TqkLibrary.VpnClient.Abstractions.Channels;
 using TqkLibrary.VpnClient.Abstractions.Channels.Interfaces;
-using TqkLibrary.VpnClient.Abstractions.Diagnostics.Enums;
 using TqkLibrary.VpnClient.Abstractions.Diagnostics.Extensions;
 using TqkLibrary.VpnClient.Abstractions.Drivers;
 using TqkLibrary.VpnClient.Abstractions.Drivers.Models;
 using TqkLibrary.VpnClient.Abstractions.Net;
+using TqkLibrary.VpnClient.Drivers.Core;
 using TqkLibrary.VpnClient.Drivers.OpenVpn.Enums;
 using TqkLibrary.VpnClient.Drivers.OpenVpn.Models;
 using TqkLibrary.VpnClient.Drivers.OpenVpn.Transport;
@@ -34,13 +32,17 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
     /// (<see cref="OpenVpnTapChannel"/> → <see cref="ArpResolver"/> + <see cref="VirtualHost"/>), using the address a
     /// <c>server-bridge</c> managed pool pushes in <c>ifconfig</c>; a pure DHCP bridge (no pushed ifconfig) still needs
     /// the userspace DHCPv4 client (roadmap L2.5). Not a server — the responder role lives only in tests.
+    /// <para>The link-loss → supervisor → reconnect-loop machinery (backoff/jitter, the stable
+    /// <see cref="SwappablePacketChannel"/> facade, the lifetime cancellation, state changes + structured logging, the
+    /// monotonic clock) lives in <see cref="ReconnectingVpnConnection{TState}"/> (roadmap F.6); this driver keeps only its
+    /// protocol logic (<see cref="EstablishAsync"/> / <see cref="CleanupAttemptResourcesAsync"/> / the keepalive timer).
+    /// Rekey is a re-establish (fresh keys, packet-id back to 0) — unchanged.</para>
     /// </summary>
-    public sealed class OpenVpnConnection : IDisposable, IAsyncDisposable
+    public sealed class OpenVpnConnection : ReconnectingVpnConnection<OpenVpnConnectionState>, IDisposable, IAsyncDisposable
     {
         static readonly TimeSpan KeepaliveTick = TimeSpan.FromSeconds(1);
-        const string DriverName = "openvpn";
+        const string DriverNameConst = "openvpn";
 
-        readonly ILogger _logger;
         readonly string _host;
         readonly int _port;
         readonly OpenVpnDeviceType _device;
@@ -52,19 +54,12 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
         readonly IOpenVpnControlWrap? _controlWrap;
         readonly OpenVpnReliabilityOptions? _reliabilityOptions;
         readonly IOpenVpnTransportFactory _transportFactory;
-        readonly OpenVpnReconnectOptions _opts;
         readonly AddressFamilyPreference _addressFamilyPreference;
         readonly IHostResolver _hostResolver;
         readonly int _tunMtu;
         readonly OpenVpnPeerInfoOptions? _peerInfoOptions;
         readonly bool _multiHost;
-        readonly Func<long> _clock;
-
-        readonly SwappablePacketChannel _facade = new();
-        readonly CancellationTokenSource _lifetimeCts = new();
-        readonly Random _random = new();
         readonly MacAddress _tapMac;      // a stable locally-administered MAC for the tap endpoint (kept across reconnects)
-        readonly object _stateLock = new();
 
         IPAddress? _assignedAddress;
         IPAddress? _lastAssignedAddress;
@@ -88,10 +83,6 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
 
         volatile bool _dataActive;
         volatile bool _keepaliveRunning;
-        volatile bool _userTeardown;
-        bool _supervisorActive;       // guarded by _stateLock
-        Task? _supervisor;
-        OpenVpnConnectionState _state = OpenVpnConnectionState.Disconnected;
 
         /// <summary>
         /// Creates a connection. <paramref name="optionsString"/> is the OCC options string compared during key-method-2;
@@ -106,7 +97,7 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
         /// through <see cref="MultiHostSession"/>; the default (<c>false</c>) keeps the single-host tap bridge (tun-mode
         /// ignores it). <paramref name="clock"/> supplies the keepalive millisecond clock (default: the system tick clock) —
         /// tests inject a deterministic one. <paramref name="loggerFactory"/> receives diagnostic traces
-        /// (handshake/NCP/keepalive/reconnect/drop); null logs to <see cref="NullLogger"/> (a no-op).
+        /// (handshake/NCP/keepalive/reconnect/drop); null logs to a no-op logger.
         /// </summary>
         public OpenVpnConnection(string host, int port, IOpenVpnTransportFactory transportFactory,
             string optionsString = "",
@@ -124,6 +115,7 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
             bool multiHost = false,
             Func<long>? clock = null,
             ILoggerFactory? loggerFactory = null)
+            : base(DriverNameConst, reconnectOptions ?? new OpenVpnReconnectOptions(), clock, loggerFactory)
         {
             _host = host ?? throw new ArgumentNullException(nameof(host));
             _port = port;
@@ -136,30 +128,24 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
             _serverCertificateValidation = serverCertificateValidation;
             _controlWrap = controlWrap;
             _reliabilityOptions = reliabilityOptions;
-            _opts = reconnectOptions ?? new OpenVpnReconnectOptions();
             _addressFamilyPreference = addressFamilyPreference;
             _hostResolver = hostResolver ?? DnsHostResolver.Default;
             if (tunMtu < 1) throw new ArgumentOutOfRangeException(nameof(tunMtu));
             _tunMtu = tunMtu;
             _peerInfoOptions = peerInfoOptions;
             _multiHost = multiHost;
-            _clock = clock ?? DefaultClock;
-            _tapMac = GenerateLocalMac(_random);
-            _logger = (loggerFactory ?? NullLoggerFactory.Instance).CreateLogger("TqkLibrary.VpnClient.Drivers.OpenVpn");
+            _tapMac = GenerateLocalMac();
         }
 
         // A locally-administered unicast MAC for the virtual tap endpoint: clear the I/G (multicast) bit and set the
         // U/L (locally-administered) bit of octet 0, the rest random — exactly what OpenVPN does for a software TAP.
-        static MacAddress GenerateLocalMac(Random random)
+        MacAddress GenerateLocalMac()
         {
             byte[] bytes = new byte[MacAddress.Size];
-            random.NextBytes(bytes);
+            NextRandomBytes(bytes);
             bytes[0] = (byte)((bytes[0] & 0xFE) | 0x02);
             return MacAddress.FromBytes(bytes);
         }
-
-        /// <summary>The stable L3 packet channel (valid after a successful connect; survives reconnect).</summary>
-        public IPacketChannel PacketChannel => _facade;
 
         /// <summary>The tunnel configuration pushed by the server (address, DNS, routes, MTU).</summary>
         public TunnelConfig Config => _config;
@@ -183,32 +169,35 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
         /// </summary>
         public MultiHostSession? MultiHostSession => _multiHostSession;
 
-        /// <summary>Raised whenever the connection state changes (handshake progress, drop, reconnect).</summary>
-        public event Action<OpenVpnConnectionState>? StateChanged;
-
         /// <summary>Raised after a successful auto-reconnect, carrying the new address and whether it changed.</summary>
         public event Action<OpenVpnReconnectInfo>? Reconnected;
 
-        /// <summary>The current lifecycle state.</summary>
-        public OpenVpnConnectionState State => _state;
+        /// <inheritdoc/>
+        protected override OpenVpnConnectionState DisconnectedState => OpenVpnConnectionState.Disconnected;
+        /// <inheritdoc/>
+        protected override OpenVpnConnectionState ConnectingState => OpenVpnConnectionState.Connecting;
+        /// <inheritdoc/>
+        protected override OpenVpnConnectionState ConnectedState => OpenVpnConnectionState.Connected;
+        /// <inheritdoc/>
+        protected override OpenVpnConnectionState ReconnectingState => OpenVpnConnectionState.Reconnecting;
 
         /// <summary>Runs the full handshake and returns once the server has pushed a tunnel address.</summary>
         public async Task ConnectAsync(CancellationToken cancellationToken = default)
         {
-            SetState(OpenVpnConnectionState.Connecting);
-            await EstablishAsync(cancellationToken).ConfigureAwait(false);
+            await ConnectCoreAsync(cancellationToken).ConfigureAwait(false);
             _lastAssignedAddress = _assignedAddress;
         }
 
         // ---- one full tunnel attempt (reused by the first connect and every reconnect) ----
 
-        async Task EstablishAsync(CancellationToken cancellationToken)
+        /// <inheritdoc/>
+        protected override async Task EstablishAsync(CancellationToken cancellationToken)
         {
             await CleanupAttemptResourcesAsync().ConfigureAwait(false);
             _dataActive = false;
 
             IPAddress serverIp = await _hostResolver.ResolveAsync(_host, _addressFamilyPreference, cancellationToken).ConfigureAwait(false);
-            _loopCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token, cancellationToken);
+            _loopCts = CancellationTokenSource.CreateLinkedTokenSource(LifetimeToken, cancellationToken);
             CancellationToken loopToken = _loopCts.Token;
 
             OpenVpnTransportHandle handle = await _transportFactory.ConnectAsync(new IPEndPoint(serverIp, _port), cancellationToken).ConfigureAwait(false);
@@ -227,11 +216,11 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
                 _receiveTask = Task.Run(() => handle.ReceivePump(loopToken));
 
             // --- reset → TLS handshake (inside the reliability layer) ---
-            _logger.LogHandshake(DriverName, "HARD_RESET -> TLS handshake on the control channel");
+            Logger.LogHandshake(DriverName, "HARD_RESET -> TLS handshake on the control channel");
             await control.ConnectAsync(_host, _clientCertificates, _serverCertificateValidation, cancellationToken).ConfigureAwait(false);
 
             // --- key-method-2 over TLS (peer-info advertises IV_CIPHERS for NCP, plus IV_MTU and informational IV_*) ---
-            _logger.LogHandshake(DriverName, "key-method-2 key exchange over TLS (peer-info IV_CIPHERS for NCP)");
+            Logger.LogHandshake(DriverName, "key-method-2 key exchange over TLS (peer-info IV_CIPHERS for NCP)");
             OpenVpnPeerInfoOptions peerInfoOptions = _peerInfoOptions ?? new OpenVpnPeerInfoOptions();
             if (peerInfoOptions.Mtu is null) peerInfoOptions = peerInfoOptions with { Mtu = _tunMtu };
             string peerInfo = OpenVpnPeerInfo.Build(peerInfoOptions);
@@ -243,10 +232,10 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
             // tun needs a pushed address; tap with no ifconfig is a pure-DHCP bridge (DHCP runs below over the L2 fabric).
             if (push.IfconfigLocal is null && _device != OpenVpnDeviceType.Tap)
             {
-                _logger.LogHandshakeFailed(DriverName, "PUSH_REPLY carried no ifconfig (no tunnel address)");
+                Logger.LogHandshakeFailed(DriverName, "PUSH_REPLY carried no ifconfig (no tunnel address)");
                 throw new VpnServerRejectedException("OpenVPN server PUSH_REPLY carried no tunnel address (no ifconfig).");
             }
-            _logger.LogHandshake(DriverName, $"PUSH_REPLY: ifconfig {push.IfconfigLocal?.ToString() ?? "(none — pure DHCP)"}, cipher {push.Cipher ?? "(default)"}");
+            Logger.LogHandshake(DriverName, $"PUSH_REPLY: ifconfig {push.IfconfigLocal?.ToString() ?? "(none — pure DHCP)"}, cipher {push.Cipher ?? "(default)"}");
 
             // --- NCP: honour the server's cipher pick, then slice the data-channel keys for it ---
             OpenVpnDataCipher cipher = ResolveCipher(push.Cipher);
@@ -263,7 +252,7 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
             // The data-channel payload sink is identical for tun and tap; an outbound send also feeds the keepalive timer.
             Func<ReadOnlyMemory<byte>, ValueTask> sink = wire =>
             {
-                _keepalive?.OnDataSent(_clock());
+                _keepalive?.OnDataSent(Now());
                 return new ValueTask(transport.SendAsync(wire));
             };
 
@@ -287,7 +276,7 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
                 _dataLink = tun;
                 _dataActive = true;
                 config.Mtu = mtu;
-                _facade.SetInner(tun);
+                Facade.SetInner(tun);
             }
 
             _config = config;
@@ -323,7 +312,7 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
             {
                 // pure-DHCP bridge: the server pushed no ifconfig, so lease an IPv4 over the tap segment (L2.5) — the
                 // DHCP server behind the bridge serves us, exactly like SoftEther's SecureNAT.
-                _logger.LogHandshake(DriverName, "tap pure-DHCP: no pushed ifconfig; requesting a DHCPv4 lease over the L2 segment");
+                Logger.LogHandshake(DriverName, "tap pure-DHCP: no pushed ifconfig; requesting a DHCPv4 lease over the L2 segment");
                 var dhcp = new DhcpV4Configurator(_tapMac, tap);
                 _tapDhcp = dhcp;
                 tap.InboundFrame += dhcp.HandleInboundFrame;     // feed inbound frames to DHCP for the OFFER/ACK
@@ -345,7 +334,7 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
             _tapArp = arp;
             _tapHost = host;
             config.Mtu = host.Mtu;                               // link − 14: the bound stack clamps MSS for the Ethernet header
-            _facade.SetInner(host);
+            Facade.SetInner(host);
             return config;
         }
 
@@ -357,13 +346,13 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
             adapter.ConnectUplink(tap);                          // detached when the adapter (switch) is disposed
             var session = new MultiHostSession(adapter, ownsAdapter: true);
             _multiHostSession = session;
-            _logger.LogHandshake(DriverName, "tap multi-host: attached the tap data channel as an uplink port on the L2 broadcast domain");
+            Logger.LogHandshake(DriverName, "tap multi-host: attached the tap data channel as an uplink port on the L2 broadcast domain");
 
             // The primary station feeds the connection's stable L3 facade. It takes the pushed ifconfig when present
             // (server-bridge managed pool), else leases over the shared switch like any additional station.
             EthernetHostSession primary = await AddStationAsync(_tapMac, push.IfconfigLocal, cancellationToken).ConfigureAwait(false);
-            _facade.SetInner(primary.PacketChannel);
-            _logger.LogHandshake(DriverName, $"tap multi-host: primary station {primary.Config.AssignedAddress}; broadcast domain bound");
+            Facade.SetInner(primary.PacketChannel);
+            Logger.LogHandshake(DriverName, $"tap multi-host: primary station {primary.Config.AssignedAddress}; broadcast domain bound");
             return primary.Config;
         }
 
@@ -426,7 +415,7 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
             ReadOnlySpan<byte> span = datagram.Span;
             if (span.Length < 1 || OpenVpnPacketCodec.ReadOpcode(span[0]) != OpenVpnOpcode.DataV2) return;
 
-            _keepalive?.OnDataReceived(_clock()); // any inbound data packet (incl. the peer's ping) proves it is alive
+            _keepalive?.OnDataReceived(Now()); // any inbound data packet (incl. the peer's ping) proves it is alive
             _dataLink?.Deliver(span);             // decrypt + decompress + (drop ping) + raise InboundIpPacket
         }
 
@@ -434,25 +423,18 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
 
         void StartKeepalive(int pingSeconds, int pingRestartSeconds)
         {
-            _keepalive = new OpenVpnKeepalive(pingSeconds, pingRestartSeconds, _clock());
+            _keepalive = new OpenVpnKeepalive(pingSeconds, pingRestartSeconds, Now());
             _keepaliveRunning = true;
-            _logger.LogHandshakeCompleted(DriverName);
-            SetState(OpenVpnConnectionState.Connected);
+            Logger.LogHandshakeCompleted(DriverName);
+            MarkConnected();
             if (pingSeconds > 0 || pingRestartSeconds > 0)
                 _keepaliveTimer = new System.Threading.Timer(_ => _ = KeepaliveTickAsync(), null, KeepaliveTick, KeepaliveTick);
-        }
-
-        void StopKeepalive()
-        {
-            _keepaliveRunning = false;
-            _keepaliveTimer?.Dispose();
-            _keepaliveTimer = null;
         }
 
         async Task KeepaliveTickAsync()
         {
             if (!_keepaliveRunning) return;
-            long now = _clock();
+            long now = Now();
             OpenVpnKeepalive? ka = _keepalive;
             if (ka is null) return;
 
@@ -478,7 +460,7 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
             byte[] wire = dp.Protect(comp.WrapOutgoing(OpenVpnPing.Magic)); // synchronous: no span crosses the await
             await transport.SendAsync(wire).ConfigureAwait(false);
             _keepalive?.OnDataSent(now);
-            _logger.LogKeepalive(DriverName, "sent OpenVPN keepalive ping");
+            Logger.LogKeepalive(DriverName, "sent OpenVPN keepalive ping");
         }
 
         // ---- rekey: the data-channel packet-id is nearing 2^32; re-establish before the GCM nonce could repeat ----
@@ -486,79 +468,15 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
         // a full re-establish is the honest, correct fallback: fresh keys, packet-id restarts at 0, no nonce reuse.)
         void OnRekeyNeeded()
         {
-            _logger.LogRekey(DriverName, "data-channel packet-id nearing exhaustion; re-establishing the session");
+            Logger.LogRekey(DriverName, "data-channel packet-id nearing exhaustion; re-establishing the session");
             OnLinkLost("data-channel rekey: packet-id approaching exhaustion; re-establishing the session.");
         }
 
-        // ---- link-loss handling + auto-reconnect supervisor (mirrors the IKEv2 / L2TP driver) ----
+        // ---- link-loss handling + auto-reconnect supervisor live in ReconnectingVpnConnection (roadmap F.6). ----
+        // The keepalive ping-restart / rekey paths call the inherited OnLinkLost, which arms the shared ReconnectLoopAsync.
 
-        void OnLinkLost(string reason)
-        {
-            bool goDisconnected = false;
-            bool startSupervisor = false;
-            lock (_stateLock)
-            {
-                if (!_keepaliveRunning) return;
-                _logger.LogLinkLost(DriverName, reason);
-                StopKeepalive();
-                _dataActive = false;
-
-                if (_userTeardown || !_opts.Enabled)
-                    goDisconnected = true;
-                else if (!_supervisorActive)
-                {
-                    _supervisorActive = true;
-                    startSupervisor = true;
-                }
-            }
-
-            if (goDisconnected) { SetState(OpenVpnConnectionState.Disconnected); return; }
-            if (startSupervisor)
-            {
-                SetState(OpenVpnConnectionState.Reconnecting);
-                _supervisor = Task.Run(() => ReconnectLoopAsync(_lifetimeCts.Token));
-            }
-        }
-
-        async Task ReconnectLoopAsync(CancellationToken cancellationToken)
-        {
-            TimeSpan delay = _opts.InitialBackoff;
-            int failures = 0;
-            while (!_userTeardown && !cancellationToken.IsCancellationRequested)
-            {
-                bool established = false;
-                _logger.LogReconnectAttempt(DriverName, failures + 1);
-                try { await EstablishAsync(cancellationToken).ConfigureAwait(false); established = true; }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { break; }
-                catch { /* attempt failed — back off and retry */ }
-
-                if (established)
-                {
-                    bool healthy;
-                    lock (_stateLock)
-                    {
-                        healthy = _keepaliveRunning;
-                        if (healthy) _supervisorActive = false;
-                    }
-                    if (healthy) { _logger.LogReconnected(DriverName); RaiseReconnected(); return; }
-
-                    SetState(OpenVpnConnectionState.Reconnecting);
-                    delay = _opts.InitialBackoff;
-                    failures = 0;
-                    continue;
-                }
-
-                if (_opts.MaxAttempts != 0 && ++failures >= _opts.MaxAttempts) break;
-                try { await Task.Delay(WithJitter(delay), cancellationToken).ConfigureAwait(false); }
-                catch (OperationCanceledException) { break; }
-                delay = _opts.NextBackoff(delay);
-            }
-
-            lock (_stateLock) { _supervisorActive = false; }
-            if (!_userTeardown) SetState(OpenVpnConnectionState.Disconnected);
-        }
-
-        void RaiseReconnected()
+        /// <inheritdoc/>
+        protected override void OnReconnected()
         {
             IPAddress newAddress = _assignedAddress ?? IPAddress.Any;
             bool changed = _lastAssignedAddress != null && !newAddress.Equals(_lastAssignedAddress);
@@ -568,27 +486,10 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
 
         // ---- teardown ----
 
-        /// <summary>
-        /// Tears the tunnel down permanently (no reconnect): cancels any reconnect in flight, then cancels the receive
-        /// loop and disposes the transport. Best-effort and time-boxed; safe to call more than once.
-        /// </summary>
-        public async Task DisconnectAsync(CancellationToken cancellationToken = default)
+        /// <inheritdoc/>
+        protected override async Task CleanupAttemptResourcesAsync()
         {
-            _userTeardown = true;
-            lock (_stateLock) StopKeepalive();
-
-            _lifetimeCts.Cancel();
-            Task? supervisor = _supervisor;
-            if (supervisor != null) { try { await supervisor.ConfigureAwait(false); } catch { } }
-
-            await CleanupAttemptResourcesAsync().ConfigureAwait(false);
-            SetState(OpenVpnConnectionState.Disconnected);
-        }
-
-        async Task CleanupAttemptResourcesAsync()
-        {
-            StopKeepalive();
-            _dataActive = false;
+            StopAttemptLoop();
 
             IOpenVpnTransport? transport = _transport;
             if (transport != null) transport.DatagramReceived -= OnTransportDatagram;
@@ -636,39 +537,20 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
             _keepalive = null;
         }
 
-        // ---- helpers ----
-
-        TimeSpan WithJitter(TimeSpan delay)
+        /// <inheritdoc/>
+        protected override void StopAttemptLoop()
         {
-            double fraction = _opts.JitterFraction;
-            if (fraction <= 0) return delay;
-            double r;
-            lock (_random) r = _random.NextDouble();
-            double jitter = delay.TotalMilliseconds * fraction * (r * 2 - 1);
-            return TimeSpan.FromMilliseconds(Math.Max(0, delay.TotalMilliseconds + jitter));
+            _keepaliveRunning = false;
+            _dataActive = false;
+            _keepaliveTimer?.Dispose();
+            _keepaliveTimer = null;
         }
-
-        void SetState(OpenVpnConnectionState state)
-        {
-            if (_state == state) return;
-            _state = state;
-            _logger.LogStateChanged(DriverName, state.ToString());
-            StateChanged?.Invoke(state);
-        }
-
-#if NET5_0_OR_GREATER
-        static long DefaultClock() => Environment.TickCount64;
-#else
-        static readonly System.Diagnostics.Stopwatch _stopwatch = System.Diagnostics.Stopwatch.StartNew();
-        static long DefaultClock() => _stopwatch.ElapsedMilliseconds;
-#endif
 
         /// <inheritdoc/>
         public async ValueTask DisposeAsync()
         {
             try { await DisconnectAsync().ConfigureAwait(false); } catch { }
-            _lifetimeCts.Dispose();
-            await _facade.DisposeAsync().ConfigureAwait(false);
+            await DisposeCoreAsync().ConfigureAwait(false);
         }
 
         /// <inheritdoc/>

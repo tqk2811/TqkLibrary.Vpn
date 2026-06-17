@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>SoftEther SSL-VPN protocol driver: runs the control handshake (watermark/hello/login/welcome) over a TLS byte stream, then carries the data session as Ethernet-frame-over-TLS. The data channel is an IEthernetChannel plugged into the userspace L2 fabric (ARP + DHCPv4 + VirtualHost bridge) so SecureNAT leases an IP via DHCP and bridges down to a stable L3 packet channel; with a supervisor/auto-reconnect.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Abstractions\TqkLibrary.VpnClient.Abstractions.csproj" />
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Crypto\TqkLibrary.VpnClient.Crypto.csproj" />
+    <ProjectReference Include="..\TqkLibrary.VpnClient.SoftEther\TqkLibrary.VpnClient.SoftEther.csproj" />
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Ethernet\TqkLibrary.VpnClient.Ethernet.csproj" />
+  </ItemGroup>
+
+</Project>

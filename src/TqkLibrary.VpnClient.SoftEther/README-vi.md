@@ -1,14 +1,15 @@
 # TqkLibrary.VpnClient.SoftEther
 
-Thư viện **protocol SoftEther SSL-VPN** thuần .NET. Gồm **PACK codec** (V4.a — định dạng nhị phân typed key-value cho **mọi** trao đổi control/RPC) và **control handshake** (V4.b — watermark POST + hello/login + auth SHA-0). Re-implement **từ spec/behavior** (xem [`.docs/07`](../../.docs/07-softether.md)) — **KHÔNG copy source GPL** (`Pack.c`/`Pack.h`/`Watermark.c`/`Protocol.c`). Đây là driver **V.4** (xem [`.docs/11`](../../.docs/11-todo-roadmap.md) §V.4); data plane Ethernet-over-TLS + driver L2 (V4.c) sẽ thêm sau.
+Thư viện **protocol SoftEther SSL-VPN** thuần .NET. Gồm **PACK codec** (V4.a — định dạng nhị phân typed key-value cho **mọi** trao đổi control/RPC), **control handshake** (V4.b — watermark POST + hello/login + auth SHA-0), và **data plane Ethernet-over-TLS** (V4.c — block frame codec + `IEthernetChannel`). Re-implement **từ spec/behavior** (xem [`.docs/07`](../../.docs/07-softether.md)) — **KHÔNG copy source GPL** (`Pack.c`/`Pack.h`/`Watermark.c`/`Protocol.c`/`Connection.c`). Đây là protocol của driver **V.4** ([`Drivers.SoftEther`](../TqkLibrary.VpnClient.Drivers.SoftEther) ráp end-to-end; xem [`.docs/11`](../../.docs/11-todo-roadmap.md) §V.4).
 
 > **Trạng thái:**
 > - **V4.a (PACK codec) xong** (code + test offline). PACK = **list `PackElement`**; mỗi element có **name** (≤63 ký tự), một **`PackValueType`** (int/data/str/unistr/int64), và **mảng `PackValue`** (≥1) cùng kiểu. Encode/decode **big-endian** đúng wire SoftEther: `uint32(num_elements)` → mỗi element `BufStr(name) · uint32(type) · uint32(num_value) · value[]`. Codec **thuần, không I/O**. Helper `Set*`/`Get*` theo tên (single + array), tra cứu **case-insensitive**, chống input lỗi ⇒ `FormatException`.
 > - **V4.b (watermark POST + hello/login handshake + auth SHA-0) xong** (code + test offline). **Tách phần codec/state thuần khỏi I/O**: `SoftEtherWatermark` dựng byte POST watermark; `SoftEtherAuth` tính `secure_password` SHA-0 (tái dùng [`Sha0`](../TqkLibrary.VpnClient.Crypto/Sha0.cs) F.5a); `SoftEtherHandshake` có **3 hàm thuần** `ParseHello`/`BuildLoginPack`/`ParseWelcome` (test trực tiếp) + driver `RunAsync` lắp chúng lên [`IByteStreamTransport`](../TqkLibrary.VpnClient.Abstractions/Transport/Interfaces/IByteStreamTransport.cs) (F.1/TLS). PACK đi trong thân HTTP qua `SoftEtherHttpPackCodec` (`uint32 len` + PACK bytes). Test chạy **offline** với server giả lập in-memory.
+> - **V4.c (data plane Ethernet-over-TLS) xong** (code + test offline). Sau `welcome`, cùng byte-stream chuyển sang **session data**: codec block thuần `SoftEtherDataFrameCodec` (`uint32(num_frames)` + mỗi frame `uint32(size)·bytes`), reader streaming `SoftEtherDataBlockReader` (ráp block qua partial read), và `SoftEtherEthernetChannel` (`IEthernetChannel`: encode frame ra block / `Deliver` block vào, drop keep-alive). Driver L2 thật ([`Drivers.SoftEther`](../TqkLibrary.VpnClient.Drivers.SoftEther)) cắm channel này vào fabric DHCP/ARP/VirtualHost.
 
 ## Vị trí kiến trúc
 
-`PROTOCOL`-layer (ngang hàng [WireGuard](../TqkLibrary.VpnClient.WireGuard)/[OpenVpn](../TqkLibrary.VpnClient.OpenVpn)/[Ipsec](../TqkLibrary.VpnClient.Ipsec)): khối giao thức thuần, **không** I/O socket trực tiếp (chỉ phụ thuộc seam `IByteStreamTransport`). PACK là *framing nền* — mọi message SoftEther được dựng/đọc qua codec này; handshake codec dựng/đọc hello/login/welcome. Driver `Drivers.SoftEther` (V4.c, chưa có) sẽ lắp `SoftEtherHandshake` lên TLS transport thật (F.1) + L2 fabric DHCP/ARP ([Ethernet](../TqkLibrary.VpnClient.Ethernet)).
+`PROTOCOL`-layer (ngang hàng [WireGuard](../TqkLibrary.VpnClient.WireGuard)/[OpenVpn](../TqkLibrary.VpnClient.OpenVpn)/[Ipsec](../TqkLibrary.VpnClient.Ipsec)): khối giao thức thuần, **không** I/O socket trực tiếp (chỉ phụ thuộc seam `IByteStreamTransport`). PACK là *framing nền* — mọi message SoftEther được dựng/đọc qua codec này; handshake codec dựng/đọc hello/login/welcome; data plane codec dựng/đọc block Ethernet-frame. Driver [`Drivers.SoftEther`](../TqkLibrary.VpnClient.Drivers.SoftEther) (V4.c) lắp `SoftEtherHandshake` + `SoftEtherEthernetChannel` lên TLS transport thật (F.1) + L2 fabric DHCP/ARP ([Ethernet](../TqkLibrary.VpnClient.Ethernet)).
 
 ## Phụ thuộc
 
@@ -16,7 +17,7 @@ Thư viện **protocol SoftEther SSL-VPN** thuần .NET. Gồm **PACK codec** (V
 |-------|---------|-------|
 | Dùng | [`Abstractions`](../TqkLibrary.VpnClient.Abstractions) | seam transport [`IByteStreamTransport`](../TqkLibrary.VpnClient.Abstractions/Transport/Interfaces/IByteStreamTransport.cs) (F.1) mà `SoftEtherHandshake.RunAsync` ghi/đọc |
 | Dùng | [`Crypto`](../TqkLibrary.VpnClient.Crypto) | `SoftEtherAuth` nhận [`IHashAlgo`](../TqkLibrary.VpnClient.Crypto/Interfaces/IHashAlgo.cs) (SHA-0 [`Sha0`](../TqkLibrary.VpnClient.Crypto/Sha0.cs), F.5a) để tính `secure_password` |
-| Được dùng bởi (tương lai) | `Drivers.SoftEther` (V4.c) | chạy `SoftEtherHandshake.RunAsync` trên TLS thật → data plane Ethernet-over-TLS |
+| Được dùng bởi | [`Drivers.SoftEther`](../TqkLibrary.VpnClient.Drivers.SoftEther) (V4.c) | chạy `SoftEtherHandshake.RunAsync` trên TLS thật → `SoftEtherEthernetChannel` data plane → L2 fabric DHCP/ARP |
 
 > PACK codec (V4.a) vẫn **thuần BCL** (`System.Buffers.Binary`/`System.Text`), không phụ thuộc 2 project trên; chỉ phần handshake (V4.b) mới dùng tới.
 
@@ -40,6 +41,11 @@ TqkLibrary.VpnClient.SoftEther/
 ├─ SoftEtherHttpPackCodec.cs   — V4.b framing PACK trong thân HTTP (uint32 len + PACK; build POST/200 + parse body)
 ├─ SoftEtherHandshake.cs       — V4.b state machine: ParseHello/BuildLoginPack/ParseWelcome (thuần) + RunAsync(IByteStreamTransport)
 ├─ SoftEtherProtocolException.cs — V4.b lỗi protocol (hello hỏng / login bị từ chối, mang ErrorCode)
+├─ DataChannel/                — V4.c data plane Ethernet-over-TLS
+│  ├─ SoftEtherDataConstants.cs    keep-alive string + guard MaxFramesPerBlock/MaxFrameSize
+│  ├─ SoftEtherDataFrameCodec.cs   codec block thuần: EncodeBlock/EncodeSingle/DecodeBlock + IsKeepAlive
+│  ├─ SoftEtherDataBlockReader.cs  reader streaming: ráp 1 block qua partial read của IByteStreamTransport
+│  └─ SoftEtherEthernetChannel.cs  IEthernetChannel: WriteFrameAsync (encode block) + Deliver (raise InboundFrame, drop keep-alive)
 ├─ Enums/
 │  └─ SoftEtherAuthType.cs     — V4.b authtype: Anonymous=0/Password=1/PlainPassword=2/Certificate=3
 └─ Models/
@@ -67,6 +73,10 @@ TqkLibrary.VpnClient.SoftEther/
 | `SoftEtherHttpPackCodec` | framing PACK trong thân HTTP: `FrameBody`/`ParseBody` (uint32 len + PACK) + `BuildPostRequest`/`BuildOkResponse` | [SoftEtherHttpPackCodec.cs:15](SoftEtherHttpPackCodec.cs#L15) |
 | `SoftEtherHandshake` | state machine: `ParseHello`/`BuildLoginPack`/`ParseWelcome` (thuần) + `RunAsync(IByteStreamTransport)` + reader HTTP nội bộ | [SoftEtherHandshake.cs:24](SoftEtherHandshake.cs#L24) |
 | `SoftEtherProtocolException` | lỗi protocol (hello hỏng / login từ chối), mang `ErrorCode` từ field `error` của server | [SoftEtherProtocolException.cs:9](SoftEtherProtocolException.cs#L9) |
+| `SoftEtherDataFrameCodec` | V4.c codec block thuần: `EncodeBlock`/`EncodeSingle` (`uint32(n)·{uint32(size)·bytes}`), `DecodeBlock`, `IsKeepAlive` | [DataChannel/SoftEtherDataFrameCodec.cs:15](DataChannel/SoftEtherDataFrameCodec.cs#L15) |
+| `SoftEtherDataBlockReader` | V4.c reader streaming: `ReadBlockAsync` ráp 1 block qua partial read; EOF ranh block ⇒ list rỗng, EOF giữa block ⇒ `SoftEtherProtocolException` | [DataChannel/SoftEtherDataBlockReader.cs:16](DataChannel/SoftEtherDataBlockReader.cs#L16) |
+| `SoftEtherEthernetChannel` | V4.c `IEthernetChannel`: `WriteFrameAsync` (encode block 1-frame → sink), `Deliver` (raise `InboundFrame`, drop keep-alive); MAC + `MaxHeaderLength`=14 + `RequiresLinkAddressResolution` | [DataChannel/SoftEtherEthernetChannel.cs:23](DataChannel/SoftEtherEthernetChannel.cs#L23) |
+| `SoftEtherDataConstants` | V4.c keep-alive string `"Internet Connection Keep Alive Packet"` + guard `MaxFramesPerBlock`/`MaxFrameSize` | [DataChannel/SoftEtherDataConstants.cs:11](DataChannel/SoftEtherDataConstants.cs#L11) |
 | `SoftEtherAuthType` | enum authtype: `Anonymous=0`/`Password=1`/`PlainPassword=2`/`Certificate=3` | [Enums/SoftEtherAuthType.cs:10](Enums/SoftEtherAuthType.cs#L10) |
 | `SoftEtherSessionParams` | record session: `MaxConnection`/`UseEncrypt`/`UseCompress`/`HalfConnection`/`UniqueId` | [Models/SoftEtherSessionParams.cs:11](Models/SoftEtherSessionParams.cs#L11) |
 | `SoftEtherLoginRequest` | record input login: `HubName`/`UserName`/`AuthType`/`Password`/`Session` | [Models/SoftEtherLoginRequest.cs:14](Models/SoftEtherLoginRequest.cs#L14) |
@@ -132,4 +142,5 @@ VALUE theo type:
 - **Watermark placeholder**: blob mặc định byte-exact reproducible cho test offline, **không mang byte nào từ GPL `Watermark.c`**; interop server thật cần truyền blob thật qua `WithSignature`. Framing request (POST line/headers/length) **đúng protocol** bất kể blob.
 - Build xanh cả `netstandard2.0` + `net8.0`. Dùng `System.Buffers.Binary.BinaryPrimitives` (cả 2 TFM qua `System.Memory`); `record`/`init`/`required` qua `TqkLibrary.CompilerServices`. `PackBufferReader` là `ref struct` (zero-copy đọc span).
 - **Namespace**: type codec ở namespace gốc `TqkLibrary.VpnClient.SoftEther` (KHÔNG đặt segment `.Pack` để tránh tên type `Pack` bị namespace cùng tên che khuất — bài học `~/.claude/csharp.md`); thư mục vẫn là `Pack/`. Enum ở `.Enums`, model ở `.Models`.
-- **Còn lại (V4.c)**: data plane Ethernet-over-TLS (length-prefixed frame + optional deflate/RC4 + keep-alive) + driver L2 (DHCP/ARP qua fabric Ethernet) → `IPacketChannel`; multi-connection (`additional_connect`/`session_key`). Lộ trình V.4 đầy đủ ở [`.docs/11`](../../.docs/11-todo-roadmap.md) §V.4; design-intent SoftEther ở [`.docs/07`](../../.docs/07-softether.md).
+- **Data plane (V4.c) đã có**: block frame codec (`SoftEtherDataFrameCodec`/`SoftEtherDataBlockReader`) + `SoftEtherEthernetChannel`; driver L2 thật ([`Drivers.SoftEther`](../TqkLibrary.VpnClient.Drivers.SoftEther)) cắm vào fabric DHCP/ARP/VirtualHost → `IPacketChannel` (bridge **1-host**).
+- **Còn lại (sau V4.c)**: multi-host broadcast domain (L2.7+); multi-connection (`additional_connect`/`session_key`/`half_connection`); deflate/RC4 payload (`use_compress`/`use_encrypt`); IPv6 trong tunnel. Lộ trình V.4 đầy đủ ở [`.docs/11`](../../.docs/11-todo-roadmap.md) §V.4; design-intent SoftEther ở [`.docs/07`](../../.docs/07-softether.md).

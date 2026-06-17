@@ -4,9 +4,11 @@ using TqkLibrary.VpnClient.Abstractions.Drivers.Interfaces;
 using TqkLibrary.VpnClient.Drivers.Ikev2;
 using TqkLibrary.VpnClient.Drivers.L2tpIpsec;
 using TqkLibrary.VpnClient.Drivers.OpenVpn;
+using TqkLibrary.VpnClient.Drivers.SoftEther;
 using TqkLibrary.VpnClient.Drivers.Sstp;
 using TqkLibrary.VpnClient.Drivers.WireGuard;
 using TqkLibrary.VpnClient.OpenVpn.Config;
+using TqkLibrary.VpnClient.SoftEther.Models;
 using TqkLibrary.VpnClient.WireGuard.Config;
 
 namespace TqkLibrary.VpnClient
@@ -67,6 +69,20 @@ namespace TqkLibrary.VpnClient
         /// <summary>Registers the WireGuard driver with explicit auto-reconnect options (e.g. to disable it).</summary>
         public VpnClientBuilder UseWireGuard(WireGuardConfig config, WireGuardReconnectOptions reconnectOptions)
             => AddDriver(new WireGuardDriver(config, reconnectOptions));
+
+        /// <summary>
+        /// Registers the SoftEther SSL-VPN driver targeting <paramref name="hubName"/> (Ethernet-over-TLS, DHCP-leased
+        /// address, SHA-0 password auth via the connect-time credentials) with auto-reconnect enabled by default.
+        /// </summary>
+        public VpnClientBuilder UseSoftEther(string hubName) => AddDriver(new SoftEtherDriver(hubName));
+
+        /// <summary>Registers the SoftEther driver with explicit session params (parallel connections, encrypt/compress flags).</summary>
+        public VpnClientBuilder UseSoftEther(string hubName, SoftEtherSessionParams session)
+            => AddDriver(new SoftEtherDriver(hubName, session));
+
+        /// <summary>Registers the SoftEther driver with explicit session params and auto-reconnect options (e.g. to disable it).</summary>
+        public VpnClientBuilder UseSoftEther(string hubName, SoftEtherSessionParams session, SoftEtherReconnectOptions reconnectOptions)
+            => AddDriver(new SoftEtherDriver(hubName, session, reconnectOptions));
 
         /// <summary>Builds the client.</summary>
         public VpnClient Build() => new VpnClient(_drivers);

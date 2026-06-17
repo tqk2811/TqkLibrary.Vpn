@@ -1,7 +1,10 @@
 using System.Net;
 using System.Text;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using TqkLibrary.VpnClient.Abstractions.Channels;
 using TqkLibrary.VpnClient.Abstractions.Channels.Interfaces;
+using TqkLibrary.VpnClient.Abstractions.Diagnostics.Extensions;
 using TqkLibrary.VpnClient.Abstractions.Drivers;
 using TqkLibrary.VpnClient.Abstractions.Drivers.Models;
 using TqkLibrary.VpnClient.Abstractions.Net;
@@ -38,7 +41,9 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
     public sealed class OpenConnectConnection : IDisposable, IAsyncDisposable
     {
         static readonly TimeSpan TimerTick = TimeSpan.FromSeconds(1);
+        const string DriverName = "openconnect";
 
+        readonly ILogger _logger;
         readonly string _host;
         readonly int _port;
         readonly string? _username;
@@ -90,7 +95,8 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
         /// certificate (null = accept any). <paramref name="dtlsHandshakeTimeout"/> bounds the DTLS handshake before the
         /// data plane falls back to TLS (default 10s). <paramref name="requestedMtu"/> is advertised in
         /// <c>X-CSTP-Base-MTU</c>; <paramref name="clock"/> supplies the DPD/keep-alive millisecond clock (default: the
-        /// system tick clock) — tests inject a deterministic one.
+        /// system tick clock) — tests inject a deterministic one. <paramref name="loggerFactory"/> receives diagnostic
+        /// traces (auth/connect/DTLS/DPD/drop); null logs to <see cref="NullLogger"/> (a no-op).
         /// </summary>
         public OpenConnectConnection(string host, int port, IOpenConnectTransportFactory transportFactory,
             string? username = null, string? password = null, string groupSelect = "",
@@ -101,7 +107,8 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
             Func<long>? clock = null,
             IOpenConnectDatagramTransportFactory? datagramFactory = null,
             DtlsServerCertificateValidationCallback? dtlsCertificateValidation = null,
-            TimeSpan? dtlsHandshakeTimeout = null)
+            TimeSpan? dtlsHandshakeTimeout = null,
+            ILoggerFactory? loggerFactory = null)
         {
             _host = host ?? throw new ArgumentNullException(nameof(host));
             _port = port;
@@ -118,6 +125,7 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
             if (requestedMtu < 1) throw new ArgumentOutOfRangeException(nameof(requestedMtu));
             _requestedMtu = requestedMtu;
             _clock = clock ?? DefaultClock;
+            _logger = (loggerFactory ?? NullLoggerFactory.Instance).CreateLogger("TqkLibrary.VpnClient.Drivers.OpenConnect");
         }
 
         /// <summary>The stable L3 packet channel (valid after a successful connect; survives reconnect).</summary>
@@ -167,7 +175,9 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
             var http = new OpenConnectHttpTransactor(stream, _host);
 
             // --- HTTPS config-auth: init → (form → reply)* → success carrying the webvpn cookie ---
+            _logger.LogHandshake(DriverName, "HTTPS config-auth (POST /)");
             string cookie = await AuthenticateAsync(http, cancellationToken).ConfigureAwait(false);
+            _logger.LogHandshake(DriverName, "config-auth accepted; session cookie received");
 
             // --- HTTP CONNECT /CSCOSSLC/tunnel: the response X-CSTP-* headers are the in-band tunnel config ---
             // Advertise the DTLS data path only when a datagram factory is wired (otherwise stay TLS-only).
@@ -202,12 +212,15 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
             _dtlsActive = false;
             _receiveTask = Task.Run(() => channel.RunReceiveLoopAsync(loopToken));
 
+            _logger.LogHandshake(DriverName, $"CSTP CONNECT accepted; tunnel address {config.AssignedAddress} (CSTP-over-TLS bound)");
+
             // --- try to swap the data plane onto a parallel DTLS datagram channel (fallback to TLS on any failure) ---
             if (requestDtls && tunnelInfo.HasDtls)
                 await TryEstablishDtlsAsync(serverIp, tunnelInfo, mtu, loopToken, cancellationToken).ConfigureAwait(false);
 
             _timer = new System.Threading.Timer(_ => _ = TimerTickAsync(), null, TimerTick, TimerTick);
 
+            _logger.LogHandshakeCompleted(DriverName);
             SetState(OpenConnectConnectionState.Connected);
         }
 
@@ -241,9 +254,11 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
                 _dtlsActive = true;
                 _facade.SetInner(dtlsChannel); // data now rides DTLS; TLS channel stays as the control/fallback path
                 _dtlsReceiveTask = Task.Run(() => dtlsChannel.RunReceiveLoopAsync(loopToken));
+                _logger.LogHandshake(DriverName, "DTLS 1.2 data path established (data plane swapped to DTLS)");
             }
             catch
             {
+                _logger.LogHandshake(DriverName, "DTLS data path unavailable; staying on CSTP-over-TLS (fallback)");
                 // DTLS handshake / socket failed (or hit the handshake timeout) — fall back to CSTP-over-TLS (already
                 // bound). Clean up the half-open DTLS first.
                 _dtlsActive = false;
@@ -277,7 +292,10 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
             {
                 OpenConnectHttpResponse response = await http.PostAsync("/", requestBody, cookie, cancellationToken).ConfigureAwait(false);
                 if (response.StatusCode != 200)
+                {
+                    _logger.LogHandshakeFailed(DriverName, $"auth POST returned HTTP {response.StatusCode} {response.Reason}");
                     throw new VpnAuthenticationException($"OpenConnect auth POST failed: HTTP {response.StatusCode} {response.Reason}.");
+                }
 
                 // The cookie may be set at any step; capture it as it appears.
                 foreach (string setCookie in response.GetHeaders("set-cookie"))
@@ -294,11 +312,15 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
                 }
 
                 if (!OpenConnectAuthCodec.TryParseForm(response.Body, out OpenConnectAuthForm form))
+                {
+                    _logger.LogHandshakeFailed(DriverName, "auth rejected: non-form, non-success response (bad credentials)");
                     throw new VpnAuthenticationException("OpenConnect gateway returned a non-form, non-success auth response.");
+                }
 
                 FillForm(form);
                 requestBody = OpenConnectAuthCodec.BuildReplyRequest(form);
             }
+            _logger.LogHandshakeFailed(DriverName, "auth did not complete within the allowed number of steps");
             throw new VpnAuthenticationException("OpenConnect auth did not complete within the allowed number of steps.");
         }
 
@@ -389,12 +411,17 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
             if (dpd.ShouldSendDpd(now))
             {
                 dpd.OnDpdSent(now);
+                _logger.LogKeepalive(DriverName, "X-CSTP-DPD probe sent");
                 await SafeSendAsync(dpdRequest).ConfigureAwait(false);
             }
             else if (dpd.ShouldSendKeepalive(now))
             {
                 Func<CancellationToken, ValueTask>? keepalive = ActiveKeepalive;
-                if (keepalive != null) await SafeSendAsync(keepalive).ConfigureAwait(false);
+                if (keepalive != null)
+                {
+                    _logger.LogKeepalive(DriverName, "X-CSTP-Keepalive sent");
+                    await SafeSendAsync(keepalive).ConfigureAwait(false);
+                }
             }
         }
 
@@ -413,6 +440,7 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
             lock (_stateLock)
             {
                 if (!_running) return;
+                _logger.LogLinkLost(DriverName, reason);
                 StopTimer();
                 _running = false;
 
@@ -440,6 +468,7 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
             while (!_userTeardown && !cancellationToken.IsCancellationRequested)
             {
                 bool established = false;
+                _logger.LogReconnectAttempt(DriverName, failures + 1);
                 try { await EstablishAsync(cancellationToken).ConfigureAwait(false); established = true; }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { break; }
                 catch { /* attempt failed — back off and retry */ }
@@ -452,7 +481,7 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
                         healthy = _running;
                         if (healthy) _supervisorActive = false;
                     }
-                    if (healthy) { RaiseReconnected(); return; }
+                    if (healthy) { _logger.LogReconnected(DriverName); RaiseReconnected(); return; }
 
                     SetState(OpenConnectConnectionState.Reconnecting);
                     delay = _opts.InitialBackoff;
@@ -580,6 +609,7 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
         {
             if (_state == state) return;
             _state = state;
+            _logger.LogStateChanged(DriverName, state.ToString());
             StateChanged?.Invoke(state);
         }
 

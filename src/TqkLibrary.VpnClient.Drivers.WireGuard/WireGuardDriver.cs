@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using TqkLibrary.VpnClient.Abstractions.Drivers.Enums;
 using TqkLibrary.VpnClient.Abstractions.Drivers.Interfaces;
 using TqkLibrary.VpnClient.Abstractions.Drivers.Models;
@@ -18,19 +19,23 @@ namespace TqkLibrary.VpnClient.Drivers.WireGuard
         readonly WireGuardConfig _config;
         readonly WireGuardReconnectOptions? _reconnectOptions;
         readonly IWireGuardTransportFactory? _transportFactory;
+        readonly ILoggerFactory? _loggerFactory;
 
         /// <summary>
         /// Creates the driver. <paramref name="config"/> is the static point-to-point profile;
         /// <paramref name="reconnectOptions"/> tunes (or disables) auto-reconnect; <paramref name="transportFactory"/>
         /// overrides the UDP transport (an in-process loopback drives the driver offline in tests).
+        /// <paramref name="loggerFactory"/> receives diagnostic traces (null = no logging).
         /// </summary>
         public WireGuardDriver(WireGuardConfig config,
             WireGuardReconnectOptions? reconnectOptions = null,
-            IWireGuardTransportFactory? transportFactory = null)
+            IWireGuardTransportFactory? transportFactory = null,
+            ILoggerFactory? loggerFactory = null)
         {
             _config = config ?? throw new ArgumentNullException(nameof(config));
             _reconnectOptions = reconnectOptions;
             _transportFactory = transportFactory;
+            _loggerFactory = loggerFactory;
         }
 
         /// <inheritdoc/>
@@ -56,7 +61,8 @@ namespace TqkLibrary.VpnClient.Drivers.WireGuard
             IWireGuardTransportFactory factory = _transportFactory ?? new WireGuardSocketTransportFactory();
             var connection = new WireGuardConnection(endpoint.Host, endpoint.Port, _config, factory,
                 reconnectOptions: _reconnectOptions,
-                addressFamilyPreference: endpoint.AddressFamilyPreference);
+                addressFamilyPreference: endpoint.AddressFamilyPreference,
+                loggerFactory: _loggerFactory);
             try
             {
                 await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);

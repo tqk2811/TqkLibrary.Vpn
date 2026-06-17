@@ -1,4 +1,5 @@
 using System.Net.Security;
+using Microsoft.Extensions.Logging;
 using TqkLibrary.VpnClient.Abstractions.Drivers;
 using TqkLibrary.VpnClient.Abstractions.Drivers.Enums;
 using TqkLibrary.VpnClient.Abstractions.Drivers.Interfaces;
@@ -23,6 +24,7 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther
         readonly SoftEtherReconnectOptions? _reconnectOptions;
         readonly ISoftEtherTransportFactory? _transportFactory;
         readonly RemoteCertificateValidationCallback? _serverCertificateValidation;
+        readonly ILoggerFactory? _loggerFactory;
 
         /// <summary>
         /// Creates the driver targeting <paramref name="hubName"/> (e.g. <c>"DEFAULT"</c>). <paramref name="session"/>
@@ -30,18 +32,21 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther
         /// tunes (or disables) auto-reconnect; <paramref name="transportFactory"/> overrides the TLS transport (an
         /// in-process loopback drives the driver offline in tests); <paramref name="serverCertificateValidation"/> validates
         /// the server TLS certificate (null = accept any, since SoftEther binds identity through its own auth).
+        /// <paramref name="loggerFactory"/> receives diagnostic traces (null = no logging).
         /// </summary>
         public SoftEtherDriver(string hubName,
             SoftEtherSessionParams? session = null,
             SoftEtherReconnectOptions? reconnectOptions = null,
             ISoftEtherTransportFactory? transportFactory = null,
-            RemoteCertificateValidationCallback? serverCertificateValidation = null)
+            RemoteCertificateValidationCallback? serverCertificateValidation = null,
+            ILoggerFactory? loggerFactory = null)
         {
             _hubName = hubName ?? throw new ArgumentNullException(nameof(hubName));
             _session = session ?? new SoftEtherSessionParams();
             _reconnectOptions = reconnectOptions;
             _transportFactory = transportFactory;
             _serverCertificateValidation = serverCertificateValidation;
+            _loggerFactory = loggerFactory;
         }
 
         /// <inheritdoc/>
@@ -82,7 +87,8 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther
 
             var connection = new SoftEtherConnection(endpoint.Host, endpoint.Port, login, factory,
                 reconnectOptions: _reconnectOptions,
-                addressFamilyPreference: endpoint.AddressFamilyPreference);
+                addressFamilyPreference: endpoint.AddressFamilyPreference,
+                loggerFactory: _loggerFactory);
             try
             {
                 await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);

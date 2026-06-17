@@ -18,7 +18,7 @@ Driver **OpenConnect** (Cisco AnyConnect SSL-VPN; server opensource **ocserv**) 
 
 | Hướng | Project | Lý do |
 |-------|---------|-------|
-| Dùng | [Abstractions](../TqkLibrary.VpnClient.Abstractions) | `IVpnProtocolDriver`/`IVpnConnection`/`IVpnSession`, `IPacketChannel`, `SwappablePacketChannel`, `IByteStreamTransport`/`IDatagramTransport`, exceptions, `IHostResolver` |
+| Dùng | [Abstractions](../TqkLibrary.VpnClient.Abstractions) | `IVpnProtocolDriver`/`IVpnConnection`/`IVpnSession`, `IPacketChannel`, `SwappablePacketChannel`, `IByteStreamTransport`/`IDatagramTransport`, exceptions, `IHostResolver`, **`Diagnostics`** (`VpnEventIds`/`VpnLogExtensions` — log auth/connect/DPD/drop, Q.2) |
 | Dùng | [OpenConnect](../TqkLibrary.VpnClient.OpenConnect) | `OpenConnectAuthCodec`/`OpenConnectConnectCodec` (V5.a codec), `OpenConnectHttpTransactor`/`CstpChannel`/`CstpDpdState` (V5.b data plane TLS), `CstpDatagramChannel`/`CstpDatagramFraming` (V5.c data plane DTLS), `OpenConnectTunnelInfo`/`OpenConnectAuthForm`/`OpenConnectHttpResponse` (models) |
 | Dùng | [Transport.Dtls](../TqkLibrary.VpnClient.Transport.Dtls) | `DtlsDatagramTransport` (F.3) + `DtlsServerCertificateValidationCallback` — bọc UDP pipe thành DTLS 1.2 cho data path V5.c |
 | Được dùng bởi | [TqkLibrary.VpnClient](../TqkLibrary.VpnClient) (façade) | `VpnClientBuilder.UseOpenConnect()` đăng ký driver |
@@ -78,6 +78,7 @@ TqkLibrary.VpnClient.Drivers.OpenConnect/
 - **Timer loop** (1s tick, `CstpDpdState`): `IsPeerDead` ⇒ link lost; `ShouldSendDpd` ⇒ gửi DPD-REQ; else `ShouldSendKeepalive` ⇒ keepalive — **trên kênh active** (`ActiveDpdRequest`/`ActiveKeepalive` chọn DTLS/TLS). Liveness (`PacketReceived`) từ **cả hai** kênh nuôi cùng `CstpDpdState`.
 - **Teardown** (`DisconnectAsync`): gửi best-effort **CSTP DISCONNECT** trên cả hai kênh (DTLS + TLS), hủy reconnect đang chờ, hủy 2 receive loop + timer, dispose DTLS + stream.
 - **Reconnect** (supervisor): mirror WireGuard/OpenVPN/SoftEther — `EstablishAsync`/`ReconnectLoopAsync` backoff+jitter sau `SwappablePacketChannel` ổn định; `Reconnected` mang `NewAddress` + `AddressChanged` (ocserv thường cấp lại cùng IP theo cookie).
+- **Logging/diagnostics (Q.2)**: ctor `OpenConnectConnection`/`OpenConnectDriver` nhận `ILoggerFactory?` (mặc định [`NullLogger`](../TqkLibrary.VpnClient.Abstractions/Diagnostics/Extensions/VpnLogExtensions.cs) ⇒ no-op, **ADDITIVE không đổi hành vi**). Log qua [`VpnLogExtensions`](../TqkLibrary.VpnClient.Abstractions/Diagnostics/Extensions/VpnLogExtensions.cs): config-auth + CONNECT + DTLS-up/fallback→Handshake; bind→HandshakeCompleted; auth reject (non-200 / non-form)→HandshakeFailed; DPD-probe/keepalive→Keepalive; `SetState`→StateChanged; `OnLinkLost`→LinkLost; reconnect attempt/success→ReconnectAttempt/Reconnected.
 
 ## Bảng chuẩn / RFC
 
@@ -95,6 +96,7 @@ TqkLibrary.VpnClient.Drivers.OpenConnect/
 
 - **Đã có (V5.b)**: end-to-end **offline** — HTTPS config-auth (username/password→cookie), HTTP CONNECT (X-CSTP-* in-band), CSTP-over-TLS data plane 2 chiều, DPD (probe + reply) + keepalive clock-inject, teardown (DISCONNECT) + supervisor reconnect; `UseOpenConnect()`. Test offline qua **server ocserv giả lập** (auth form + CONNECT + CSTP echo + DPD) trên loopback byte-stream: auth→CONNECT→IP round-trip 2 chiều, sai mật khẩu ⇒ `VpnAuthenticationException`, DPD server-probe/client-probe, peer-disconnect teardown, driver facade.
 - **Đã có (V5.c — DTLS data path)**: parse `X-DTLS-*` (Session-ID/CipherSuite/Port/DPD/Keepalive); sau CONNECT mở UDP → `DtlsDatagramTransport` (F.3) → handshake DTLS 1.2 (bound timeout) → swap data plane sang `CstpDatagramChannel` (framing 1-byte, 1 datagram = 1 gói); DPD/keepalive parity dùng chung `CstpDpdState`; **fallback CSTP-over-TLS** khi không-offer/không-có-factory/handshake-fail. Cap mặc định `Tls|Dtls`. Test offline qua **server DTLS giả lập BouncyCastle** trên loopback UDP: IP round-trip 2 chiều CSTP-over-DTLS + `IsDtlsDataPlane`, DPD server-probe đáp qua DTLS, fallback khi X-DTLS-* không advertise, fallback khi handshake DTLS fail/timeout.
+- **Đã có (Q.2)**: luồng `ILoggerFactory?` qua driver/connection → trace auth/connect/DTLS/DPD/state/link-lost/reconnect/drop (xem Vòng đời). Test offline `OpenConnectLoggingTests.cs`: logger giả lập bắt Handshake (config-auth + CONNECT)/HandshakeCompleted/StateChanged khi connect (+round-trip vẫn xanh), sai mật khẩu ⇒ HandshakeFailed.
 - **Chưa**:
   - **rekey `X-CSTP-Rekey-Method`** (`ssl`/`new-tunnel`) — đã parse `RekeyMethod`/`RekeyTime` vào `OpenConnectTunnelInfo` nhưng chưa wire timer rekey; driver hiện sống nhờ DPD/keepalive + supervisor.
   - **tương quan session-id thật qua DTLS ClientHello session_id** — hiện `X-DTLS-Session-ID` mang nghĩa cookie nhưng offline dùng loopback pair tự ghép 2 đầu; ClientHello-session_id thật chờ lab Q.1.

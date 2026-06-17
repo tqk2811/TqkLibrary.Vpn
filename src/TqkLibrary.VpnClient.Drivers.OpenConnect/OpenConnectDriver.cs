@@ -1,4 +1,5 @@
 using System.Net.Security;
+using Microsoft.Extensions.Logging;
 using TqkLibrary.VpnClient.Abstractions.Drivers.Enums;
 using TqkLibrary.VpnClient.Abstractions.Drivers.Interfaces;
 using TqkLibrary.VpnClient.Abstractions.Drivers.Models;
@@ -26,6 +27,7 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
         readonly bool _enableDtls;
         readonly string _groupSelect;
         readonly int _requestedMtu;
+        readonly ILoggerFactory? _loggerFactory;
 
         /// <summary>
         /// Creates the driver. <paramref name="reconnectOptions"/> tunes (or disables) auto-reconnect;
@@ -36,6 +38,7 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
         /// (default true) advertises and uses the DTLS data path; <paramref name="datagramTransportFactory"/> overrides
         /// the UDP pipe the DTLS path opens (in-process loopback in tests; the default opens a real UDP socket);
         /// <paramref name="dtlsCertificateValidation"/> validates the gateway's DTLS certificate (null = accept any).
+        /// <paramref name="loggerFactory"/> receives diagnostic traces (null = no logging).
         /// </summary>
         public OpenConnectDriver(
             OpenConnectReconnectOptions? reconnectOptions = null,
@@ -45,7 +48,8 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
             int requestedMtu = 1400,
             bool enableDtls = true,
             IOpenConnectDatagramTransportFactory? datagramTransportFactory = null,
-            DtlsServerCertificateValidationCallback? dtlsCertificateValidation = null)
+            DtlsServerCertificateValidationCallback? dtlsCertificateValidation = null,
+            ILoggerFactory? loggerFactory = null)
         {
             _reconnectOptions = reconnectOptions;
             _transportFactory = transportFactory;
@@ -56,6 +60,7 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
             _groupSelect = groupSelect ?? string.Empty;
             if (requestedMtu < 1) throw new ArgumentOutOfRangeException(nameof(requestedMtu));
             _requestedMtu = requestedMtu;
+            _loggerFactory = loggerFactory;
 
             Capabilities = new VpnDriverCapabilities
             {
@@ -98,7 +103,8 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
                 addressFamilyPreference: endpoint.AddressFamilyPreference,
                 requestedMtu: _requestedMtu,
                 datagramFactory: datagramFactory,
-                dtlsCertificateValidation: _dtlsCertificateValidation);
+                dtlsCertificateValidation: _dtlsCertificateValidation,
+                loggerFactory: _loggerFactory);
             try
             {
                 await connection.ConnectAsync(cancellationToken).ConfigureAwait(false);

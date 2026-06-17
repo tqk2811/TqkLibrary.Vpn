@@ -4,4 +4,10 @@
     <Description>VPN platform abstractions: link channels, transport/security/encapsulation contracts, driver plugin interface.</Description>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!-- ILogger/ILoggerFactory/NullLogger for the cross-cutting diagnostics seam (Diagnostics/VpnLogExtensions).
+         8.0.2 ships a netstandard2.0 lib, so both TFMs resolve it. -->
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.2" />
+  </ItemGroup>
+
 </Project>

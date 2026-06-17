@@ -16,7 +16,7 @@ Driver **SoftEther SSL-VPN** (V4.c) — **driver L2 thật đầu tiên**: ráp 
 
 | Hướng | Project | Lý do |
 |-------|---------|-------|
-| Dùng | [Abstractions](../TqkLibrary.VpnClient.Abstractions) | `IVpnProtocolDriver`/`IVpnConnection`/`IVpnSession`, `IPacketChannel`/`IEthernetChannel`, `SwappablePacketChannel`, `IByteStreamTransport`, exceptions, `IHostResolver` |
+| Dùng | [Abstractions](../TqkLibrary.VpnClient.Abstractions) | `IVpnProtocolDriver`/`IVpnConnection`/`IVpnSession`, `IPacketChannel`/`IEthernetChannel`, `SwappablePacketChannel`, `IByteStreamTransport`, exceptions, `IHostResolver`, **`Diagnostics`** (`VpnEventIds`/`VpnLogExtensions` — log handshake/DHCP/keepalive, Q.2) |
 | Dùng | [SoftEther](../TqkLibrary.VpnClient.SoftEther) | `SoftEtherHandshake`/`SoftEtherAuth` (control + auth), `SoftEtherEthernetChannel`/`SoftEtherDataBlockReader`/`SoftEtherDataFrameCodec` (data plane), `SoftEtherLoginRequest`/`SoftEtherSessionParams` |
 | Dùng | [Ethernet](../TqkLibrary.VpnClient.Ethernet) | `DhcpV4Configurator` (L2.5 lease IP), `ArpResolver` (L2.3), `VirtualHost` (L2.2 bridge), `MacAddress` |
 | Dùng | [Crypto](../TqkLibrary.VpnClient.Crypto) | `Sha0` (F.5a) cho `SoftEtherAuth.secure_password` |
@@ -69,6 +69,7 @@ TqkLibrary.VpnClient.Drivers.SoftEther/
 - **Nhận data** (receive loop): decode block → `channel.Deliver(frame)` raise `InboundFrame` → `VirtualHost` strip header → `InboundIpPacket` (IP) hoặc `InboundNonIpFrame` (ARP) → `ArpResolver`.
 - **Teardown** (`DisconnectAsync`): hủy reconnect đang chờ, hủy receive loop + keep-alive timer, dispose `VirtualHost`/`ArpResolver`/`DhcpV4Configurator`/transport (host dispose channel theo).
 - **Reconnect** (supervisor): mirror OpenVPN/WireGuard — `EstablishAsync`/`ReconnectLoopAsync` backoff+jitter; DHCP lease lại nên `Reconnected` mang `AddressChanged` thật.
+- **Logging/diagnostics (Q.2)**: ctor `SoftEtherConnection`/`SoftEtherDriver` nhận `ILoggerFactory?` (mặc định [`NullLogger`](../TqkLibrary.VpnClient.Abstractions/Diagnostics/Extensions/VpnLogExtensions.cs) ⇒ no-op, **ADDITIVE không đổi hành vi**). Log qua [`VpnLogExtensions`](../TqkLibrary.VpnClient.Abstractions/Diagnostics/Extensions/VpnLogExtensions.cs): control handshake + DHCP lease + bridge bind→Handshake; sau khi bind facade→HandshakeCompleted; keep-alive frame→Keepalive; `SetState`→StateChanged; `OnLinkLost`→LinkLost; reconnect attempt/success→ReconnectAttempt/Reconnected.
 
 ## Bảng chuẩn / nguồn
 
@@ -84,6 +85,7 @@ TqkLibrary.VpnClient.Drivers.SoftEther/
 ## Trạng thái & ghi chú
 
 - **Đã có (V4.c)**: end-to-end **offline** — control handshake (watermark/hello/login SHA-0/welcome) → data plane Ethernet-over-TLS → DHCP lease từ SecureNAT giả lập → ARP next-hop → IP round-trip 2 chiều qua bridge L2↔L3; keep-alive; supervisor reconnect; `UseSoftEther(hubName)`. Test offline qua **server SecureNAT giả lập** (control + DHCP server + ARP responder + IP echo) trên byte-pipe in-memory: handshake → lease (OFFER/ACK) → ARP → IP echo → login bị từ chối ⇒ ném (error code) → driver facade → server đóng stream ⇒ Disconnected.
+- **Đã có (Q.2)**: luồng `ILoggerFactory?` qua driver/connection → trace control-handshake/DHCP/keepalive/state/link-lost/reconnect (xem Vòng đời). Test offline `SoftEtherLoggingTests.cs`: logger giả lập bắt Handshake (control + DHCP)/HandshakeCompleted/StateChanged khi connect.
 - **Chưa**:
   - **multi-host broadcast domain data-plane** — hiện bridge **1-host** xuống 1 IP (mirror OpenVPN tap 1-host). **Năng lực đã phơi (L2.8)**: capability bật `SupportsMultiHost=true` (+ sẵn `L2Ethernet`/`L2BroadcastDomain`), và `MultiHostSession` (`Ethernet`, L2.8) ráp sẵn N station = N `IVpnSession`; **còn lại** = gắn uplink TLS (`SoftEtherEthernetChannel`) vào `EthernetAdapter`/`MultiHostSession` như một port thay bắc-cầu-1-host.
   - **multi-connection** (1–32 parallel TCP / 1 session logic, `additional_connect`+`session_key`, `half_connection`) — hiện 1 TCP/1 session.

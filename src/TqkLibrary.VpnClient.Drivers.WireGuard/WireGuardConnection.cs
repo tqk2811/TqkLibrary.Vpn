@@ -1,7 +1,11 @@
 using System.Net;
 using System.Security.Cryptography;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using TqkLibrary.VpnClient.Abstractions.Channels;
 using TqkLibrary.VpnClient.Abstractions.Channels.Interfaces;
+using TqkLibrary.VpnClient.Abstractions.Diagnostics.Enums;
+using TqkLibrary.VpnClient.Abstractions.Diagnostics.Extensions;
 using TqkLibrary.VpnClient.Abstractions.Drivers;
 using TqkLibrary.VpnClient.Abstractions.Drivers.Models;
 using TqkLibrary.VpnClient.Abstractions.Net;
@@ -33,7 +37,9 @@ namespace TqkLibrary.VpnClient.Drivers.WireGuard
     public sealed class WireGuardConnection : IDisposable, IAsyncDisposable
     {
         static readonly TimeSpan TimerTick = TimeSpan.FromMilliseconds(250);
+        const string DriverName = "wireguard";
 
+        readonly ILogger _logger;
         readonly string _host;
         readonly int _port;
         readonly WireGuardConfig _config;
@@ -69,14 +75,16 @@ namespace TqkLibrary.VpnClient.Drivers.WireGuard
         /// Creates a connection. <paramref name="config"/> is the static point-to-point profile; <paramref name="transportFactory"/>
         /// opens the UDP socket (an in-process factory drives it offline). <paramref name="timers"/> overrides the
         /// whitepaper timer thresholds (mainly for tests); <paramref name="clock"/> supplies the millisecond clock
-        /// (default: the system tick clock) — tests inject a deterministic one.
+        /// (default: the system tick clock) — tests inject a deterministic one. <paramref name="loggerFactory"/> receives
+        /// diagnostic traces (handshake/rekey/reconnect/drop); null logs to <see cref="NullLogger"/> (a no-op).
         /// </summary>
         public WireGuardConnection(string host, int port, WireGuardConfig config, IWireGuardTransportFactory transportFactory,
             WireGuardReconnectOptions? reconnectOptions = null,
             AddressFamilyPreference addressFamilyPreference = AddressFamilyPreference.Auto,
             IHostResolver? hostResolver = null,
             WireGuardTimers? timers = null,
-            Func<long>? clock = null)
+            Func<long>? clock = null,
+            ILoggerFactory? loggerFactory = null)
         {
             _host = host ?? throw new ArgumentNullException(nameof(host));
             _port = port;
@@ -88,6 +96,7 @@ namespace TqkLibrary.VpnClient.Drivers.WireGuard
             _timers = timers ?? new WireGuardTimers(config.PersistentKeepaliveSeconds);
             _clock = clock ?? DefaultClock;
             _tunnelConfig = config.ToTunnelConfig();
+            _logger = (loggerFactory ?? NullLoggerFactory.Instance).CreateLogger("TqkLibrary.VpnClient.Drivers.WireGuard");
         }
 
         /// <summary>The stable L3 packet channel (valid after a successful connect; survives rekey/reconnect).</summary>
@@ -138,6 +147,7 @@ namespace TqkLibrary.VpnClient.Drivers.WireGuard
             _peerState = peerState;
 
             // --- run the initiator handshake and wait for the response (type-2) ---
+            _logger.LogHandshake(DriverName, "Noise_IKpsk2 initiation sent (type-1 + mac1)");
             Session session = StartHandshake();
             _active = session;
             peerState.OnHandshakeInitiated(_clock());
@@ -150,10 +160,12 @@ namespace TqkLibrary.VpnClient.Drivers.WireGuard
             if (!completed)
             {
                 StopTimerLoop();
+                _logger.LogHandshakeFailed(DriverName, "no type-2 response within REKEY_ATTEMPT_TIME");
                 throw new VpnConnectionException("WireGuard handshake timed out: no type-2 response from the peer.");
             }
 
             BindSession(session, peerState);
+            _logger.LogHandshakeCompleted(DriverName);
             SetState(WireGuardConnectionState.Connected);
         }
 
@@ -223,16 +235,33 @@ namespace TqkLibrary.VpnClient.Drivers.WireGuard
         void OnResponse(ReadOnlySpan<byte> span)
         {
             var codec = new WireGuardMessageCodec();
-            if (!codec.TryDecodeResponse(span, out WireGuardResponseMessage response)) return;
+            if (!codec.TryDecodeResponse(span, out WireGuardResponseMessage response))
+            {
+                _logger.LogPacketDropped(DriverName, VpnDropReason.Malformed, "type-2 response failed to decode");
+                return;
+            }
 
             // The response addresses the session whose local (sender) index it echoes in ReceiverIndex.
             Session? target = MatchPendingHandshake(response.ReceiverIndex);
-            if (target is null || target.HandshakeDone) return;
-            if (!target.Handshake.VerifyIncomingMac1(span)) return; // forged/foreign — drop before the DH work
-            if (!target.Handshake.ConsumeResponse(response)) return; // bad tag / PSK mismatch
+            if (target is null || target.HandshakeDone)
+            {
+                _logger.LogPacketDropped(DriverName, VpnDropReason.Unexpected, "type-2 response with no matching pending handshake");
+                return;
+            }
+            if (!target.Handshake.VerifyIncomingMac1(span)) // forged/foreign — drop before the DH work
+            {
+                _logger.LogPacketDropped(DriverName, VpnDropReason.AuthFailed, "type-2 response mac1 mismatch");
+                return;
+            }
+            if (!target.Handshake.ConsumeResponse(response)) // bad tag / PSK mismatch
+            {
+                _logger.LogPacketDropped(DriverName, VpnDropReason.DecryptFailed, "type-2 response AEAD/PSK mismatch");
+                return;
+            }
 
             target.PeerIndex = response.SenderIndex;
             target.CompleteHandshake();
+            _logger.LogHandshake(DriverName, "type-2 response consumed; transport keys derived");
 
             // A rekey handshake (pending while the old session keeps running): swap the channel make-before-break.
             WireGuardPeerState? peerState = _peerState;
@@ -241,6 +270,7 @@ namespace TqkLibrary.VpnClient.Drivers.WireGuard
                 _active = target;
                 _pending = null;
                 BindSession(target, peerState);
+                _logger.LogRekey(DriverName, "channel swapped to new session (make-before-break)");
             }
         }
 
@@ -264,7 +294,9 @@ namespace TqkLibrary.VpnClient.Drivers.WireGuard
             // Deliver to whichever live session owns the receiver index in the header.
             Session? active = _active;
             if (active?.Channel != null && active.HandshakeDone && active.Channel.Deliver(span)) return;
-            // A late packet for a just-replaced previous session can be ignored (no previous kept here).
+            // A late packet for a just-replaced previous session (or a counter outside the replay window / a bad tag)
+            // could not be delivered — record it as a drop (the channel's Deliver returns false on decrypt/replay fail).
+            _logger.LogPacketDropped(DriverName, VpnDropReason.DecryptFailed, "type-4 transport packet not delivered (decrypt/replay/no session)");
         }
 
         // ---- timer loop: keepalive + make-before-break rekey, driven by WireGuardPeerState ----
@@ -287,7 +319,14 @@ namespace TqkLibrary.VpnClient.Drivers.WireGuard
             switch (action)
             {
                 case WireGuardSessionAction.SendKeepalive:
-                    try { if (active.Channel != null) await active.Channel.SendKeepaliveAsync().ConfigureAwait(false); }
+                    try
+                    {
+                        if (active.Channel != null)
+                        {
+                            await active.Channel.SendKeepaliveAsync().ConfigureAwait(false);
+                            _logger.LogKeepalive(DriverName, "sent empty type-4 keepalive");
+                        }
+                    }
                     catch { /* a missed keepalive is harmless; the peer's own timer covers liveness */ }
                     break;
 
@@ -310,6 +349,7 @@ namespace TqkLibrary.VpnClient.Drivers.WireGuard
         void StartRekey(WireGuardPeerState peerState, long now)
         {
             if (_pending != null) return; // already rekeying
+            _logger.LogRekey(DriverName, "initiating make-before-break rekey handshake");
             Session rekey = StartHandshake();
             _pending = rekey;
             peerState.OnHandshakeInitiated(now);
@@ -335,6 +375,7 @@ namespace TqkLibrary.VpnClient.Drivers.WireGuard
             lock (_stateLock)
             {
                 if (!_running) return;
+                _logger.LogLinkLost(DriverName, reason);
                 StopTimerLoop();
 
                 if (_userTeardown || !_opts.Enabled)
@@ -361,6 +402,7 @@ namespace TqkLibrary.VpnClient.Drivers.WireGuard
             while (!_userTeardown && !cancellationToken.IsCancellationRequested)
             {
                 bool established = false;
+                _logger.LogReconnectAttempt(DriverName, failures + 1);
                 try { await EstablishAsync(cancellationToken).ConfigureAwait(false); established = true; }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { break; }
                 catch { /* attempt failed — back off and retry */ }
@@ -373,7 +415,7 @@ namespace TqkLibrary.VpnClient.Drivers.WireGuard
                         healthy = _running;
                         if (healthy) _supervisorActive = false;
                     }
-                    if (healthy) { Reconnected?.Invoke(new WireGuardReconnectInfo()); return; }
+                    if (healthy) { _logger.LogReconnected(DriverName); Reconnected?.Invoke(new WireGuardReconnectInfo()); return; }
 
                     SetState(WireGuardConnectionState.Reconnecting);
                     delay = _opts.InitialBackoff;
@@ -466,6 +508,7 @@ namespace TqkLibrary.VpnClient.Drivers.WireGuard
         {
             if (_state == state) return;
             _state = state;
+            _logger.LogStateChanged(DriverName, state.ToString());
             StateChanged?.Invoke(state);
         }
 

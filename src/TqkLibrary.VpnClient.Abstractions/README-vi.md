@@ -17,8 +17,8 @@ Nhiều enum/flag trong project là **khung mở rộng tương lai** (WireGuard
 - **Tầng:** CORE (đáy đồ thị phụ thuộc).
 - **Target frameworks:** `netstandard2.0` ; `net8.0`.
 - **Phụ thuộc (ProjectReference):** **không có** — đây là project đáy, không tham chiếu project nào trong solution.
-- **PackageReference:** không có package đặc thù riêng. Trên `netstandard2.0` kế thừa polyfill chung từ [Directory.Build.props](../Directory.Build.props#L16-L25): `System.Memory`, `System.Threading.Channels`, `System.IO.Pipelines`, `Microsoft.Bcl.AsyncInterfaces` (cung cấp `Span/Memory`, `IAsyncDisposable`, `ValueTask`) và `TqkLibrary.CompilerServices` (source-only: `IsExternalInit` + attribute `required` → cho phép `init`/`record`/`required`). Trên `net8.0` các kiểu này có sẵn trong BCL.
-- **Được dùng bởi:** `Drivers.L2tpIpsec`, `Drivers.Sstp`, `IpStack`, `Ipsec`, `L2tp`, `Sockets`, `Ppp` (gián tiếp qua các tầng đó là `Vpn`).
+- **PackageReference:** `Microsoft.Extensions.Logging.Abstractions` 8.0.2 (`ILogger`/`ILoggerFactory`/`NullLogger` cho seam `Diagnostics` — lib `netstandard2.0` nên cả 2 TFM dùng được). Ngoài ra trên `netstandard2.0` kế thừa polyfill chung từ [Directory.Build.props](../Directory.Build.props#L16-L25): `System.Memory`, `System.Threading.Channels`, `System.IO.Pipelines`, `Microsoft.Bcl.AsyncInterfaces` (cung cấp `Span/Memory`, `IAsyncDisposable`, `ValueTask`) và `TqkLibrary.CompilerServices` (source-only: `IsExternalInit` + attribute `required` → cho phép `init`/`record`/`required`). Trên `net8.0` các kiểu BCL này có sẵn.
+- **Được dùng bởi:** `Drivers.L2tpIpsec`, `Drivers.Sstp`, `Drivers.WireGuard`, `Drivers.OpenConnect`, `Drivers.SoftEther`, `IpStack`, `Ipsec`, `L2tp`, `Sockets`, `Ppp` (gián tiếp qua các tầng đó là `Vpn`).
 
 Xem thêm tài liệu as-built: [10-codebase-architecture-and-flow.md](../../.docs/10-codebase-architecture-and-flow.md).
 
@@ -32,6 +32,7 @@ TqkLibrary.VpnClient.Abstractions/
 │   └── SwappablePacketChannel.cs  # facade IPacketChannel hot-swap được (reconnect không rebind stack)
 ├── Transport/Interfaces/     # Ống truyền byte/datagram bên dưới (TCP/TLS vs UDP)
 ├── Net/                      # Resolve outer host → IPAddress theo họ IP (AddressFamilyPreference, IHostResolver, DnsHostResolver)
+├── Diagnostics/              # Seam log/diagnostics dùng chung (Q.2): VpnEventIds + Enums/VpnDropReason + Extensions/VpnLogExtensions
 └── Drivers/                  # Hợp đồng plugin driver + model cấu hình + enum năng lực
     ├── Enums/                #   VpnLinkLayer/Transport/Security/Auth + Address/MultiHost
     ├── Models/               #   VpnEndpoint, VpnCredentials, TunnelConfig, VpnDriverCapabilities
@@ -71,6 +72,16 @@ TqkLibrary.VpnClient.Abstractions/
 | `AddressFamilyPreference` | Enum chọn họ IP cho outer transport: `Auto`(=IPv4-first, giữ hành vi cũ) / `IPv4` / `IPv6` — luôn fallback họ còn lại | [AddressFamilyPreference.cs](Net/AddressFamilyPreference.cs) |
 | `IHostResolver` | Seam resolve host (name/literal) → 1 `IPAddress` theo preference; instance để test với fake không cần DNS | [IHostResolver.cs:7](Net/IHostResolver.cs#L7) |
 | `DnsHostResolver` | Impl mặc định: literal-passthrough + `Dns.GetHostAddresses` + `Select` (pure static — ưu tiên 1 họ, fallback họ kia; testable không DNS). Consumer thật: SSTP `TlsByteStream`, L2TP `L2tpIpsecConnection` | [DnsHostResolver.cs:14](Net/DnsHostResolver.cs#L14) |
+
+### Diagnostics — seam log/diagnostics dùng chung (Q.2)
+
+Cross-cutting trace cho driver/protocol qua `Microsoft.Extensions.Logging`. Driver luồn `ILoggerFactory?` (mặc định `NullLogger` ⇒ no-op, **ADDITIVE không đổi hành vi**). Consumer hiện tại: 3 driver mới nhất WireGuard / OpenConnect / SoftEther.
+
+| Type | Vai trò | Vị trí |
+| --- | --- | --- |
+| `VpnEventIds` | Tập `EventId` ổn định gắn lên mỗi log entry: 1xx handshake (`StateChanged`/`Handshake`/`HandshakeCompleted`/`HandshakeFailed`), 2xx steady (`Rekey`/`Keepalive`), 3xx reconnect (`LinkLost`/`ReconnectAttempt`/`Reconnected`), 4xx drop (`PacketDropped`) — id là contract, chỉ thêm không đánh số lại | [VpnEventIds.cs:14](Diagnostics/VpnEventIds.cs#L14) |
+| `VpnDropReason` | Enum lý do drop gói vào (`DecryptFailed`/`AuthFailed`/`Replay`/`Malformed`/`Unexpected`) — field structured trên entry `PacketDropped` | [VpnDropReason.cs:8](Diagnostics/Enums/VpnDropReason.cs#L8) |
+| `VpnLogExtensions` | Extension `ILogger` strongly-typed (`LogStateChanged`/`LogHandshake`/`LogHandshakeCompleted`/`LogHandshakeFailed`/`LogRekey`/`LogKeepalive`/`LogLinkLost`/`LogReconnectAttempt`/`LogReconnected`/`LogPacketDropped`) — wrapper `LoggerMessage.Define` allocation-free, no-op khi level tắt | [VpnLogExtensions.cs:18](Diagnostics/Extensions/VpnLogExtensions.cs#L18) |
 
 ### Drivers — hợp đồng plugin + model
 

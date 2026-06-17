@@ -30,6 +30,14 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther.Tests
             Session = new SoftEtherSessionParams { MaxConnection = 1 },
         };
 
+        static SoftEtherLoginRequest Login(bool useEncrypt, bool useCompress) => new SoftEtherLoginRequest
+        {
+            HubName = "DEFAULT",
+            UserName = "alice",
+            Password = "P@ssw0rd",
+            Session = new SoftEtherSessionParams { MaxConnection = 1, UseEncrypt = useEncrypt, UseCompress = useCompress },
+        };
+
         // A minimal, well-formed IPv4 packet (20-byte header) to dst, so VirtualHost reads the destination at offset 16
         // and ARP-resolves it. The payload is a recognisable tail the echo test can assert.
         static byte[] BuildIpv4(IPAddress dst, byte[] tail)
@@ -75,6 +83,40 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther.Tests
 
             // Client → server (echoed) → client: an IP packet survives the Ethernet-over-TLS data channel both ways.
             byte[] packet = BuildIpv4(IPAddress.Parse("8.8.8.8"), System.Text.Encoding.ASCII.GetBytes("tunnelled over SoftEther"));
+            await connection.PacketChannel.WriteIpPacketAsync(packet, cts.Token);
+            byte[] echoed = await inbound.Reader.ReadAsync(cts.Token);
+            Assert.Equal(packet, echoed);
+
+            await connection.DisposeAsync();
+        }
+
+        [Theory]
+        [InlineData(true, false)]    // use_encrypt only (RC4 over TLS)
+        [InlineData(false, true)]    // use_compress only (DEFLATE per frame)
+        [InlineData(true, true)]     // both: compress then encrypt
+        public async Task Connect_WithEncryptAndCompress_RoundTripsIp(bool useEncrypt, bool useCompress)
+        {
+            var (client, server) = DuplexPipe.CreatePair();
+            var sim = new SimulatedSoftEtherServer(server, useEncrypt: useEncrypt, useCompress: useCompress);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var serverTask = Task.Run(() => sim.RunAsync(cts.Token));
+
+            var connection = new SoftEtherConnection("vpn.example.com", 443, Login(useEncrypt, useCompress),
+                new InProcessSoftEtherTransportFactory(() => client),
+                reconnectOptions: new SoftEtherReconnectOptions { Enabled = false });
+
+            var inbound = Channel.CreateUnbounded<byte[]>();
+            connection.PacketChannel.InboundIpPacket += m => inbound.Writer.TryWrite(m.ToArray());
+
+            await connection.ConnectAsync(cts.Token);
+
+            // The whole handshake + DHCP lease + ARP ran through the use_compress/use_encrypt data session.
+            Assert.Equal(SoftEtherConnectionState.Connected, connection.State);
+            Assert.Equal(sim.LeasedAddress, connection.AssignedAddress);
+
+            // A compressible IP packet survives compress+encrypt both ways (echoed by the server).
+            byte[] packet = BuildIpv4(IPAddress.Parse("8.8.8.8"),
+                System.Text.Encoding.ASCII.GetBytes(new string('z', 400)));   // long run → actually compresses
             await connection.PacketChannel.WriteIpPacketAsync(packet, cts.Token);
             byte[] echoed = await inbound.Reader.ReadAsync(cts.Token);
             Assert.Equal(packet, echoed);

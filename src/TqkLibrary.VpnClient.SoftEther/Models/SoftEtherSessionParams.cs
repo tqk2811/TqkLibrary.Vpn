@@ -15,8 +15,13 @@ namespace TqkLibrary.VpnClient.SoftEther.Models
         /// </summary>
         public uint MaxConnection { get; init; } = 1;
 
-        /// <summary>Whether to RC4-encrypt the data payload on top of TLS (<c>use_encrypt</c>).</summary>
-        public bool UseEncrypt { get; init; } = true;
+        /// <summary>
+        /// Whether to RC4-encrypt the data payload on top of TLS (<c>use_encrypt</c>). Defaults to <c>false</c> (raw
+        /// payload on TLS): RC4 is broken (RFC 7465) and adds nothing over the TLS the session already runs on, so it is
+        /// opt-in for legacy SoftEther interop only. When on, the driver wraps the data session in
+        /// <c>SoftEtherEncryptedTransport</c>.
+        /// </summary>
+        public bool UseEncrypt { get; init; }
 
         /// <summary>Whether to deflate-compress the data payload (<c>use_compress</c>).</summary>
         public bool UseCompress { get; init; }

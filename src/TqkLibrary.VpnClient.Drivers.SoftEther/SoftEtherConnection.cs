@@ -181,6 +181,15 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther
             int desired = ResolveConnectionCount(welcome.MaxConnection);
             await OpenAdditionalConnectionsAsync(handshake, welcome, desired, connections, cancellationToken).ConfigureAwait(false);
 
+            // --- use_encrypt: the handshake (HTTP/PACK) ran in TLS plaintext; from here the data session is RC4-encrypted
+            //     below the block framing. Wrap each connection in the per-direction RC4 layer keyed by the session key. ---
+            if (_login.Session.UseEncrypt)
+            {
+                Logger.LogHandshake(DriverName, "use_encrypt: wrapping the data session in the RC4 layer (over TLS)");
+                for (int i = 0; i < connections.Count; i++)
+                    connections[i] = SoftEtherEncryptedTransport.CreateClient(connections[i], welcome.SessionKey);
+            }
+
             SoftEtherConnectionDirection[] directions =
                 SoftEtherConnectionDirectionPlanner.Plan(connections.Count, welcome.HalfConnection);
             var mux = new SoftEtherMultiConnectionMux(connections, directions, OnLinkLost);
@@ -191,7 +200,7 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther
                     (welcome.HalfConnection ? " (half-duplex)" : ""));
 
             // --- the stream(s) are now the data session: expose it as one L2 channel; the mux delivers inbound frames ---
-            var channel = new SoftEtherEthernetChannel(_mac.ToArray(), mux.SendBlockAsync, _mtu);
+            var channel = new SoftEtherEthernetChannel(_mac.ToArray(), mux.SendBlockAsync, _mtu, _login.Session.UseCompress);
             _channel = channel;
             mux.InboundFrame += channel.Deliver;   // keep-alive frames are dropped inside Deliver
             MarkRunning(); // a peer-close/fault from a receive loop below must now arm reconnect (before MarkConnected)

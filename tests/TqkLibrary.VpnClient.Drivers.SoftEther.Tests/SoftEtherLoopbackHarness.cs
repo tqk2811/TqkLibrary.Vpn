@@ -104,15 +104,20 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther.Tests
         readonly byte[] _serverRandom;
         readonly bool _rejectLogin;
         readonly uint _rejectErrorCode;
+        readonly bool _useEncrypt;
+        readonly bool _useCompress;
 
+        IByteStreamTransport _dataTransport;   // the data-session I/O (RC4-wrapped when use_encrypt is on)
         MacAddress _clientMac;
         int _dhcpReplies;
 
         public SimulatedSoftEtherServer(DuplexPipe pipe,
             IPAddress? leasedAddress = null, IPAddress? gateway = null, IPAddress? dns = null,
-            bool rejectLogin = false, uint rejectErrorCode = 0)
+            bool rejectLogin = false, uint rejectErrorCode = 0,
+            bool useEncrypt = false, bool useCompress = false)
         {
             _pipe = pipe;
+            _dataTransport = pipe;
             _leasedAddress = leasedAddress ?? IPAddress.Parse("192.168.30.10");
             _gateway = gateway ?? IPAddress.Parse("192.168.30.1");
             _subnetMask = IPAddress.Parse("255.255.255.0");
@@ -120,6 +125,8 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther.Tests
             _gatewayMac = MacAddress.Parse("5e:00:00:00:00:01");
             _rejectLogin = rejectLogin;
             _rejectErrorCode = rejectErrorCode;
+            _useEncrypt = useEncrypt;
+            _useCompress = useCompress;
             _serverRandom = new byte[SoftEtherProtocol.RandomSize];
             for (int i = 0; i < _serverRandom.Length; i++) _serverRandom[i] = (byte)(0x10 + i);
         }
@@ -164,10 +171,16 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther.Tests
             Pack login = SoftEtherHttpPackCodec.ParseBody(loginBody);
             _ = login.GetStr("username");   // present; the offline server does not re-verify the SHA-0 here
 
+            byte[] sessionKey = NewSessionKey();
             Pack reply = _rejectLogin
                 ? new Pack().SetInt("error", _rejectErrorCode)
-                : new Pack().SetInt("error", 0u).SetData("session_name", NewSessionKey());
+                : new Pack().SetInt("error", 0u).SetData("session_name", sessionKey);
             await _pipe.WriteAsync(SoftEtherHttpPackCodec.BuildOkResponse(reply)).ConfigureAwait(false);
+
+            // use_encrypt: from here the data session is RC4-encrypted below the framing (the server is the mirror of
+            // the client's CreateClient). The handshake above ran in plaintext on the raw pipe.
+            if (!_rejectLogin && _useEncrypt)
+                _dataTransport = SoftEtherEncryptedTransport.CreateServer(_pipe, sessionKey);
         }
 
         static byte[] NewSessionKey()
@@ -181,7 +194,7 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther.Tests
 
         async Task RunDataSessionAsync(CancellationToken cancellationToken)
         {
-            var reader = new SoftEtherDataBlockReader(_pipe);
+            var reader = new SoftEtherDataBlockReader(_dataTransport);
             while (!cancellationToken.IsCancellationRequested)
             {
                 IReadOnlyList<byte[]> frames = await reader.ReadBlockAsync(cancellationToken).ConfigureAwait(false);
@@ -191,8 +204,11 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther.Tests
             }
         }
 
-        async Task HandleFrameAsync(byte[] frame, CancellationToken cancellationToken)
+        async Task HandleFrameAsync(byte[] wireFrame, CancellationToken cancellationToken)
         {
+            // use_compress: the client compresses a frame before block-encoding it; undo that here (raw frames, e.g. the
+            // keep-alive, pass through unchanged because they carry no compression magic).
+            byte[] frame = _useCompress ? SoftEtherPayloadCompressor.DecompressFrame(wireFrame) : wireFrame;
             if (SoftEtherDataFrameCodec.IsKeepAlive(frame)) return;       // client keep-alive — ignore
             if (frame.Length < EthernetFrame.HeaderLength) return;
 
@@ -308,7 +324,12 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther.Tests
         }
 
         ValueTask SendFrameAsync(byte[] frame, CancellationToken cancellationToken)
-            => _pipe.WriteAsync(SoftEtherDataFrameCodec.EncodeSingle(frame), cancellationToken);
+        {
+            // Mirror the client: compress before block-encoding (when use_compress) and write to the RC4-wrapped
+            // data transport (when use_encrypt).
+            ReadOnlyMemory<byte> payload = _useCompress ? SoftEtherPayloadCompressor.CompressFrame(frame) : frame;
+            return _dataTransport.WriteAsync(SoftEtherDataFrameCodec.EncodeSingle(payload), cancellationToken);
+        }
 
         // ---- minimal HTTP reader (mirrors the SoftEther.Tests stub server) ----
 

@@ -1,11 +1,10 @@
 using System.Net;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 using TqkLibrary.VpnClient.Abstractions.Channels;
-using TqkLibrary.VpnClient.Abstractions.Channels.Interfaces;
 using TqkLibrary.VpnClient.Abstractions.Diagnostics.Extensions;
 using TqkLibrary.VpnClient.Abstractions.Drivers;
 using TqkLibrary.VpnClient.Abstractions.Net;
+using TqkLibrary.VpnClient.Drivers.Core;
 using TqkLibrary.VpnClient.Drivers.L2tpIpsec.Enums;
 using TqkLibrary.VpnClient.Drivers.L2tpIpsec.Models;
 using TqkLibrary.VpnClient.Ipsec.Esp;
@@ -23,10 +22,20 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
     /// <summary>
     /// A complete L2TP/IPsec client: IKEv1 Main Mode + Quick Mode (PSK) over UDP/500→4500 NAT-T, an ESP transport-mode
     /// data plane, an L2TP tunnel/session over UDP/1701, and a PPP session (MS-CHAPv2) that yields the assigned IP.
-    /// After <see cref="ConnectAsync"/> the tunnel carries IP traffic via the stable <see cref="PacketChannel"/>.
-    /// When auto-reconnect is enabled, a dropped tunnel is re-established behind that same channel.
+    /// After <see cref="ConnectAsync"/> the tunnel carries IP traffic via the stable
+    /// <see cref="ReconnectingVpnConnection{TState}.PacketChannel"/>. When auto-reconnect is enabled, a dropped tunnel is
+    /// re-established behind that same channel.
+    /// <para>The link-loss → supervisor → reconnect-loop machinery (backoff/jitter, the stable
+    /// <see cref="SwappablePacketChannel"/> facade, the lifetime cancellation, state changes + structured logging, the
+    /// monotonic clock) lives in <see cref="ReconnectingVpnConnection{TState}"/> (roadmap F.6), mirroring the
+    /// IKEv2 / OpenConnect / OpenVPN / WireGuard / SoftEther / SSTP drivers. This driver keeps only its protocol logic
+    /// (<see cref="EstablishAsync"/> / <see cref="CleanupAttemptResourcesAsync"/> / the per-attempt timers) and — the
+    /// most intricate part — runs <b>in-place</b> keepalive (L2TP HELLO + IKE DPD), Phase 2 ESP CHILD SA rekey, Phase 1
+    /// ISAKMP SA rekey (both make-before-break), and best-effort multi-session on its own timers, deliberately
+    /// <i>outside</i> the supervisor so a rekey refreshes the SA without re-establishing the tunnel; only a real drop
+    /// (DPD timeout / a server Delete / L2TP teardown) calls the inherited <c>OnLinkLost</c>.</para>
     /// </summary>
-    public sealed class L2tpIpsecConnection : IDisposable, IAsyncDisposable
+    public sealed class L2tpIpsecConnection : ReconnectingVpnConnection<L2tpIpsecConnectionState>, IDisposable, IAsyncDisposable
     {
         static readonly TimeSpan HelloInterval = TimeSpan.FromSeconds(60);
         static readonly TimeSpan DpdInterval = TimeSpan.FromSeconds(20);
@@ -38,24 +47,19 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
         static readonly TimeSpan Phase1Lifetime = TimeSpan.FromSeconds(IkeV1Lifetimes.Phase1Seconds * 9 / 10);
         static readonly TimeSpan Phase1RekeyRetry = TimeSpan.FromMinutes(2);
         static readonly TimeSpan RekeyGrace = TimeSpan.FromSeconds(10);
-        const string DriverName = "l2tp-ipsec";
+        const string DriverNameConst = "l2tp-ipsec";
 
-        readonly ILogger _logger;
         readonly string _host;
         readonly byte[] _preSharedKey;
         readonly uint _magic;
         readonly bool _enableIpv6;
-        readonly L2tpIpsecReconnectOptions _opts;
         readonly L2tpIpsecTimeoutOptions _timeouts;
         readonly L2tpIpsecNatTraversalMode _natMode;
         readonly AddressFamilyPreference _addressFamilyPreference;
         readonly IHostResolver _hostResolver;
-        readonly SwappablePacketChannel _facade = new();
-        readonly CancellationTokenSource _lifetimeCts = new();
-        readonly Random _random = new();
-        readonly object _stateLock = new();
         readonly object _extraSessionsLock = new();
         readonly List<L2tpSession> _extraSessions = new(); // additional L2TP sessions opened on the live tunnel (best-effort)
+        readonly Random _retransmitRandom = new(); // RNG for the IKE retransmit jitter (distinct from the base reconnect-backoff jitter)
 
         string? _userName;
         string? _password;
@@ -82,38 +86,28 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
         int _dpdSequence;
         int _dpdMissed;
         int _rekeyInProgress; // 0/1 guard so the timer rekey and the sequence-exhaustion rekey never overlap
-        int _teardownStarted;
-        bool _supervisorActive; // guarded by _stateLock
-        volatile bool _keepaliveRunning;
-        volatile bool _userTeardown;
-        Task? _supervisor;
-        L2tpIpsecConnectionState _state = L2tpIpsecConnectionState.Disconnected;
 
         /// <summary>
         /// Creates a connection to the given L2TP/IPsec gateway with the IPsec pre-shared key.
         /// <paramref name="loggerFactory"/> receives diagnostic traces (handshake/keepalive/rekey/reconnect); null logs
-        /// to <see cref="NullLogger"/> (a no-op).
+        /// to a no-op logger.
         /// </summary>
         public L2tpIpsecConnection(string host, byte[] preSharedKey, uint magic = 0x4D2A3B1C,
             L2tpIpsecReconnectOptions? reconnectOptions = null, L2tpIpsecTimeoutOptions? timeoutOptions = null,
             L2tpIpsecNatTraversalMode natTraversalMode = L2tpIpsecNatTraversalMode.ForcedNatT,
             AddressFamilyPreference addressFamilyPreference = AddressFamilyPreference.Auto, IHostResolver? hostResolver = null,
             bool enableIpv6 = false, ILoggerFactory? loggerFactory = null)
+            : base(DriverNameConst, reconnectOptions ?? new L2tpIpsecReconnectOptions(), clock: null, loggerFactory: loggerFactory)
         {
             _host = host;
             _preSharedKey = preSharedKey;
             _magic = magic;
             _enableIpv6 = enableIpv6;
-            _opts = reconnectOptions ?? new L2tpIpsecReconnectOptions();
             _timeouts = timeoutOptions ?? new L2tpIpsecTimeoutOptions();
             _natMode = natTraversalMode;
             _addressFamilyPreference = addressFamilyPreference;
             _hostResolver = hostResolver ?? DnsHostResolver.Default;
-            _logger = (loggerFactory ?? NullLoggerFactory.Instance).CreateLogger("TqkLibrary.VpnClient.Drivers.L2tpIpsec");
         }
-
-        /// <summary>The stable L3 packet channel (valid after a successful connect; survives reconnect).</summary>
-        public IPacketChannel PacketChannel => _facade;
 
         /// <summary>The IP address assigned by the server via IPCP (tracks the latest attempt).</summary>
         public IPAddress AssignedAddress => _ppp!.AssignedAddress;
@@ -124,23 +118,25 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
         /// <summary>The link-local IPv6 address negotiated via IPV6CP, or null (IPv6 disabled / server has no IPV6CP).</summary>
         public IPAddress? AssignedAddressV6 => _ppp?.AssignedAddressV6;
 
-        /// <summary>Raised whenever the connection state changes (handshake progress, drop, reconnect).</summary>
-        public event Action<L2tpIpsecConnectionState>? StateChanged;
-
         /// <summary>Raised after a successful auto-reconnect, carrying the new address and whether it changed.</summary>
         public event Action<L2tpIpsecReconnectInfo>? Reconnected;
 
-        /// <summary>The current lifecycle state.</summary>
-        public L2tpIpsecConnectionState State => _state;
+        /// <inheritdoc/>
+        protected override L2tpIpsecConnectionState DisconnectedState => L2tpIpsecConnectionState.Disconnected;
+        /// <inheritdoc/>
+        protected override L2tpIpsecConnectionState ConnectingState => L2tpIpsecConnectionState.Connecting;
+        /// <inheritdoc/>
+        protected override L2tpIpsecConnectionState ConnectedState => L2tpIpsecConnectionState.Connected;
+        /// <inheritdoc/>
+        protected override L2tpIpsecConnectionState ReconnectingState => L2tpIpsecConnectionState.Reconnecting;
 
         /// <summary>Runs the full handshake and returns once PPP/IPCP has assigned an address.</summary>
         public async Task ConnectAsync(string userName, string password, CancellationToken cancellationToken = default)
         {
             _userName = userName;
             _password = password;
-            SetState(L2tpIpsecConnectionState.Connecting);
 
-            await EstablishAsync(cancellationToken).ConfigureAwait(false);
+            await ConnectCoreAsync(cancellationToken).ConfigureAwait(false);
             _lastAssignedAddress = _ppp!.AssignedAddress;
         }
 
@@ -154,7 +150,7 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
         public async Task<L2tpIpsecAdditionalSession> OpenAdditionalSessionAsync(CancellationToken cancellationToken = default)
         {
             L2tpClient? l2tp = _l2tp;
-            if (l2tp == null || !_keepaliveRunning)
+            if (l2tp == null || !IsRunning)
                 throw new InvalidOperationException("The L2TP/IPsec tunnel is not connected.");
 
             L2tpSession session = await l2tp.OpenSessionAsync(cancellationToken).ConfigureAwait(false);
@@ -178,7 +174,7 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
         /// Brings up one full tunnel attempt from scratch: a clean-slate factory reused by the first connect and by
         /// every reconnect. On success the fresh PPP channel is installed behind the stable facade and keepalive starts.
         /// </summary>
-        async Task EstablishAsync(CancellationToken cancellationToken)
+        protected override async Task EstablishAsync(CancellationToken cancellationToken)
         {
             await CleanupAttemptResourcesAsync().ConfigureAwait(false);
             _espActive = false;
@@ -194,22 +190,22 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
             _serverIp = serverIp;
 
             // Phase 1 Main Mode 1-4 + the NAT-T port decision (forced, or honest-first with a forced fallback).
-            _logger.LogHandshake(DriverName, "IKEv1 Phase 1 Main Mode + NAT-T port decision");
+            Logger.LogHandshake(DriverName, "IKEv1 Phase 1 Main Mode + NAT-T port decision");
             (NatTraversalChannel natt, IkeV1Client ike) = await BringUpPhase1Async(serverIp, cancellationToken).ConfigureAwait(false);
 
             // MM5/MM6 (encrypted IDi + HASH_I, then verify HASH_R) on the port Phase 1 settled on.
-            _logger.LogHandshake(DriverName, "IKEv1 Phase 1 MM5/MM6 (encrypted ID + HASH)");
+            Logger.LogHandshake(DriverName, "IKEv1 Phase 1 MM5/MM6 (encrypted ID + HASH)");
             if (!ike.ProcessMainMode6(await ExchangeIkeAsync(natt, ike.BuildMainMode5(), cancellationToken).ConfigureAwait(false)))
             {
-                _logger.LogHandshakeFailed(DriverName, "Phase 1 authentication failed (PSK / HASH_R mismatch)");
+                Logger.LogHandshakeFailed(DriverName, "Phase 1 authentication failed (PSK / HASH_R mismatch)");
                 throw new VpnAuthenticationException("IKEv1 Phase 1 authentication failed (PSK / HASH_R mismatch).");
             }
 
             // Phase 2 — Quick Mode.
-            _logger.LogHandshake(DriverName, "IKEv1 Phase 2 Quick Mode (ESP CHILD SA)");
+            Logger.LogHandshake(DriverName, "IKEv1 Phase 2 Quick Mode (ESP CHILD SA)");
             if (!ike.ProcessQuickMode2(await ExchangeIkeAsync(natt, ike.BuildQuickMode1(), cancellationToken).ConfigureAwait(false)))
             {
-                _logger.LogHandshakeFailed(DriverName, "Quick Mode failed (no ESP SA)");
+                Logger.LogHandshakeFailed(DriverName, "Quick Mode failed (no ESP SA)");
                 throw new VpnServerRejectedException("IKEv1 Quick Mode failed (no ESP SA).");
             }
             await natt.SendIkeAsync(ike.BuildQuickMode3()).ConfigureAwait(false); // QM3 has no reply
@@ -224,7 +220,7 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
                 retransmitOptions: _timeouts.BuildL2tpRetransmitOptions());
             _l2tp = l2tp;
             l2tp.Disconnected += OnLinkLost;
-            _logger.LogHandshake(DriverName, "L2TPv2 tunnel/session over ESP (SCCRQ/ICRQ)");
+            Logger.LogHandshake(DriverName, "L2TPv2 tunnel/session over ESP (SCCRQ/ICRQ)");
             await l2tp.ConnectAsync(cancellationToken).ConfigureAwait(false);
 
             var pppChannel = new L2tpPppFrameChannel(l2tp.PrimarySession);
@@ -236,10 +232,10 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
             var ipv6Up = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             ppp.LinkUp += () => linkUp.TrySetResult(true);
             ppp.Ipv6Up += () => ipv6Up.TrySetResult(true);
-            ppp.AuthSucceeded += () => _logger.LogHandshake(DriverName, "PPP MS-CHAPv2 authentication succeeded");
+            ppp.AuthSucceeded += () => Logger.LogHandshake(DriverName, "PPP MS-CHAPv2 authentication succeeded");
             ppp.AuthFailed += () =>
             {
-                _logger.LogHandshakeFailed(DriverName, "PPP MS-CHAPv2 authentication failed");
+                Logger.LogHandshakeFailed(DriverName, "PPP MS-CHAPv2 authentication failed");
                 linkUp.TrySetException(new VpnAuthenticationException("PPP MS-CHAPv2 authentication failed."));
             };
             ppp.Start();
@@ -249,7 +245,7 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
 
             // Handshake done: stop steering IKE to the handshake waiter, publish the new plane, start keepalive.
             _ikeWaiter = null;
-            _facade.SetInner(ppp.PacketChannel);
+            Facade.SetInner(ppp.PacketChannel);
             StartKeepalive();
         }
 
@@ -327,7 +323,7 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
         {
             var natt = new NatTraversalChannel(serverIp, NatTraversal.IkePort, localPort);
             _natt = natt;
-            _loopCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token, cancellationToken);
+            _loopCts = CancellationTokenSource.CreateLinkedTokenSource(LifetimeToken, cancellationToken);
             CancellationToken loopToken = _loopCts.Token;
             _ = Task.Run(() => ReceiveLoopAsync(natt, loopToken));
             return natt;
@@ -347,9 +343,10 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
         }
 
         // Tears down the resources of the previous attempt before a fresh one (no-op on the very first attempt).
-        async Task CleanupAttemptResourcesAsync()
+        /// <inheritdoc/>
+        protected override async Task CleanupAttemptResourcesAsync()
         {
-            StopKeepalive();
+            StopAttemptLoop();
 
             if (_l2tp != null) _l2tp.Disconnected -= OnLinkLost;
 
@@ -395,7 +392,7 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
                 _ikeWaiter = waiter;
                 await natt.SendIkeAsync(request).ConfigureAwait(false);
 
-                Task completed = await Task.WhenAny(waiter.Task, Task.Delay(WithJitter(_timeouts.IkeIntervalFor(attempt), _timeouts.RetransmitJitterFraction), cancellationToken)).ConfigureAwait(false);
+                Task completed = await Task.WhenAny(waiter.Task, Task.Delay(WithRetransmitJitter(_timeouts.IkeIntervalFor(attempt)), cancellationToken)).ConfigureAwait(false);
                 if (completed == waiter.Task)
                 {
                     byte[] reply = await waiter.Task.ConfigureAwait(false);
@@ -483,9 +480,8 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
 
         void StartKeepalive()
         {
-            _keepaliveRunning = true;
-            _logger.LogHandshakeCompleted(DriverName);
-            SetState(L2tpIpsecConnectionState.Connected);
+            Logger.LogHandshakeCompleted(DriverName);
+            MarkConnected();
             _helloTimer = new System.Threading.Timer(_ => _ = SendHelloTickAsync(), null, HelloInterval, HelloInterval);
             _dpdTimer = new System.Threading.Timer(_ => _ = SendDpdTickAsync(), null, DpdInterval, DpdInterval);
             _rekeyTimer = new System.Threading.Timer(_ => _ = RekeyPhase2Async(), null, RekeyInterval, RekeyInterval);
@@ -496,9 +492,11 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
                 _ => _ = RekeyPhase1Async(), null, Phase1Lifetime, System.Threading.Timeout.InfiniteTimeSpan);
         }
 
-        void StopKeepalive()
+        /// <summary>Stops the per-attempt keepalive/rekey timers and parks the ESP demux (the shared supervisor drives
+        /// the run/teardown flags around this; it is called under the state lock on link-loss and on teardown/cleanup).</summary>
+        protected override void StopAttemptLoop()
         {
-            _keepaliveRunning = false;
+            _espActive = false;
             _helloTimer?.Dispose();
             _dpdTimer?.Dispose();
             _rekeyTimer?.Dispose();
@@ -513,17 +511,17 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
 
         async Task SendHelloTickAsync()
         {
-            if (!_keepaliveRunning) return;
+            if (!IsRunning) return;
             L2tpClient? l2tp = _l2tp; // snapshot: a concurrent teardown nulls the field
             if (l2tp == null) return;
-            _logger.LogKeepalive(DriverName, "sent L2TP HELLO");
+            Logger.LogKeepalive(DriverName, "sent L2TP HELLO");
             try { await l2tp.SendHelloAsync().ConfigureAwait(false); }
             catch { /* a dead tunnel surfaces via DPD or the L2TP Disconnected event */ }
         }
 
         async Task SendDpdTickAsync()
         {
-            if (!_keepaliveRunning) return;
+            if (!IsRunning) return;
             if (Interlocked.CompareExchange(ref _dpdMissed, 0, 0) >= DpdMaxMissed)
             {
                 OnLinkLost("DPD: gateway stopped answering R-U-THERE.");
@@ -534,7 +532,7 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
             NatTraversalChannel? natt = _natt; // snapshot: a concurrent teardown nulls the fields
             IkeV1Client? ike = _ike;
             if (natt == null || ike == null) return;
-            _logger.LogKeepalive(DriverName, "sent IKE DPD R-U-THERE");
+            Logger.LogKeepalive(DriverName, "sent IKE DPD R-U-THERE");
             try { await natt.SendIkeAsync(ike.BuildDpdRUThere(sequence)).ConfigureAwait(false); }
             catch { }
         }
@@ -543,7 +541,7 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
         void HandleInboundIke(byte[] payload)
         {
             IkeV1Client? ike = _ike;
-            if (ike is null || !_keepaliveRunning) return;
+            if (ike is null || !IsRunning) return;
             try
             {
                 IkeV1InformationalResult info = ike.ProcessInformational(payload);
@@ -580,7 +578,7 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
 
         async Task RekeyPhase2Async()
         {
-            if (!_keepaliveRunning) return;
+            if (!IsRunning) return;
             // Either the lifetime timer or the sequence-exhaustion signal can land here; one rekey at a time so they
             // don't clobber the shared _rekeyWaiter or run two Quick Mode exchanges at once.
             if (Interlocked.CompareExchange(ref _rekeyInProgress, 1, 0) != 0) return;
@@ -597,7 +595,7 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
                 if (transport == null) return;
                 EspSession next = BuildEspSession(ike.RekeyNegotiatedEsp, ike.CreateRekeyPhase2Keys(), ike.RekeyChildOutboundSpi, ike.RekeyChildInboundSpi);
                 transport.SwapSession(next);
-                _logger.LogRekey(DriverName, "Phase 2 ESP CHILD SA rekeyed (make-before-break)");
+                Logger.LogRekey(DriverName, "Phase 2 ESP CHILD SA rekeyed (make-before-break)");
                 ScheduleDropPreviousInbound();
             }
             catch { /* rekey failed; the current SA stays active — DPD declares the peer dead if it is truly gone */ }
@@ -606,7 +604,7 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
 
         async Task<byte[]> ExchangeRekeyAsync(byte[] request)
         {
-            for (int attempt = 0; attempt < _timeouts.IkeMaxAttempts && _keepaliveRunning; attempt++)
+            for (int attempt = 0; attempt < _timeouts.IkeMaxAttempts && IsRunning; attempt++)
             {
                 NatTraversalChannel? natt = _natt; // snapshot: a concurrent teardown nulls the field
                 if (natt == null) break;
@@ -614,7 +612,7 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
                 _rekeyWaiter = waiter;
                 await natt.SendIkeAsync(request).ConfigureAwait(false);
 
-                Task completed = await Task.WhenAny(waiter.Task, Task.Delay(WithJitter(_timeouts.IkeIntervalFor(attempt), _timeouts.RetransmitJitterFraction))).ConfigureAwait(false);
+                Task completed = await Task.WhenAny(waiter.Task, Task.Delay(WithRetransmitJitter(_timeouts.IkeIntervalFor(attempt)))).ConfigureAwait(false);
                 _rekeyWaiter = null;
                 if (completed == waiter.Task) return await waiter.Task.ConfigureAwait(false);
             }
@@ -639,7 +637,7 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
         // run a Quick Mode (or a SwapSession) at the same time.
         async Task RekeyPhase1Async()
         {
-            if (!_keepaliveRunning) return;
+            if (!IsRunning) return;
             if (Interlocked.CompareExchange(ref _rekeyInProgress, 1, 0) != 0)
             {
                 ArmPhase1Timer(Phase1RekeyRetry); // a Phase 2 rekey holds the mutex; retry within the expiry margin
@@ -677,7 +675,7 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
                 // Release the old ISAKMP SA at the gateway, then swing DPD / Phase 2 rekey / teardown onto the new SA.
                 await Swallow(() => natt.SendIkeAsync(oldIke.BuildDeleteIsakmp())).ConfigureAwait(false);
                 _ike = newIke;
-                _logger.LogRekey(DriverName, "Phase 1 ISAKMP SA rekeyed in place (new SA + CHILD SA, make-before-break)");
+                Logger.LogRekey(DriverName, "Phase 1 ISAKMP SA rekeyed in place (new SA + CHILD SA, make-before-break)");
                 ScheduleDropPreviousInbound();
                 succeeded = true;
             }
@@ -687,7 +685,7 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
                 _phase1RekeyWaiter = null;
                 _rekeyIke = null;
                 Interlocked.Exchange(ref _rekeyInProgress, 0);
-                if (_keepaliveRunning) ArmPhase1Timer(succeeded ? Phase1Lifetime : Phase1RekeyRetry);
+                if (IsRunning) ArmPhase1Timer(succeeded ? Phase1Lifetime : Phase1RekeyRetry);
             }
         }
 
@@ -695,7 +693,7 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
         // by the new SA's initiator cookie (IsForThisSa), so the live SA's concurrent DPD on the same socket is untouched.
         async Task<byte[]> ExchangePhase1RekeyAsync(IkeV1Client newIke, byte[] request)
         {
-            for (int attempt = 0; attempt < _timeouts.IkeMaxAttempts && _keepaliveRunning; attempt++)
+            for (int attempt = 0; attempt < _timeouts.IkeMaxAttempts && IsRunning; attempt++)
             {
                 NatTraversalChannel? natt = _natt; // snapshot: a concurrent teardown nulls the field
                 if (natt == null) break;
@@ -703,7 +701,7 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
                 _phase1RekeyWaiter = waiter;
                 await natt.SendIkeAsync(request).ConfigureAwait(false);
 
-                Task completed = await Task.WhenAny(waiter.Task, Task.Delay(WithJitter(_timeouts.IkeIntervalFor(attempt), _timeouts.RetransmitJitterFraction))).ConfigureAwait(false);
+                Task completed = await Task.WhenAny(waiter.Task, Task.Delay(WithRetransmitJitter(_timeouts.IkeIntervalFor(attempt)))).ConfigureAwait(false);
                 _phase1RekeyWaiter = null;
                 if (completed == waiter.Task)
                 {
@@ -722,106 +720,16 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
             try { _phase1Timer?.Change(due, System.Threading.Timeout.InfiniteTimeSpan); } catch { }
         }
 
-        // ---- link-loss handling + auto-reconnect supervisor ----
+        // ---- link-loss handling + auto-reconnect supervisor live in ReconnectingVpnConnection (roadmap F.6). ----
+        // Any of {DPD death, server Delete, L2TP teardown} call the inherited OnLinkLost, which arms ReconnectLoopAsync.
 
-        // Any of {DPD death, server Delete, L2TP teardown, Phase 1 expiry} may call this from different threads.
-        void OnLinkLost(string reason)
-        {
-            bool goDisconnected = false;
-            bool startSupervisor = false;
-            lock (_stateLock)
-            {
-                if (!_keepaliveRunning) return; // first signal stops keepalive; the rest no-op
-                _logger.LogLinkLost(DriverName, reason);
-                StopKeepalive();
-                _espActive = false;
-
-                if (_userTeardown || !_opts.Enabled)
-                    goDisconnected = true;
-                else if (!_supervisorActive)
-                {
-                    _supervisorActive = true;
-                    startSupervisor = true;
-                }
-                // else: a supervisor already owns the reconnect; it re-checks health after its next establish.
-            }
-
-            if (goDisconnected) { SetState(L2tpIpsecConnectionState.Disconnected); return; }
-            if (startSupervisor)
-            {
-                SetState(L2tpIpsecConnectionState.Reconnecting);
-                _supervisor = Task.Run(() => ReconnectLoopAsync(_lifetimeCts.Token));
-            }
-        }
-
-        async Task ReconnectLoopAsync(CancellationToken cancellationToken)
-        {
-            TimeSpan delay = _opts.InitialBackoff;
-            int failures = 0;
-            while (!_userTeardown && !cancellationToken.IsCancellationRequested)
-            {
-                bool established = false;
-                _logger.LogReconnectAttempt(DriverName, failures + 1);
-                try { await EstablishAsync(cancellationToken).ConfigureAwait(false); established = true; }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { break; }
-                catch { /* attempt failed — back off and retry below */ }
-
-                if (established)
-                {
-                    bool healthy;
-                    lock (_stateLock)
-                    {
-                        // If keepalive is still up the new tunnel is healthy and we hand ownership back.
-                        // If a drop landed during the connect window, OnLinkLost already stopped keepalive but
-                        // could not start a new supervisor (we still own it) — so loop and reconnect again.
-                        healthy = _keepaliveRunning;
-                        if (healthy) _supervisorActive = false;
-                    }
-                    if (healthy) { _logger.LogReconnected(DriverName); RaiseReconnected(); return; }
-
-                    SetState(L2tpIpsecConnectionState.Reconnecting);
-                    delay = _opts.InitialBackoff;
-                    failures = 0;
-                    continue;
-                }
-
-                if (_opts.MaxAttempts != 0 && ++failures >= _opts.MaxAttempts) break;
-                try { await Task.Delay(WithJitter(delay), cancellationToken).ConfigureAwait(false); }
-                catch (OperationCanceledException) { break; }
-                delay = _opts.NextBackoff(delay);
-            }
-
-            lock (_stateLock) { _supervisorActive = false; }
-            if (!_userTeardown) SetState(L2tpIpsecConnectionState.Disconnected);
-        }
-
-        void RaiseReconnected()
+        /// <inheritdoc/>
+        protected override void OnReconnected()
         {
             IPAddress newAddress = _ppp!.AssignedAddress;
             bool changed = _lastAssignedAddress != null && !newAddress.Equals(_lastAssignedAddress);
             _lastAssignedAddress = newAddress;
             Reconnected?.Invoke(new L2tpIpsecReconnectInfo(newAddress, changed));
-        }
-
-        TimeSpan WithJitter(TimeSpan delay) => WithJitter(delay, _opts.JitterFraction);
-
-        // Shared by reconnect backoff and IKE retransmit backoff. _random is not thread-safe and is now reached from the
-        // reconnect supervisor, the handshake path and the rekey timer, so the draw is serialised.
-        TimeSpan WithJitter(TimeSpan delay, double fraction)
-        {
-            if (fraction <= 0) return delay;
-            double r;
-            lock (_random) r = _random.NextDouble();
-            double jitter = delay.TotalMilliseconds * fraction * (r * 2 - 1);
-            return TimeSpan.FromMilliseconds(Math.Max(0, delay.TotalMilliseconds + jitter));
-        }
-
-        void SetState(L2tpIpsecConnectionState state)
-        {
-            if (_state == state) return;
-            _state = state;
-            _logger.LogStateChanged(DriverName, state.ToString());
-            StateChanged?.Invoke(state);
         }
 
         static async Task WaitAsync(Task task, CancellationToken cancellationToken)
@@ -835,35 +743,36 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
             await task.ConfigureAwait(false);
         }
 
+        // The IKE retransmit jitter uses _timeouts.RetransmitJitterFraction (distinct from the base reconnect-backoff
+        // jitter, which uses Options.JitterFraction); _retransmitRandom is not thread-safe and is reached from the
+        // handshake path and the two rekey timers, so the draw is serialised.
+        TimeSpan WithRetransmitJitter(TimeSpan delay)
+        {
+            double fraction = _timeouts.RetransmitJitterFraction;
+            if (fraction <= 0) return delay;
+            double r;
+            lock (_retransmitRandom) r = _retransmitRandom.NextDouble();
+            double jitter = delay.TotalMilliseconds * fraction * (r * 2 - 1);
+            return TimeSpan.FromMilliseconds(Math.Max(0, delay.TotalMilliseconds + jitter));
+        }
+
         Task<IPAddress> ResolveAsync(string host, CancellationToken cancellationToken) => _hostResolver.ResolveAsync(host, _addressFamilyPreference, cancellationToken);
 
         static uint ToSpi(byte[] spi) => (uint)((spi[0] << 24) | (spi[1] << 16) | (spi[2] << 8) | spi[3]);
 
         /// <summary>
-        /// Tears the tunnel down gracefully and permanently (no reconnect): cancels any reconnect in flight, sends
-        /// L2TP CDN + StopCCN and IKE Delete (ESP + ISAKMP), then cancels the receive loop and disposes the transports.
-        /// Best-effort and time-boxed; safe to call more than once.
+        /// Tears the tunnel down gracefully and permanently (no reconnect): sends best-effort L2TP CDN + StopCCN and IKE
+        /// Delete (ESP + ISAKMP) — including a CDN for every additional session — then runs the shared teardown (cancel
+        /// any reconnect in flight, cancel the receive loop, dispose the transports). Best-effort and time-boxed; safe to
+        /// call more than once.
         /// </summary>
-        public async Task DisconnectAsync(CancellationToken cancellationToken = default)
+        public override async Task DisconnectAsync(CancellationToken cancellationToken = default)
         {
-            _userTeardown = true;
-            _lifetimeCts.Cancel(); // abort any in-flight backoff / supervisor / handshake
-
-            Task? supervisor = _supervisor;
-            if (supervisor != null) { try { await supervisor.ConfigureAwait(false); } catch { } }
-
-            if (Interlocked.Exchange(ref _teardownStarted, 1) != 0) return;
-
-            StopKeepalive();
-            SetState(L2tpIpsecConnectionState.Disconnected);
-
+            // Notify the peer first so it releases the SAs immediately instead of waiting for them to time out. This
+            // runs while the transports are still live, before the shared teardown disposes them.
             await SendTeardownAsync().ConfigureAwait(false);
 
-            _espActive = false;
-            _loopCts?.Cancel();
-            _l2tp?.Dispose();
-            if (_natt != null) await _natt.DisposeAsync().ConfigureAwait(false);
-            await _facade.DisposeAsync().ConfigureAwait(false);
+            await DisconnectCoreAsync().ConfigureAwait(false);
 
             _userName = null;
             _password = null;
@@ -907,13 +816,14 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
         public async ValueTask DisposeAsync()
         {
             try { await DisconnectAsync().ConfigureAwait(false); } catch { }
+            await DisposeCoreAsync().ConfigureAwait(false);
         }
 
         /// <inheritdoc/>
         public void Dispose()
         {
             // Prefer DisposeAsync; this offloads to the thread pool to avoid a sync-context deadlock on the block.
-            try { Task.Run(() => DisconnectAsync()).GetAwaiter().GetResult(); } catch { }
+            try { Task.Run(() => DisposeAsync().AsTask()).GetAwaiter().GetResult(); } catch { }
         }
     }
 }

@@ -83,6 +83,68 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther.Tests
         }
 
         [Fact]
+        public async Task MultiHost_AttachesUplinkPort_PrimaryStationLeases_AndOpenSessionAddsAnotherStation()
+        {
+            var (client, server) = DuplexPipe.CreatePair();
+            var sim = new SimulatedSoftEtherServer(server);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var serverTask = Task.Run(() => sim.RunAsync(cts.Token));
+
+            var connection = new SoftEtherConnection("vpn.example.com", 443, Login(),
+                new InProcessSoftEtherTransportFactory(() => client),
+                reconnectOptions: new SoftEtherReconnectOptions { Enabled = false },
+                multiHost: true);
+
+            await connection.ConnectAsync(cts.Token);
+
+            // The data channel is an uplink port on the broadcast domain; the primary station leased over the shared switch.
+            Assert.True(connection.IsMultiHost);
+            Assert.NotNull(connection.MultiHostSession);
+            Assert.Equal(sim.LeasedAddress, connection.AssignedAddress);
+            Assert.Equal(1, connection.MultiHostSession!.StationCount);
+            Assert.Equal(2, connection.MultiHostSession.Adapter.Switch.PortCount);   // uplink + primary station
+
+            // Round-trip an IP packet through the primary station's facade (ARP over the uplink → server → echo).
+            var inbound = Channel.CreateUnbounded<byte[]>();
+            connection.PacketChannel.InboundIpPacket += m => inbound.Writer.TryWrite(m.ToArray());
+            byte[] packet = BuildIpv4(IPAddress.Parse("8.8.4.4"), System.Text.Encoding.ASCII.GetBytes("multi-host station 1"));
+            await connection.PacketChannel.WriteIpPacketAsync(packet, cts.Token);
+            Assert.Equal(packet, await inbound.Reader.ReadAsync(cts.Token));
+
+            // A second station leases its own IP over the shared switch (the uplink bridges its DHCP to the server).
+            var vpnConnection = new SoftEtherVpnConnection(connection,
+                new SoftEtherVpnSession(connection.PacketChannel, connection.Config));
+            IVpnSession station2 = await vpnConnection.OpenSessionAsync(cts.Token);
+            Assert.Equal(sim.LeasedAddress, station2.Config.AssignedAddress);
+            Assert.Equal(2, connection.MultiHostSession.StationCount);
+            Assert.Equal(2, vpnConnection.Sessions.Count);
+            Assert.NotSame(connection.PacketChannel, station2.PacketChannel);
+
+            await vpnConnection.DisposeAsync();
+        }
+
+        [Fact]
+        public async Task MultiHost_OpenSessionOnSingleHost_Throws()
+        {
+            var (client, server) = DuplexPipe.CreatePair();
+            var sim = new SimulatedSoftEtherServer(server);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var serverTask = Task.Run(() => sim.RunAsync(cts.Token));
+
+            var connection = new SoftEtherConnection("vpn.example.com", 443, Login(),
+                new InProcessSoftEtherTransportFactory(() => client),
+                reconnectOptions: new SoftEtherReconnectOptions { Enabled = false });   // single-host (default)
+            await connection.ConnectAsync(cts.Token);
+
+            Assert.False(connection.IsMultiHost);
+            var vpnConnection = new SoftEtherVpnConnection(connection,
+                new SoftEtherVpnSession(connection.PacketChannel, connection.Config));
+            await Assert.ThrowsAsync<NotSupportedException>(() => vpnConnection.OpenSessionAsync(cts.Token));
+
+            await vpnConnection.DisposeAsync();
+        }
+
+        [Fact]
         public async Task Connect_ServerRejectsLogin_ThrowsWithErrorCode()
         {
             var (client, server) = DuplexPipe.CreatePair();

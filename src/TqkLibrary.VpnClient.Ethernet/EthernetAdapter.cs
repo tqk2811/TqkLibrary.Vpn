@@ -51,6 +51,24 @@ namespace TqkLibrary.VpnClient.Ethernet
         /// <summary>The underlying learning switch — exposed so an L2 driver can attach its own uplink port.</summary>
         public EthernetSwitch Switch => _switch;
 
+        /// <summary>
+        /// Attaches a VPN uplink channel (e.g. a <c>SoftEtherEthernetChannel</c> / <c>OpenVpnTapChannel</c>) as a switch
+        /// port, bridging the whole broadcast domain onto the tunnel — the multi-host data-plane equivalent of the manual
+        /// single-host bridge a driver does today. Frames flooded/forwarded by the switch go out the uplink toward the
+        /// server, and the server's inbound frames (ARP replies, DHCP offers, unicast to a station) are ingressed and
+        /// forwarded to the right station port. Returns a handle whose disposal detaches the uplink; the adapter never
+        /// disposes the caller-owned uplink channel.
+        /// </summary>
+        public EthernetSwitch.UplinkPortHandle ConnectUplink(IEthernetChannel uplink)
+        {
+            lock (_sync)
+            {
+                if (_disposed)
+                    throw new ObjectDisposedException(nameof(EthernetAdapter));
+            }
+            return _switch.ConnectUplink(uplink);
+        }
+
         /// <summary>Number of virtual hosts currently attached.</summary>
         public int HostCount
         {

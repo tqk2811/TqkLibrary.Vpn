@@ -14,8 +14,10 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther
     /// The SoftEther SSL-VPN protocol driver. It is configured with the target Virtual Hub (plus optional session
     /// params); the connect-time <see cref="VpnEndpoint"/> supplies the server host/port and <see cref="VpnCredentials"/>
     /// the user name + password (hashed locally to <c>secure_password</c>, SHA-0). The data plane is Ethernet-over-TLS:
-    /// the server's SecureNAT leases the tunnel IP over DHCP (<see cref="AddressAssignment.Dhcp"/>) on an L2 segment,
-    /// bridged to one L3 session. Output is L2 Ethernet bridged to L3 — single host for now (multi-host is roadmap L2.7+).
+    /// the server's SecureNAT leases the tunnel IP over DHCP (<see cref="AddressAssignment.Dhcp"/>) on an L2 segment.
+    /// By default it bridges that segment down to a single L3 session; with <c>multiHost</c> it exposes the whole L2
+    /// broadcast domain (the data channel becomes an uplink port on an in-memory switch and each station leases its own
+    /// IP), surfacing one <see cref="IVpnSession"/> per station via <see cref="IVpnConnection.OpenSessionAsync"/> (L2.8).
     /// </summary>
     public sealed class SoftEtherDriver : IVpnProtocolDriver
     {
@@ -24,6 +26,7 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther
         readonly SoftEtherReconnectOptions? _reconnectOptions;
         readonly ISoftEtherTransportFactory? _transportFactory;
         readonly RemoteCertificateValidationCallback? _serverCertificateValidation;
+        readonly bool _multiHost;
         readonly ILoggerFactory? _loggerFactory;
 
         /// <summary>
@@ -31,14 +34,17 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther
         /// overrides the session params (parallel connections, encrypt/compress flags); <paramref name="reconnectOptions"/>
         /// tunes (or disables) auto-reconnect; <paramref name="transportFactory"/> overrides the TLS transport (an
         /// in-process loopback drives the driver offline in tests); <paramref name="serverCertificateValidation"/> validates
-        /// the server TLS certificate (null = accept any, since SoftEther binds identity through its own auth).
-        /// <paramref name="loggerFactory"/> receives diagnostic traces (null = no logging).
+        /// the server TLS certificate (null = accept any, since SoftEther binds identity through its own auth). When
+        /// <paramref name="multiHost"/> is <c>true</c> the connection exposes the whole L2 broadcast domain (uplink-as-port);
+        /// <c>OpenSessionAsync</c> then adds a station instead of throwing. <paramref name="loggerFactory"/> receives
+        /// diagnostic traces (null = no logging).
         /// </summary>
         public SoftEtherDriver(string hubName,
             SoftEtherSessionParams? session = null,
             SoftEtherReconnectOptions? reconnectOptions = null,
             ISoftEtherTransportFactory? transportFactory = null,
             RemoteCertificateValidationCallback? serverCertificateValidation = null,
+            bool multiHost = false,
             ILoggerFactory? loggerFactory = null)
         {
             _hubName = hubName ?? throw new ArgumentNullException(nameof(hubName));
@@ -46,6 +52,7 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther
             _reconnectOptions = reconnectOptions;
             _transportFactory = transportFactory;
             _serverCertificateValidation = serverCertificateValidation;
+            _multiHost = multiHost;
             _loggerFactory = loggerFactory;
         }
 
@@ -88,6 +95,7 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther
             var connection = new SoftEtherConnection(endpoint.Host, endpoint.Port, login, factory,
                 reconnectOptions: _reconnectOptions,
                 addressFamilyPreference: endpoint.AddressFamilyPreference,
+                multiHost: _multiHost,
                 loggerFactory: _loggerFactory);
             try
             {

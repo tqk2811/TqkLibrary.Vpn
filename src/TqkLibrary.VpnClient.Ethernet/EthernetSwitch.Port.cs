@@ -10,7 +10,7 @@ namespace TqkLibrary.VpnClient.Ethernet
         /// in via <see cref="WriteFrameAsync"/> (switch ingress) and receives forwarded frames via
         /// <see cref="InboundFrame"/>. The switch owns it; the host only sees the interface.
         /// </summary>
-        sealed class Port : IEthernetChannel
+        sealed class Port : SwitchPort, IEthernetChannel
         {
             readonly EthernetSwitch _switch;
             readonly byte[] _linkAddress;
@@ -41,9 +41,9 @@ namespace TqkLibrary.VpnClient.Ethernet
             }
 
             /// <summary>Switch → host: raise the inbound event (buffer valid only during the handler).</summary>
-            public void Deliver(ReadOnlyMemory<byte> frame) => InboundFrame?.Invoke(frame);
+            public override void Deliver(ReadOnlyMemory<byte> frame) => InboundFrame?.Invoke(frame);
 
-            public ValueTask DisposeAsync()
+            public override ValueTask DisposeAsync()
             {
                 if (!_disposed)
                 {

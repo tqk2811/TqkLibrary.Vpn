@@ -16,8 +16,8 @@ namespace TqkLibrary.VpnClient.Ethernet
     public sealed partial class EthernetSwitch : IAsyncDisposable
     {
         readonly object _sync = new object();
-        readonly List<Port> _ports = new List<Port>();
-        readonly Dictionary<MacAddress, Port> _fdb = new Dictionary<MacAddress, Port>();
+        readonly List<SwitchPort> _ports = new List<SwitchPort>();
+        readonly Dictionary<MacAddress, SwitchPort> _fdb = new Dictionary<MacAddress, SwitchPort>();
         readonly int _mtu;
         bool _disposed;
 
@@ -46,21 +46,46 @@ namespace TqkLibrary.VpnClient.Ethernet
             return port;
         }
 
+        /// <summary>
+        /// Attaches an external VPN uplink channel as a switch port (an <i>uplink port</i>), bridging the whole broadcast
+        /// domain onto the tunnel: frames the switch forwards/floods to this port are written out
+        /// <paramref name="uplink"/> (toward the tunnel peer), and frames arriving on <paramref name="uplink.InboundFrame"/>
+        /// are ingressed into the switch — learned and forwarded to the right station port. This is what lets an L2 driver
+        /// (SoftEther, OpenVPN-tap) expose a multi-host LAN where the server itself answers ARP and serves DHCP per
+        /// station, instead of hand-bridging a single host down to L3.
+        /// <para>
+        /// The returned handle's <see cref="UplinkPortHandle.DisposeAsync"/> detaches the port (it never disposes the
+        /// caller-owned <paramref name="uplink"/>). The switch does not own the uplink channel's lifetime.
+        /// </para>
+        /// </summary>
+        public UplinkPortHandle ConnectUplink(IEthernetChannel uplink)
+        {
+            if (uplink is null) throw new ArgumentNullException(nameof(uplink));
+            var port = new UplinkPort(this, uplink);
+            lock (_sync)
+            {
+                if (_disposed) throw new ObjectDisposedException(nameof(EthernetSwitch));
+                _ports.Add(port);
+            }
+            port.Subscribe();   // start ingressing inbound frames only once the port is in the fabric
+            return new UplinkPortHandle(port);
+        }
+
         /// <summary>Ingress from one port: learn the source MAC, then forward by destination MAC.</summary>
-        void OnIngress(Port source, ReadOnlyMemory<byte> frame)
+        void OnIngress(SwitchPort source, ReadOnlyMemory<byte> frame)
         {
             if (frame.Length < EthernetFrame.HeaderLength) return;
             MacAddress src = EthernetFrame.Source(frame.Span);
             MacAddress dst = EthernetFrame.Destination(frame.Span);
 
-            Port? unicastTarget = null;
-            List<Port>? floodTargets = null;
+            SwitchPort? unicastTarget = null;
+            List<SwitchPort>? floodTargets = null;
             lock (_sync)
             {
                 if (_disposed) return;
                 _fdb[src] = source;   // learn / MAC-move (overwrites the prior port)
 
-                if (!dst.IsMulticast && _fdb.TryGetValue(dst, out Port? known))
+                if (!dst.IsMulticast && _fdb.TryGetValue(dst, out SwitchPort? known))
                 {
                     if (known == source) return;   // destination is the sender's own port → drop, never reflect
                     unicastTarget = known;
@@ -68,8 +93,8 @@ namespace TqkLibrary.VpnClient.Ethernet
                 else
                 {
                     // Broadcast, multicast, or unknown-unicast → flood every port except the ingress one.
-                    floodTargets = new List<Port>(_ports.Count);
-                    foreach (Port port in _ports)
+                    floodTargets = new List<SwitchPort>(_ports.Count);
+                    foreach (SwitchPort port in _ports)
                         if (port != source) floodTargets.Add(port);
                 }
             }
@@ -78,18 +103,18 @@ namespace TqkLibrary.VpnClient.Ethernet
             if (unicastTarget != null)
                 unicastTarget.Deliver(frame);
             else if (floodTargets != null)
-                foreach (Port port in floodTargets)
+                foreach (SwitchPort port in floodTargets)
                     port.Deliver(frame);
         }
 
         /// <summary>Detaches a port and purges every FDB entry pointing at it.</summary>
-        void RemovePort(Port port)
+        void RemovePort(SwitchPort port)
         {
             lock (_sync)
             {
                 _ports.Remove(port);
                 List<MacAddress>? stale = null;
-                foreach (KeyValuePair<MacAddress, Port> entry in _fdb)
+                foreach (KeyValuePair<MacAddress, SwitchPort> entry in _fdb)
                     if (entry.Value == port)
                         (stale ??= new List<MacAddress>()).Add(entry.Key);
                 if (stale != null)
@@ -100,7 +125,7 @@ namespace TqkLibrary.VpnClient.Ethernet
 
         public async ValueTask DisposeAsync()
         {
-            Port[] ports;
+            SwitchPort[] ports;
             lock (_sync)
             {
                 if (_disposed) return;
@@ -109,7 +134,7 @@ namespace TqkLibrary.VpnClient.Ethernet
                 _ports.Clear();
                 _fdb.Clear();
             }
-            foreach (Port port in ports)
+            foreach (SwitchPort port in ports)
                 await port.DisposeAsync().ConfigureAwait(false);
         }
     }

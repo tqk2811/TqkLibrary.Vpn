@@ -26,7 +26,7 @@ namespace TqkLibrary.VpnClient.Ethernet
     public sealed class ArpResolver : INeighborResolver, IAsyncDisposable
     {
         readonly MacAddress _mac;
-        readonly IPAddress _ip;
+        IPAddress _ip;
         readonly IEthernetChannel _port;
         readonly ArpResolverOptions _options;
         readonly object _sync = new object();
@@ -52,6 +52,22 @@ namespace TqkLibrary.VpnClient.Ethernet
 
         /// <summary>This host's IPv4 address (the one ARP requests are answered for).</summary>
         public IPAddress Address => _ip;
+
+        /// <summary>
+        /// Updates this host's IPv4 address — the address ARP requests are now answered for and the sender-IP of outbound
+        /// ARP requests. Used when the address is only known after a DHCP lease (a station attached before it leased) or
+        /// when a renewal changes it. The cache is left intact (learned neighbour entries are unaffected).
+        /// </summary>
+        /// <exception cref="ArgumentException"><paramref name="ipv4"/> is not an IPv4 address.</exception>
+        public void SetLocalAddress(IPAddress ipv4)
+        {
+            if (ipv4 is null)
+                throw new ArgumentNullException(nameof(ipv4));
+            if (ipv4.AddressFamily != AddressFamily.InterNetwork)
+                throw new ArgumentException("ARP serves an IPv4 address.", nameof(ipv4));
+            lock (_sync)
+                _ip = ipv4;
+        }
 
         /// <inheritdoc/>
         public async ValueTask<ReadOnlyMemory<byte>?> ResolveAsync(IPAddress nextHop, CancellationToken cancellationToken = default)

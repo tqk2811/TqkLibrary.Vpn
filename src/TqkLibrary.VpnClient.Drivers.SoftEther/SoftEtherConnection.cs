@@ -14,6 +14,7 @@ using TqkLibrary.VpnClient.Drivers.SoftEther.Enums;
 using TqkLibrary.VpnClient.Drivers.SoftEther.Models;
 using TqkLibrary.VpnClient.Drivers.SoftEther.Transport;
 using TqkLibrary.VpnClient.Ethernet;
+using TqkLibrary.VpnClient.Ethernet.Models;
 using TqkLibrary.VpnClient.SoftEther;
 using TqkLibrary.VpnClient.SoftEther.DataChannel;
 using TqkLibrary.VpnClient.SoftEther.Models;
@@ -46,6 +47,7 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther
         readonly SoftEtherWatermark? _watermark;
         readonly DhcpV4ConfiguratorOptions? _dhcpOptions;
         readonly int _mtu;
+        readonly bool _multiHost;
 
         readonly SwappablePacketChannel _facade = new();
         readonly CancellationTokenSource _lifetimeCts = new();
@@ -59,9 +61,10 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther
 
         IByteStreamTransport? _transport;
         SoftEtherEthernetChannel? _channel;
-        VirtualHost? _host2;                   // the L2↔L3 bridge whose IPacketChannel feeds the facade
-        ArpResolver? _arp;                     // IPv4 neighbour resolver sharing the data channel
-        DhcpV4Configurator? _dhcp;             // the DHCPv4 client (drains inbound DHCP during/after the lease)
+        VirtualHost? _host2;                   // 1-host bridge: the L2↔L3 bridge whose IPacketChannel feeds the facade
+        ArpResolver? _arp;                     // 1-host bridge: IPv4 neighbour resolver sharing the data channel
+        DhcpV4Configurator? _dhcp;             // 1-host bridge: the DHCPv4 client (drains inbound DHCP during/after the lease)
+        MultiHostSession? _multiHostSession;   // multi-host: the broadcast domain (uplink-as-port + N stations)
         CancellationTokenSource? _loopCts;
         Task? _receiveTask;
         System.Threading.Timer? _keepAliveTimer;
@@ -76,8 +79,12 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther
         /// Creates a connection. <paramref name="login"/> carries the hub/user/credential + session params;
         /// <paramref name="transportFactory"/> opens the TLS byte stream (an in-process factory drives it offline);
         /// <paramref name="watermark"/> overrides the watermark POST blob (e.g. the genuine server blob);
-        /// <paramref name="dhcpOptions"/> tunes the DHCPv4 exchange. <paramref name="loggerFactory"/> receives diagnostic
-        /// traces (handshake/DHCP/keepalive/reconnect/drop); null logs to <see cref="NullLogger"/> (a no-op).
+        /// <paramref name="dhcpOptions"/> tunes the DHCPv4 exchange. When <paramref name="multiHost"/> is <c>true</c> the
+        /// data session is exposed as a whole L2 broadcast domain (the data channel is attached to an
+        /// <see cref="EthernetAdapter"/> as an uplink port and each station leases its own IP over the shared switch, the
+        /// server's SecureNAT serving them), reachable through <see cref="MultiHostSession"/>; the default (<c>false</c>)
+        /// keeps the single-host bridge. <paramref name="loggerFactory"/> receives diagnostic traces
+        /// (handshake/DHCP/keepalive/reconnect/drop); null logs to <see cref="NullLogger"/> (a no-op).
         /// </summary>
         public SoftEtherConnection(string host, int port, SoftEtherLoginRequest login,
             ISoftEtherTransportFactory transportFactory,
@@ -86,6 +93,7 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther
             SoftEtherWatermark? watermark = null,
             DhcpV4ConfiguratorOptions? dhcpOptions = null,
             int mtu = 1500,
+            bool multiHost = false,
             ILoggerFactory? loggerFactory = null)
         {
             _host = host ?? throw new ArgumentNullException(nameof(host));
@@ -98,6 +106,7 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther
             _dhcpOptions = dhcpOptions;
             if (mtu < 1) throw new ArgumentOutOfRangeException(nameof(mtu));
             _mtu = mtu;
+            _multiHost = multiHost;
             _mac = GenerateLocalMac(_random);
             _logger = (loggerFactory ?? NullLoggerFactory.Instance).CreateLogger("TqkLibrary.VpnClient.Drivers.SoftEther");
         }
@@ -121,8 +130,18 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther
         /// <summary>The tunnel IP leased over DHCP (valid after connect).</summary>
         public IPAddress AssignedAddress => _assignedAddress ?? IPAddress.Any;
 
-        /// <summary>This endpoint's virtual MAC address on the SoftEther L2 segment.</summary>
+        /// <summary>This endpoint's virtual MAC address on the SoftEther L2 segment (the first/primary station in multi-host mode).</summary>
         public MacAddress LinkAddress => _mac;
+
+        /// <summary><c>true</c> when this connection exposes the whole L2 broadcast domain (uplink-as-port) via <see cref="MultiHostSession"/>.</summary>
+        public bool IsMultiHost => _multiHost;
+
+        /// <summary>
+        /// In multi-host mode, the broadcast domain riding the SoftEther data session (the data channel attached as an
+        /// uplink port, plus N <see cref="EthernetHostSession"/> stations leasing their own IP over the shared switch).
+        /// <c>null</c> in single-host mode or before the first connect completes.
+        /// </summary>
+        public MultiHostSession? MultiHostSession => _multiHostSession;
 
         /// <summary>Raised whenever the connection state changes (handshake progress, drop, reconnect).</summary>
         public event Action<SoftEtherConnectionState>? StateChanged;
@@ -167,6 +186,20 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther
             _running = true;
             _receiveTask = Task.Run(() => ReceiveLoopAsync(transport, channel, loopToken));
 
+            if (_multiHost)
+                await EstablishMultiHostAsync(channel, cancellationToken).ConfigureAwait(false);
+            else
+                await EstablishSingleHostAsync(channel, cancellationToken).ConfigureAwait(false);
+
+            StartKeepAlive();
+            _logger.LogHandshakeCompleted(DriverName);
+            SetState(SoftEtherConnectionState.Connected);
+        }
+
+        // ---- single-host bridge (default): one DHCP lease, one VirtualHost bridged down to the L3 facade ----
+
+        async Task EstablishSingleHostAsync(SoftEtherEthernetChannel channel, CancellationToken cancellationToken)
+        {
             // --- DHCP lease (SecureNAT) over the L2 segment: DHCP shares the channel and drains inbound DHCP replies ---
             _logger.LogHandshake(DriverName, "requesting DHCPv4 lease from SecureNAT (DISCOVER/OFFER/REQUEST/ACK)");
             var dhcp = new DhcpV4Configurator(_mac, channel, _dhcpOptions);
@@ -198,10 +231,63 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther
             _assignedAddress = config.AssignedAddress;
             _facade.SetInner(virtualHost);
             _logger.LogHandshake(DriverName, $"DHCP lease {config.AssignedAddress}; L2<->L3 bridge bound");
+        }
 
-            StartKeepAlive();
-            _logger.LogHandshakeCompleted(DriverName);
-            SetState(SoftEtherConnectionState.Connected);
+        // ---- multi-host broadcast domain: attach the data channel as an uplink port, then DHCP the first station ----
+
+        async Task EstablishMultiHostAsync(SoftEtherEthernetChannel channel, CancellationToken cancellationToken)
+        {
+            // The data channel is one port (an uplink) of an in-memory switch; every station rides its own port. The
+            // SecureNAT server answers ARP/DHCP per station, so flood/forward bridges the whole broadcast domain.
+            var adapter = new EthernetAdapter(new EthernetAdapterOptions { SwitchMtu = _mtu });
+            adapter.ConnectUplink(channel);                              // detached when the adapter (switch) is disposed
+            var session = new MultiHostSession(adapter, ownsAdapter: true);
+            _multiHostSession = session;
+            _logger.LogHandshake(DriverName, "attached SoftEther data channel as an uplink port on the L2 broadcast domain");
+
+            // The first/primary station leases its IP and feeds the connection's stable L3 facade (keeping the single-host
+            // API: PacketChannel/Config/AssignedAddress). Additional stations are added via OpenSessionAsync.
+            EthernetHostSession primary = await AddStationAsync(_mac, cancellationToken).ConfigureAwait(false);
+            _config = primary.Config;
+            _assignedAddress = primary.Config.AssignedAddress;
+            _facade.SetInner(primary.PacketChannel);
+            _logger.LogHandshake(DriverName, $"primary station DHCP lease {primary.Config.AssignedAddress}; broadcast domain bound");
+        }
+
+        /// <summary>
+        /// Adds a station to the multi-host broadcast domain with MAC <paramref name="mac"/>: it leases its own IPv4 over
+        /// the shared switch (the SecureNAT server serving it) and is surfaced as an <see cref="EthernetHostSession"/>.
+        /// </summary>
+        /// <exception cref="InvalidOperationException">This connection is not in multi-host mode.</exception>
+        public async ValueTask<EthernetHostSession> AddStationAsync(MacAddress mac, CancellationToken cancellationToken = default)
+        {
+            MultiHostSession? session = _multiHostSession;
+            if (session is null)
+                throw new InvalidOperationException("This SoftEther connection is single-host; construct it with multiHost: true to add stations.");
+
+            ArpResolver? arpRef = null;
+            EthernetHostSession station = await session.AddStationAsync(mac, port =>
+            {
+                // Before DHCP the station has no IP, so ARP starts on 0.0.0.0; once the lease lands we set the real
+                // address (SetLocalAddress) so the station answers ARP for itself and sends ARP with the right sender-IP.
+                var arp = new ArpResolver(mac, IPAddress.Any, port);
+                arpRef = arp;
+                var dhcp = new DhcpV4Configurator(mac, port, _dhcpOptions);
+                return new EthernetHostSpec(arp)
+                {
+                    Configurator = dhcp,
+                    NonIpFrameHandler = arp.HandleInboundFrame,          // ARP rides the non-IP seam
+                    IpPacketHandler = dhcp.HandleInboundFrame,           // DHCP rides inside ordinary IPv4
+                };
+            }, cancellationToken).ConfigureAwait(false);
+
+            if (station.Config.AssignedAddress is null || station.Config.AssignedAddress.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork)
+            {
+                await session.RemoveStationAsync(mac).ConfigureAwait(false);
+                throw new VpnConnectionException("SoftEther DHCP did not lease an IPv4 address for the station (SecureNAT serves IPv4 via DHCP; ARP is IPv4-only).");
+            }
+            arpRef?.SetLocalAddress(station.Config.AssignedAddress);     // ARP now answers for the leased address
+            return station;
         }
 
         // ---- write side: seal a data block and push it down the TLS transport ----
@@ -378,6 +464,12 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther
             DhcpV4Configurator? dhcp = _dhcp;
             _dhcp = null;
             if (dhcp != null) { try { await dhcp.DisposeAsync().ConfigureAwait(false); } catch { } }
+
+            // multi-host fabric: disposing the session disposes the owned adapter (switch + every station + the uplink
+            // port). The uplink port never disposes our data channel, so we dispose it ourselves below.
+            MultiHostSession? multiHost = _multiHostSession;
+            _multiHostSession = null;
+            if (multiHost != null) { try { await multiHost.DisposeAsync().ConfigureAwait(false); } catch { } }
 
             SoftEtherEthernetChannel? channel = _channel;
             _channel = null;

@@ -15,6 +15,7 @@ using TqkLibrary.VpnClient.Drivers.OpenVpn.Enums;
 using TqkLibrary.VpnClient.Drivers.OpenVpn.Models;
 using TqkLibrary.VpnClient.Drivers.OpenVpn.Transport;
 using TqkLibrary.VpnClient.Ethernet;
+using TqkLibrary.VpnClient.Ethernet.Models;
 using TqkLibrary.VpnClient.OpenVpn;
 using TqkLibrary.VpnClient.OpenVpn.DataChannel;
 using TqkLibrary.VpnClient.OpenVpn.Enums;
@@ -56,6 +57,7 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
         readonly IHostResolver _hostResolver;
         readonly int _tunMtu;
         readonly OpenVpnPeerInfoOptions? _peerInfoOptions;
+        readonly bool _multiHost;
         readonly Func<long> _clock;
 
         readonly SwappablePacketChannel _facade = new();
@@ -75,8 +77,10 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
         OpenVpnDataPlane? _dataPlane;
         OpenVpnCompression? _compression;
         OpenVpnDataLink? _dataLink;       // tun: OpenVpnTunChannel; tap: OpenVpnTapChannel
-        VirtualHost? _tapHost;            // tap only: the L2↔L3 bridge whose IPacketChannel feeds the facade
-        ArpResolver? _tapArp;             // tap only: IPv4 neighbour resolver sharing the tap port
+        VirtualHost? _tapHost;            // tap 1-host only: the L2↔L3 bridge whose IPacketChannel feeds the facade
+        ArpResolver? _tapArp;             // tap 1-host only: IPv4 neighbour resolver sharing the tap port
+        DhcpV4Configurator? _tapDhcp;     // tap pure-DHCP only: the DHCPv4 client when the server pushes no ifconfig
+        MultiHostSession? _multiHostSession;  // tap multi-host only: the broadcast domain (uplink-as-port + N stations)
         OpenVpnKeepalive? _keepalive;
         CancellationTokenSource? _loopCts;
         Task? _receiveTask;
@@ -97,7 +101,10 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
         /// <paramref name="controlWrap"/> applies <c>tls-auth</c>/<c>tls-crypt</c>; <paramref name="transportFactory"/>
         /// opens the UDP/TCP socket (an in-process factory drives it offline). <paramref name="peerInfoOptions"/>
         /// customises the advertised <c>IV_*</c> peer-info block (null = defaults; the tun MTU fills <c>IV_MTU</c> when
-        /// unset). <paramref name="clock"/> supplies the keepalive millisecond clock (default: the system tick clock) —
+        /// unset). When <paramref name="multiHost"/> is <c>true</c> a tap-mode tunnel exposes the whole L2 broadcast domain
+        /// (the tap channel becomes an uplink port on an in-memory switch and each station leases its own IP), reachable
+        /// through <see cref="MultiHostSession"/>; the default (<c>false</c>) keeps the single-host tap bridge (tun-mode
+        /// ignores it). <paramref name="clock"/> supplies the keepalive millisecond clock (default: the system tick clock) —
         /// tests inject a deterministic one. <paramref name="loggerFactory"/> receives diagnostic traces
         /// (handshake/NCP/keepalive/reconnect/drop); null logs to <see cref="NullLogger"/> (a no-op).
         /// </summary>
@@ -114,6 +121,7 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
             int tunMtu = 1500,
             OpenVpnReliabilityOptions? reliabilityOptions = null,
             OpenVpnPeerInfoOptions? peerInfoOptions = null,
+            bool multiHost = false,
             Func<long>? clock = null,
             ILoggerFactory? loggerFactory = null)
         {
@@ -134,6 +142,7 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
             if (tunMtu < 1) throw new ArgumentOutOfRangeException(nameof(tunMtu));
             _tunMtu = tunMtu;
             _peerInfoOptions = peerInfoOptions;
+            _multiHost = multiHost;
             _clock = clock ?? DefaultClock;
             _tapMac = GenerateLocalMac(_random);
             _logger = (loggerFactory ?? NullLoggerFactory.Instance).CreateLogger("TqkLibrary.VpnClient.Drivers.OpenVpn");
@@ -160,6 +169,19 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
 
         /// <summary>The first DNS server pushed in PUSH_REPLY, if any.</summary>
         public IPAddress? AssignedDns => _assignedDns;
+
+        /// <summary>This endpoint's virtual MAC on the tap segment (the first/primary station in multi-host tap mode).</summary>
+        public MacAddress LinkAddress => _tapMac;
+
+        /// <summary><c>true</c> when this connection exposes the whole L2 broadcast domain (tap uplink-as-port) via <see cref="MultiHostSession"/>.</summary>
+        public bool IsMultiHost => _device == OpenVpnDeviceType.Tap && _multiHost;
+
+        /// <summary>
+        /// In multi-host tap mode, the broadcast domain riding the tap data channel (the channel attached as an uplink
+        /// port, plus N <see cref="EthernetHostSession"/> stations leasing their own IP over the shared switch).
+        /// <c>null</c> in single-host / tun mode or before the first connect completes.
+        /// </summary>
+        public MultiHostSession? MultiHostSession => _multiHostSession;
 
         /// <summary>Raised whenever the connection state changes (handshake progress, drop, reconnect).</summary>
         public event Action<OpenVpnConnectionState>? StateChanged;
@@ -218,14 +240,13 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
 
             // --- PUSH_REQUEST → PUSH_REPLY (address, routes, DNS, peer-id, keepalive, cipher) ---
             OpenVpnPushReply push = await control.RequestConfigAsync(cancellationToken).ConfigureAwait(false);
-            if (push.IfconfigLocal is null)
+            // tun needs a pushed address; tap with no ifconfig is a pure-DHCP bridge (DHCP runs below over the L2 fabric).
+            if (push.IfconfigLocal is null && _device != OpenVpnDeviceType.Tap)
             {
                 _logger.LogHandshakeFailed(DriverName, "PUSH_REPLY carried no ifconfig (no tunnel address)");
-                throw new VpnServerRejectedException(_device == OpenVpnDeviceType.Tap
-                    ? "OpenVPN tap-mode PUSH_REPLY carried no ifconfig: a pure DHCP bridge needs the userspace DHCPv4 client (roadmap L2.5). This driver bridges tap only with a server-bridge managed pool that pushes ifconfig."
-                    : "OpenVPN server PUSH_REPLY carried no tunnel address (no ifconfig).");
+                throw new VpnServerRejectedException("OpenVPN server PUSH_REPLY carried no tunnel address (no ifconfig).");
             }
-            _logger.LogHandshake(DriverName, $"PUSH_REPLY: ifconfig {push.IfconfigLocal}, cipher {push.Cipher ?? "(default)"}");
+            _logger.LogHandshake(DriverName, $"PUSH_REPLY: ifconfig {push.IfconfigLocal?.ToString() ?? "(none — pure DHCP)"}, cipher {push.Cipher ?? "(default)"}");
 
             // --- NCP: honour the server's cipher pick, then slice the data-channel keys for it ---
             OpenVpnDataCipher cipher = ResolveCipher(push.Cipher);
@@ -251,24 +272,13 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
 
             if (_device == OpenVpnDeviceType.Tap)
             {
-                // tap-mode: the data channel carries Ethernet frames. Plug it in as an IEthernetChannel and bridge it down
-                // to a bare L3 IPacketChannel through the userspace L2 fabric — the IP stack still binds the same facade.
-                // The tunnel IP comes from the pushed ifconfig (a server-bridge managed pool); ARP is IPv4-only (L2.3),
-                // so an IPv6 tunnel address needs NDISC (roadmap L2.4) and is refused here.
-                if (push.IfconfigLocal.AddressFamily != AddressFamily.InterNetwork)
-                    throw new VpnConnectionException(
-                        "OpenVPN tap-mode bridges IPv4 only (ARP); an IPv6 tunnel address needs NDISC (roadmap L2.4).");
-
                 var tap = new OpenVpnTapChannel(dataPlane, compression, sink, _tapMac.ToArray(), mtu);
-                var arp = new ArpResolver(_tapMac, push.IfconfigLocal, tap);
-                var host = new VirtualHost(_tapMac, tap, arp);
-                host.InboundNonIpFrame += arp.HandleInboundFrame;   // ARP replies/requests arrive on the non-IP seam
-                _dataLink = tap;                                    // OnTransportDatagram delivers P_DATA_V2 frames here
-                _tapArp = arp;
-                _tapHost = host;
-                _dataActive = true;
-                config.Mtu = host.Mtu;                              // link − 14: the bound stack clamps MSS for the Ethernet header
-                _facade.SetInner(host);
+                _dataLink = tap;             // OnTransportDatagram delivers P_DATA_V2 frames here
+                _dataActive = true;          // the data plane must be live so DHCP/ARP frames can flow over the L2 fabric
+                if (_multiHost)
+                    config = await BridgeTapMultiHostAsync(tap, push, cancellationToken).ConfigureAwait(false);
+                else
+                    config = await BridgeTapSingleHostAsync(tap, push, config, cancellationToken).ConfigureAwait(false);
             }
             else
             {
@@ -293,6 +303,119 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
             if (OpenVpnDataCipher.TryResolve(pushed, out OpenVpnDataCipher cipher)) return cipher;
             throw new VpnConnectionException(
                 $"OpenVPN server selected an unsupported data cipher '{pushed}' (NCP). Supported: {OpenVpnDataCipher.AdvertisedList}.");
+        }
+
+        // ---- tap single-host bridge: one VirtualHost + ARP on the tap channel, bridged down to the L3 facade ----
+
+        async Task<TunnelConfig> BridgeTapSingleHostAsync(OpenVpnTapChannel tap, OpenVpnPushReply push, TunnelConfig config, CancellationToken cancellationToken)
+        {
+            IPAddress address;
+            if (push.IfconfigLocal != null)
+            {
+                // server-bridge managed pool: the address comes from the pushed ifconfig. ARP is IPv4-only (L2.3), so an
+                // IPv6 tunnel address needs NDISC (roadmap L2.4) and is refused here.
+                if (push.IfconfigLocal.AddressFamily != AddressFamily.InterNetwork)
+                    throw new VpnConnectionException(
+                        "OpenVPN tap-mode bridges IPv4 only (ARP); an IPv6 tunnel address needs NDISC (roadmap L2.4).");
+                address = push.IfconfigLocal;
+            }
+            else
+            {
+                // pure-DHCP bridge: the server pushed no ifconfig, so lease an IPv4 over the tap segment (L2.5) — the
+                // DHCP server behind the bridge serves us, exactly like SoftEther's SecureNAT.
+                _logger.LogHandshake(DriverName, "tap pure-DHCP: no pushed ifconfig; requesting a DHCPv4 lease over the L2 segment");
+                var dhcp = new DhcpV4Configurator(_tapMac, tap);
+                _tapDhcp = dhcp;
+                tap.InboundFrame += dhcp.HandleInboundFrame;     // feed inbound frames to DHCP for the OFFER/ACK
+                TunnelConfig leased;
+                try { leased = await dhcp.ConfigureAsync(cancellationToken).ConfigureAwait(false); }
+                finally { tap.InboundFrame -= dhcp.HandleInboundFrame; }
+
+                if (leased.AssignedAddress is null || leased.AssignedAddress.AddressFamily != AddressFamily.InterNetwork)
+                    throw new VpnConnectionException("OpenVPN tap pure-DHCP did not lease an IPv4 address (the bridge serves IPv4 via DHCP; ARP is IPv4-only).");
+                config = leased;
+                address = leased.AssignedAddress;
+            }
+
+            var arp = new ArpResolver(_tapMac, address, tap);
+            var host = new VirtualHost(_tapMac, tap, arp);
+            host.InboundNonIpFrame += arp.HandleInboundFrame;    // ARP replies/requests arrive on the non-IP seam
+            if (_tapDhcp != null)
+                host.InboundIpPacket += _tapDhcp.HandleInboundFrame;   // a renewal DHCP reply rides ordinary IPv4
+            _tapArp = arp;
+            _tapHost = host;
+            config.Mtu = host.Mtu;                               // link − 14: the bound stack clamps MSS for the Ethernet header
+            _facade.SetInner(host);
+            return config;
+        }
+
+        // ---- tap multi-host bridge: the tap channel is an uplink port; the primary station leases over the shared switch ----
+
+        async Task<TunnelConfig> BridgeTapMultiHostAsync(OpenVpnTapChannel tap, OpenVpnPushReply push, CancellationToken cancellationToken)
+        {
+            var adapter = new EthernetAdapter(new EthernetAdapterOptions { SwitchMtu = _tunMtu });
+            adapter.ConnectUplink(tap);                          // detached when the adapter (switch) is disposed
+            var session = new MultiHostSession(adapter, ownsAdapter: true);
+            _multiHostSession = session;
+            _logger.LogHandshake(DriverName, "tap multi-host: attached the tap data channel as an uplink port on the L2 broadcast domain");
+
+            // The primary station feeds the connection's stable L3 facade. It takes the pushed ifconfig when present
+            // (server-bridge managed pool), else leases over the shared switch like any additional station.
+            EthernetHostSession primary = await AddStationAsync(_tapMac, push.IfconfigLocal, cancellationToken).ConfigureAwait(false);
+            _facade.SetInner(primary.PacketChannel);
+            _logger.LogHandshake(DriverName, $"tap multi-host: primary station {primary.Config.AssignedAddress}; broadcast domain bound");
+            return primary.Config;
+        }
+
+        /// <summary>
+        /// Adds a station to the multi-host tap broadcast domain with MAC <paramref name="mac"/>. When
+        /// <paramref name="staticAddress"/> is non-null the station uses it statically (a server-bridge pushed ifconfig);
+        /// otherwise it leases its own IPv4 over the shared switch (the bridge's DHCP server serving it). Surfaced as an
+        /// <see cref="EthernetHostSession"/>.
+        /// </summary>
+        /// <exception cref="InvalidOperationException">This connection is not in multi-host tap mode.</exception>
+        public async ValueTask<EthernetHostSession> AddStationAsync(MacAddress mac, IPAddress? staticAddress = null, CancellationToken cancellationToken = default)
+        {
+            MultiHostSession? session = _multiHostSession;
+            if (session is null)
+                throw new InvalidOperationException("This OpenVPN connection is not in multi-host tap mode; construct it with multiHost: true and dev tap to add stations.");
+
+            if (staticAddress != null && staticAddress.AddressFamily != AddressFamily.InterNetwork)
+                throw new VpnConnectionException("OpenVPN tap multi-host bridges IPv4 only (ARP); an IPv6 station address needs NDISC (roadmap L2.4).");
+
+            if (staticAddress != null)
+            {
+                // Static station: no DHCP, the address is known up front.
+                EthernetHostSession station = session.AddStation(mac, port =>
+                {
+                    var arp = new ArpResolver(mac, staticAddress, port);
+                    return new EthernetHostSpec(arp) { NonIpFrameHandler = arp.HandleInboundFrame };
+                }, new TunnelConfig { AssignedAddress = staticAddress, PrefixLength = 24 });
+                return station;
+            }
+
+            // DHCP station: ARP starts on 0.0.0.0; once the lease lands we set the real address so it answers ARP for itself.
+            ArpResolver? arpRef = null;
+            EthernetHostSession leased = await session.AddStationAsync(mac, port =>
+            {
+                var arp = new ArpResolver(mac, IPAddress.Any, port);
+                arpRef = arp;
+                var dhcp = new DhcpV4Configurator(mac, port);
+                return new EthernetHostSpec(arp)
+                {
+                    Configurator = dhcp,
+                    NonIpFrameHandler = arp.HandleInboundFrame,      // ARP rides the non-IP seam
+                    IpPacketHandler = dhcp.HandleInboundFrame,       // DHCP rides inside ordinary IPv4
+                };
+            }, cancellationToken).ConfigureAwait(false);
+
+            if (leased.Config.AssignedAddress is null || leased.Config.AssignedAddress.AddressFamily != AddressFamily.InterNetwork)
+            {
+                await session.RemoveStationAsync(mac).ConfigureAwait(false);
+                throw new VpnConnectionException("OpenVPN tap multi-host DHCP did not lease an IPv4 address for the station (the bridge serves IPv4 via DHCP; ARP is IPv4-only).");
+            }
+            arpRef?.SetLocalAddress(leased.Config.AssignedAddress);  // ARP now answers for the leased address
+            return leased;
         }
 
         // ---- opcode demux: route inbound P_DATA_V2 to the data plane (control packets are the channel's job) ----
@@ -487,7 +610,13 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
             _transportHandle = null;
             if (handle?.Underlying != null) { try { await handle.Underlying.DisposeAsync().ConfigureAwait(false); } catch { } }
 
-            // tap-mode fabric: disposing the host detaches + disposes the tap port; the resolver releases any pending ARP.
+            // tap multi-host fabric: disposing the session disposes the owned adapter (switch + every station + the uplink
+            // port). The uplink port never disposes our tap data channel, so it is torn down with the transport above.
+            MultiHostSession? multiHost = _multiHostSession;
+            _multiHostSession = null;
+            if (multiHost != null) { try { await multiHost.DisposeAsync().ConfigureAwait(false); } catch { } }
+
+            // tap single-host fabric: disposing the host detaches + disposes the tap port; the resolver releases pending ARP.
             VirtualHost? tapHost = _tapHost;
             _tapHost = null;
             if (tapHost != null) { try { await tapHost.DisposeAsync().ConfigureAwait(false); } catch { } }
@@ -495,6 +624,10 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn
             ArpResolver? tapArp = _tapArp;
             _tapArp = null;
             if (tapArp != null) { try { await tapArp.DisposeAsync().ConfigureAwait(false); } catch { } }
+
+            DhcpV4Configurator? tapDhcp = _tapDhcp;
+            _tapDhcp = null;
+            if (tapDhcp != null) { try { await tapDhcp.DisposeAsync().ConfigureAwait(false); } catch { } }
 
             _transport = null;
             _dataLink = null;

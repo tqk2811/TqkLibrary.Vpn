@@ -114,6 +114,13 @@ namespace TqkLibrary.VpnClient
         public VpnClientBuilder UseSoftEther(string hubName, SoftEtherSessionParams session, SoftEtherReconnectOptions reconnectOptions)
             => AddDriver(new SoftEtherDriver(hubName, session, reconnectOptions));
 
+        /// <summary>
+        /// Registers the SoftEther driver with IPv6 in the tunnel enabled: besides the IPv4 DHCP lease + ARP, the bridge
+        /// also runs SLAAC/DHCPv6 + NDISC v6 over SecureNAT (best-effort — an IPv4-only server still connects).
+        /// </summary>
+        public VpnClientBuilder UseSoftEther(string hubName, bool enableIpv6)
+            => AddDriver(new SoftEtherDriver(hubName, enableIpv6: enableIpv6));
+
         /// <summary>Builds the client.</summary>
         public VpnClient Build() => new VpnClient(_drivers);
     }

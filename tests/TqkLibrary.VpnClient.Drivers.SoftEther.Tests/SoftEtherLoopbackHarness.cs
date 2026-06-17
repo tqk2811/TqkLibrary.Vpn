@@ -9,6 +9,7 @@ using TqkLibrary.VpnClient.Abstractions.Net;
 using TqkLibrary.VpnClient.Abstractions.Transport.Interfaces;
 using TqkLibrary.VpnClient.Drivers.SoftEther.Transport;
 using TqkLibrary.VpnClient.Ethernet;
+using TqkLibrary.VpnClient.Ethernet.Helpers;
 using TqkLibrary.VpnClient.SoftEther;
 using TqkLibrary.VpnClient.SoftEther.DataChannel;
 
@@ -106,15 +107,22 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther.Tests
         readonly uint _rejectErrorCode;
         readonly bool _useEncrypt;
         readonly bool _useCompress;
+        readonly bool _enableIpv6;
+
+        // IPv6 SecureNAT roles (only when _enableIpv6): an IPv6 router (RA: autonomous /64 prefix) + DHCPv6 server (DNS).
+        static readonly IPAddress RouterLla = IPAddress.Parse("fe80::1");
+        static readonly IPAddress PrefixV6 = IPAddress.Parse("2001:db8:5e7e::");
+        static readonly IPAddress DnsV6 = IPAddress.Parse("2001:4860:4860::8888");
 
         IByteStreamTransport _dataTransport;   // the data-session I/O (RC4-wrapped when use_encrypt is on)
         MacAddress _clientMac;
         int _dhcpReplies;
+        int _raReplies;
 
         public SimulatedSoftEtherServer(DuplexPipe pipe,
             IPAddress? leasedAddress = null, IPAddress? gateway = null, IPAddress? dns = null,
             bool rejectLogin = false, uint rejectErrorCode = 0,
-            bool useEncrypt = false, bool useCompress = false)
+            bool useEncrypt = false, bool useCompress = false, bool enableIpv6 = false)
         {
             _pipe = pipe;
             _dataTransport = pipe;
@@ -127,12 +135,19 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther.Tests
             _rejectErrorCode = rejectErrorCode;
             _useEncrypt = useEncrypt;
             _useCompress = useCompress;
+            _enableIpv6 = enableIpv6;
             _serverRandom = new byte[SoftEtherProtocol.RandomSize];
             for (int i = 0; i < _serverRandom.Length; i++) _serverRandom[i] = (byte)(0x10 + i);
         }
 
         /// <summary>The IP the server's DHCP leases to the client.</summary>
         public IPAddress LeasedAddress => _leasedAddress;
+
+        /// <summary>The /64 IPv6 prefix the server advertises for SLAAC (when IPv6 is enabled).</summary>
+        public static IPAddress Ipv6Prefix => PrefixV6;
+
+        /// <summary>How many Router Advertisements the server has sent — a hook proving the IPv6 path ran.</summary>
+        public int RouterAdvertisements => _raReplies;
 
         /// <summary>The gateway MAC the server answers ARP with (the next-hop the client resolves before echoing).</summary>
         public MacAddress GatewayMac => _gatewayMac;
@@ -233,7 +248,93 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther.Tests
                     return BuildDhcpReplyFrame(dhcp);
                 return BuildIpEcho(frame);   // an ordinary IPv4 unicast → echo back
             }
+            if (etherType == EthernetFrame.EtherTypeIpv6 && _enableIpv6)
+                return BuildIpv6Reply(frame);
             return null;
+        }
+
+        // IPv6 SecureNAT: answer NDISC (RS→RA, NS→NA) and DHCPv6 (SOLICIT→ADVERTISE, REQUEST→REPLY), echo other unicast.
+        byte[]? BuildIpv6Reply(byte[] frame)
+        {
+            ReadOnlyMemory<byte> ip = EthernetFrame.Payload(frame);
+            ReadOnlySpan<byte> p = ip.Span;
+            if (p.Length < 40 || (byte)(p[0] >> 4) != 6)
+                return null;
+
+            byte nextHeader = p[6];
+            if (nextHeader == Icmpv6Ndisc.ProtocolNumber)   // ICMPv6 (NDISC)
+            {
+                ReadOnlySpan<byte> message = p.Slice(40);
+                if (!Icmpv6Ndisc.IsNdisc(message))
+                    return null;
+                byte type = Icmpv6Ndisc.Type(message);
+                if (type == Icmpv6Ndisc.TypeRouterSolicitation)
+                    return BuildRaFrame();
+                if (type == Icmpv6Ndisc.TypeNeighborSolicitation)
+                    return BuildNaFrame(message);   // answer for the router/gateway address the client is resolving
+                return null;
+            }
+            if (nextHeader == 17 && p.Length >= 40 + 8 && ((p[40 + 2] << 8) | p[40 + 3]) == Dhcpv6Packet.ServerPort)
+            {
+                ReadOnlySpan<byte> dhcp = p.Slice(40 + 8);
+                uint xid = Dhcpv6Packet.TransactionId(dhcp);
+                byte type = Dhcpv6Packet.MessageType(dhcp);
+                byte reply = type == Dhcpv6Packet.MessageSolicit ? Dhcpv6Packet.MessageAdvertise
+                    : type == Dhcpv6Packet.MessageRequest ? Dhcpv6Packet.MessageReply : (byte)0;
+                if (reply == 0)
+                    return null;
+                return BuildDhcpV6ReplyFrame(reply, xid);
+            }
+            return BuildIpv6Echo(frame);   // an ordinary IPv6 unicast → echo back
+        }
+
+        byte[] BuildRaFrame()
+        {
+            _raReplies++;
+            byte prefixFlags = (byte)(Icmpv6Ndisc.PrefixFlagOnLink | Icmpv6Ndisc.PrefixFlagAutonomous);
+            byte[] ra = Icmpv6Ndisc.BuildRouterAdvertisement(RouterLla, Icmpv6Ndisc.AllNodes, _gatewayMac,
+                curHopLimit: 64, routerLifetimeSeconds: 1800,
+                prefix: PrefixV6, prefixLength: 64, prefixFlags: prefixFlags,
+                validLifetime: 86400, preferredLifetime: 14400);
+            ra[5] = Icmpv6Ndisc.RaFlagOther;   // O flag: SLAAC forms the address, DHCPv6 brings DNS (no M → no stateful address)
+            byte[] ipv6 = Icmpv6Ndisc.BuildIpv6(RouterLla, Icmpv6Ndisc.AllNodes, ra);
+            return EthernetFrame.Build(Icmpv6Ndisc.MulticastMac(Icmpv6Ndisc.AllNodes), _gatewayMac, EthernetFrame.EtherTypeIpv6, ipv6);
+        }
+
+        byte[]? BuildNaFrame(ReadOnlySpan<byte> nsMessage)
+        {
+            IPAddress target = Icmpv6Ndisc.TargetAddress(nsMessage);   // the address the client wants the MAC of
+            // SecureNAT proxies the world: answer any solicitation with the gateway MAC (like proxy-ARP for v4).
+            byte[] na = Icmpv6Ndisc.BuildNeighborAdvertisement(target, _clientLla(), target, _gatewayMac,
+                (byte)(Icmpv6Ndisc.FlagSolicited | Icmpv6Ndisc.FlagOverride));
+            byte[] ipv6 = Icmpv6Ndisc.BuildIpv6(target, _clientLla(), na);
+            return EthernetFrame.Build(_clientMac, _gatewayMac, EthernetFrame.EtherTypeIpv6, ipv6);
+        }
+
+        byte[] BuildDhcpV6ReplyFrame(byte messageType, uint xid)
+        {
+            byte[] serverDuid = Dhcpv6Options.BuildDuidLinkLayer(_gatewayMac);
+            byte[] clientDuid = Dhcpv6Options.BuildDuidLinkLayer(_clientMac);
+            byte[] options = new byte[256];
+            int pos = Dhcpv6Options.WriteOption(options, 0, Dhcpv6Options.CodeServerId, serverDuid);
+            pos = Dhcpv6Options.WriteOption(options, pos, Dhcpv6Options.CodeClientId, clientDuid);
+            pos = Dhcpv6Options.WriteOption(options, pos, Dhcpv6Options.CodeDnsServers, DnsV6.GetAddressBytes());
+            byte[] dhcp = Dhcpv6Packet.Build(messageType, xid, options.AsSpan(0, pos));
+            byte[] udpIp = Dhcpv6Packet.BuildUdpIpv6(RouterLla, _clientLla(),
+                Dhcpv6Packet.ServerPort, Dhcpv6Packet.ClientPort, dhcp);
+            return EthernetFrame.Build(_clientMac, _gatewayMac, EthernetFrame.EtherTypeIpv6, udpIp);
+        }
+
+        // The client's link-local address (fe80::/64 + Modified EUI-64 of its MAC) — destination of unicast NA/DHCPv6.
+        IPAddress _clientLla()
+            => SlaacAddress.Combine(IPAddress.Parse("fe80::"), 64, SlaacAddress.ModifiedEui64(_clientMac));
+
+        // Echo an inbound IPv6 unicast frame back to the client (swap the MACs, keep the payload byte-exact).
+        byte[] BuildIpv6Echo(byte[] frame)
+        {
+            MacAddress src = EthernetFrame.Source(frame);
+            ReadOnlyMemory<byte> ip = EthernetFrame.Payload(frame);
+            return EthernetFrame.Build(src, _gatewayMac, EthernetFrame.EtherTypeIpv6, ip.Span);
         }
 
         // Server-side DHCP detection: extract the DHCP message from a UDP/IPv4 packet addressed to the server port (67).

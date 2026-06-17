@@ -124,6 +124,145 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther.Tests
             await connection.DisposeAsync();
         }
 
+        // A minimal IPv6 packet whose next-header is UDP (17), so the bridge/NDISC does not mistake it for an NDISC message.
+        static byte[] BuildIpv6(IPAddress src, IPAddress dst, byte[] tail)
+        {
+            byte[] packet = new byte[40 + tail.Length];
+            packet[0] = 0x60;                                 // version 6
+            packet[4] = (byte)(tail.Length >> 8); packet[5] = (byte)tail.Length;
+            packet[6] = 17;                                   // next header = UDP
+            packet[7] = 64;                                   // hop limit
+            src.GetAddressBytes().CopyTo(packet, 8);          // RFC 8200: src @ 8
+            dst.GetAddressBytes().CopyTo(packet, 24);         // dst @ 24
+            tail.CopyTo(packet, 40);
+            return packet;
+        }
+
+        [Fact]
+        public async Task Connect_WithIpv6Enabled_ConfiguresV6BySlaac_AndRoundTripsV4AndV6()
+        {
+            var (client, server) = DuplexPipe.CreatePair();
+            var sim = new SimulatedSoftEtherServer(server, enableIpv6: true);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var serverTask = Task.Run(() => sim.RunAsync(cts.Token));
+
+            var connection = new SoftEtherConnection("vpn.example.com", 443, Login(),
+                new InProcessSoftEtherTransportFactory(() => client),
+                reconnectOptions: new SoftEtherReconnectOptions { Enabled = false },
+                enableIpv6: true);
+
+            var inbound = Channel.CreateUnbounded<byte[]>();
+            connection.PacketChannel.InboundIpPacket += m => inbound.Writer.TryWrite(m.ToArray());
+
+            await connection.ConnectAsync(cts.Token);
+
+            // IPv4 still leased over DHCP exactly as before.
+            Assert.Equal(SoftEtherConnectionState.Connected, connection.State);
+            Assert.Equal(sim.LeasedAddress, connection.AssignedAddress);
+            Assert.Equal(24, connection.Config.PrefixLength);
+
+            // IPv6 configured by SLAAC: the autonomous /64 prefix from the RA + EUI-64 of the connection's MAC, /64.
+            Assert.True(connection.IsIpv6Enabled);
+            Assert.NotNull(connection.AssignedAddressV6);
+            Assert.True(sim.RouterAdvertisements >= 1);   // the bridge solicited an RA
+            Assert.Equal(System.Net.Sockets.AddressFamily.InterNetworkV6, connection.AssignedAddressV6!.AddressFamily);
+            byte[] v6 = connection.AssignedAddressV6.GetAddressBytes();
+            Assert.Equal(SimulatedSoftEtherServer.Ipv6Prefix.GetAddressBytes()[..8], v6[..8]);   // shares the advertised /64
+            Assert.Equal(64, connection.Config.PrefixLengthV6);
+            Assert.Contains(IPAddress.Parse("2001:4860:4860::8888"), connection.Config.DnsServers);   // DHCPv6 DNS
+            Assert.Contains("::/0 fe80::1", connection.Config.Routes);                                  // v6 default route via the RA router
+
+            // IPv4 packet still round-trips (echoed by the server) over the dual-stack bridge.
+            byte[] v4Packet = BuildIpv4(IPAddress.Parse("8.8.8.8"), System.Text.Encoding.ASCII.GetBytes("v4 over dual-stack"));
+            await connection.PacketChannel.WriteIpPacketAsync(v4Packet, cts.Token);
+            Assert.Equal(v4Packet, await ReadDataPacketAsync(inbound, cts.Token));
+
+            // IPv6 packet round-trips: egress resolves the next-hop MAC by REAL NDISC (NS → server NA), then echoed.
+            byte[] v6Packet = BuildIpv6(connection.AssignedAddressV6,
+                IPAddress.Parse("2606:4700:4700::1111"), System.Text.Encoding.ASCII.GetBytes("v6 over SoftEther"));
+            await connection.PacketChannel.WriteIpPacketAsync(v6Packet, cts.Token);
+            Assert.Equal(v6Packet, await ReadDataPacketAsync(inbound, cts.Token, ipv6Data: true));
+
+            await connection.DisposeAsync();
+        }
+
+        [Fact]
+        public async Task Connect_WithIpv6Enabled_ButIpv4OnlyServer_StillConnectsOnIpv4_NoV6Address()
+        {
+            var (client, server) = DuplexPipe.CreatePair();
+            var sim = new SimulatedSoftEtherServer(server, enableIpv6: false);   // server advertises no IPv6 (IPv4-only SecureNAT)
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var serverTask = Task.Run(() => sim.RunAsync(cts.Token));
+
+            // Client opts into IPv6 but the SecureNAT is IPv4-only: best-effort v6 → IPv4 still connects.
+            var connection = new SoftEtherConnection("vpn.example.com", 443, Login(),
+                new InProcessSoftEtherTransportFactory(() => client),
+                reconnectOptions: new SoftEtherReconnectOptions { Enabled = false },
+                enableIpv6: true,
+                ipv6Options: new TqkLibrary.VpnClient.Ethernet.Ipv6AddressConfiguratorOptions(
+                    routerAdvertisementTimeout: TimeSpan.FromMilliseconds(150), routerSolicitationAttempts: 2));
+
+            var inbound = Channel.CreateUnbounded<byte[]>();
+            connection.PacketChannel.InboundIpPacket += m => inbound.Writer.TryWrite(m.ToArray());
+
+            await connection.ConnectAsync(cts.Token);
+
+            Assert.Equal(SoftEtherConnectionState.Connected, connection.State);
+            Assert.Equal(sim.LeasedAddress, connection.AssignedAddress);
+            Assert.Null(connection.AssignedAddressV6);   // no RA → no SLAAC/DHCPv6 → IPv4-only config
+
+            // IPv4 traffic still works.
+            byte[] v4Packet = BuildIpv4(IPAddress.Parse("8.8.4.4"), System.Text.Encoding.ASCII.GetBytes("v4-only fallback"));
+            await connection.PacketChannel.WriteIpPacketAsync(v4Packet, cts.Token);
+            Assert.Equal(v4Packet, await ReadDataPacketAsync(inbound, cts.Token));
+
+            await connection.DisposeAsync();
+        }
+
+        // Reads the next non-control IP packet from the inbound channel (skips NDISC/DHCP control frames the bridge raises).
+        static async Task<byte[]> ReadDataPacketAsync(Channel<byte[]> inbound, CancellationToken cancellationToken, bool ipv6Data = false)
+        {
+            while (true)
+            {
+                byte[] p = await inbound.Reader.ReadAsync(cancellationToken);
+                if (p.Length < 1) continue;
+                byte version = (byte)(p[0] >> 4);
+                // ICMPv6 (NDISC) rides IPv6 with next-header 58; skip those control frames.
+                if (version == 6 && p.Length >= 7 && p[6] == 58) continue;
+                if (ipv6Data && version != 6) continue;
+                if (!ipv6Data && version != 4) continue;
+                return p;
+            }
+        }
+
+        [Fact]
+        public async Task MultiHost_WithIpv6Enabled_PrimaryStationConfiguresV4AndV6()
+        {
+            var (client, server) = DuplexPipe.CreatePair();
+            var sim = new SimulatedSoftEtherServer(server, enableIpv6: true);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            var serverTask = Task.Run(() => sim.RunAsync(cts.Token));
+
+            var connection = new SoftEtherConnection("vpn.example.com", 443, Login(),
+                new InProcessSoftEtherTransportFactory(() => client),
+                reconnectOptions: new SoftEtherReconnectOptions { Enabled = false },
+                multiHost: true,
+                enableIpv6: true);
+
+            await connection.ConnectAsync(cts.Token);
+
+            // The primary station leased IPv4 over the shared switch AND configured IPv6 by SLAAC over the same uplink.
+            Assert.True(connection.IsMultiHost);
+            Assert.True(connection.IsIpv6Enabled);
+            Assert.Equal(sim.LeasedAddress, connection.AssignedAddress);
+            Assert.NotNull(connection.AssignedAddressV6);
+            Assert.Equal(SimulatedSoftEtherServer.Ipv6Prefix.GetAddressBytes()[..8],
+                connection.AssignedAddressV6!.GetAddressBytes()[..8]);   // SLAAC address under the advertised /64
+            Assert.Equal(1, connection.MultiHostSession!.StationCount);
+
+            await connection.DisposeAsync();
+        }
+
         [Fact]
         public async Task MultiHost_AttachesUplinkPort_PrimaryStationLeases_AndOpenSessionAddsAnotherStation()
         {

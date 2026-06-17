@@ -17,6 +17,7 @@ using TqkLibrary.VpnClient.Drivers.SoftEther.Enums;
 using TqkLibrary.VpnClient.Drivers.SoftEther.Models;
 using TqkLibrary.VpnClient.Drivers.SoftEther.Transport;
 using TqkLibrary.VpnClient.Ethernet;
+using TqkLibrary.VpnClient.Ethernet.Helpers;
 using TqkLibrary.VpnClient.Ethernet.Models;
 using TqkLibrary.VpnClient.SoftEther;
 using TqkLibrary.VpnClient.SoftEther.DataChannel;
@@ -40,6 +41,7 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther
     public sealed class SoftEtherConnection : ReconnectingVpnConnection<SoftEtherConnectionState>, IDisposable, IAsyncDisposable
     {
         static readonly TimeSpan KeepAliveTick = TimeSpan.FromSeconds(5);
+        static readonly IPAddress LinkLocalPrefix = IPAddress.Parse("fe80::");   // the fe80::/64 IPv6 link-local prefix (RFC 4291 §2.5.6)
         const string DriverNameConst = "softether";
         const int MaxParallelConnections = 32;   // SoftEther caps a session at 1–32 parallel TCP connections
 
@@ -50,8 +52,10 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther
         readonly AddressFamilyPreference _addressFamilyPreference;
         readonly SoftEtherWatermark? _watermark;
         readonly DhcpV4ConfiguratorOptions? _dhcpOptions;
+        readonly Ipv6AddressConfiguratorOptions? _ipv6Options;
         readonly int _mtu;
         readonly bool _multiHost;
+        readonly bool _enableIpv6;             // opt-in: also run SLAAC/DHCPv6 + NDISC v6 on the SecureNAT bridge (default IPv4-only)
 
         readonly MacAddress _mac;              // a stable locally-administered MAC kept across reconnects
 
@@ -63,7 +67,9 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther
         SoftEtherEthernetChannel? _channel;
         VirtualHost? _host2;                   // 1-host bridge: the L2↔L3 bridge whose IPacketChannel feeds the facade
         ArpResolver? _arp;                     // 1-host bridge: IPv4 neighbour resolver sharing the data channel
+        NdiscResolver? _ndisc;                 // 1-host bridge: IPv6 neighbour resolver (when enableIpv6) sharing the data channel
         DhcpV4Configurator? _dhcp;             // 1-host bridge: the DHCPv4 client (drains inbound DHCP during/after the lease)
+        Ipv6AddressConfigurator? _ipv6Config;  // 1-host bridge: the SLAAC/DHCPv6 client (when enableIpv6)
         MultiHostSession? _multiHostSession;   // multi-host: the broadcast domain (uplink-as-port + N stations)
         System.Threading.Timer? _keepAliveTimer;
         int _connectionCount = 1;              // how many TCP/TLS connections the last attempt actually opened
@@ -76,8 +82,13 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther
         /// data session is exposed as a whole L2 broadcast domain (the data channel is attached to an
         /// <see cref="EthernetAdapter"/> as an uplink port and each station leases its own IP over the shared switch, the
         /// server's SecureNAT serving them), reachable through <see cref="MultiHostSession"/>; the default (<c>false</c>)
-        /// keeps the single-host bridge. <paramref name="loggerFactory"/> receives diagnostic traces
-        /// (handshake/DHCP/keepalive/reconnect/drop); null logs to a no-op logger.
+        /// keeps the single-host bridge. When <paramref name="enableIpv6"/> is <c>true</c> the bridge additionally runs IPv6
+        /// autoconfiguration (SLAAC from a Router Advertisement, or stateful DHCPv6 — L2.6 <see cref="Ipv6AddressConfigurator"/>)
+        /// plus NDISC v6 neighbour resolution (<see cref="NdiscResolver"/>) over the same SecureNAT segment, pushing
+        /// <see cref="TunnelConfig.AssignedAddressV6"/>/<see cref="TunnelConfig.PrefixLengthV6"/> when the server hands out an
+        /// IPv6 address; it is best-effort, so an IPv4-only SecureNAT still connects (the default <c>false</c> keeps the wire
+        /// IPv4-only). <paramref name="ipv6Options"/> tunes the SLAAC/DHCPv6 exchange. <paramref name="loggerFactory"/>
+        /// receives diagnostic traces (handshake/DHCP/keepalive/reconnect/drop); null logs to a no-op logger.
         /// </summary>
         public SoftEtherConnection(string host, int port, SoftEtherLoginRequest login,
             ISoftEtherTransportFactory transportFactory,
@@ -87,6 +98,8 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther
             DhcpV4ConfiguratorOptions? dhcpOptions = null,
             int mtu = 1500,
             bool multiHost = false,
+            bool enableIpv6 = false,
+            Ipv6AddressConfiguratorOptions? ipv6Options = null,
             ILoggerFactory? loggerFactory = null)
             : base(DriverNameConst, reconnectOptions ?? new SoftEtherReconnectOptions(), clock: null, loggerFactory: loggerFactory)
         {
@@ -97,9 +110,11 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther
             _addressFamilyPreference = addressFamilyPreference;
             _watermark = watermark;
             _dhcpOptions = dhcpOptions;
+            _ipv6Options = ipv6Options;
             if (mtu < 1) throw new ArgumentOutOfRangeException(nameof(mtu));
             _mtu = mtu;
             _multiHost = multiHost;
+            _enableIpv6 = enableIpv6;
             _mac = GenerateLocalMac();
         }
 
@@ -118,6 +133,15 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther
 
         /// <summary>The tunnel IP leased over DHCP (valid after connect).</summary>
         public IPAddress AssignedAddress => _assignedAddress ?? IPAddress.Any;
+
+        /// <summary>
+        /// The tunnel IPv6 address autoconfigured over the SecureNAT bridge (SLAAC or DHCPv6), or <c>null</c> when IPv6 is
+        /// disabled or the server is IPv4-only. Mirrors <see cref="TunnelConfig.AssignedAddressV6"/>.
+        /// </summary>
+        public IPAddress? AssignedAddressV6 => _config.AssignedAddressV6;
+
+        /// <summary><c>true</c> when this connection also runs IPv6 autoconfiguration (SLAAC/DHCPv6) + NDISC v6 on the bridge.</summary>
+        public bool IsIpv6Enabled => _enableIpv6;
 
         /// <summary>This endpoint's virtual MAC address on the SoftEther L2 segment (the first/primary station in multi-host mode).</summary>
         public MacAddress LinkAddress => _mac;
@@ -280,17 +304,78 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther
 
             // --- bring up the L2↔L3 bridge on the leased address; the IP stack binds the facade, never the channel ---
             var arp = new ArpResolver(_mac, config.AssignedAddress, channel);
-            var virtualHost = new VirtualHost(_mac, channel, arp);
+            _arp = arp;
+
+            // --- IPv6 (opt-in): run NDISC v6 + SLAAC/DHCPv6 on the same segment, best-effort. An IPv4-only SecureNAT
+            //     yields no v6 address, which is fine — the tunnel still comes up on IPv4. ---
+            INeighborResolver resolver = arp;
+            Action<ReadOnlyMemory<byte>>? ipSeam = null;
+            if (_enableIpv6)
+            {
+                IPAddress linkLocal = LinkLocalAddress(_mac);
+                var ndisc = new NdiscResolver(_mac, linkLocal, channel);
+                _ndisc = ndisc;
+                var ipv6Config = new Ipv6AddressConfigurator(_mac, linkLocal, channel, ndisc, _ipv6Options);
+                _ipv6Config = ipv6Config;
+                resolver = new DualStackNeighborResolver(arp, ndisc, ownsInnerResolvers: false);
+                ipSeam = p => { ndisc.HandleInboundFrame(p); ipv6Config.HandleInboundFrame(p); };   // NDISC + DHCPv6 ride inside ordinary IPv6
+                await ConfigureIpv6BestEffortAsync(channel, config, ndisc, ipv6Config, cancellationToken).ConfigureAwait(false);
+            }
+
+            var virtualHost = new VirtualHost(_mac, channel, resolver);
             virtualHost.InboundNonIpFrame += arp.HandleInboundFrame;     // ARP replies/requests arrive on the non-IP seam
             virtualHost.InboundIpPacket += dhcp.HandleInboundFrame;      // a renewal DHCP reply rides ordinary IPv4
-            _arp = arp;
+            if (ipSeam != null)
+                virtualHost.InboundIpPacket += ipSeam;                  // NDISC/DHCPv6 ride inside ordinary IPv6
             _host2 = virtualHost;
 
             config.Mtu = virtualHost.Mtu;                               // link − 14: the bound stack clamps MSS for the Ethernet header
             _config = config;
             _assignedAddress = config.AssignedAddress;
             Facade.SetInner(virtualHost);
-            Logger.LogHandshake(DriverName, $"DHCP lease {config.AssignedAddress}; L2<->L3 bridge bound");
+            string v6 = config.AssignedAddressV6 != null ? $" + IPv6 {config.AssignedAddressV6}" : "";
+            Logger.LogHandshake(DriverName, $"DHCP lease {config.AssignedAddress}{v6}; L2<->L3 bridge bound");
+        }
+
+        // Forms the host's IPv6 link-local address (fe80::/64 + Modified EUI-64 of the MAC, RFC 4291 §2.5.1) — the source
+        // NDISC/SLAAC/DHCPv6 send from before any global address is configured. Reuses the SLAAC interface-identifier codec.
+        static IPAddress LinkLocalAddress(MacAddress mac)
+            => SlaacAddress.Combine(LinkLocalPrefix, 64, SlaacAddress.ModifiedEui64(mac));
+
+        // Runs SLAAC/DHCPv6 and merges any IPv6 address/DNS/route into the v4 config. Best-effort: a server that does not
+        // advertise IPv6 (no RA, no DHCPv6) leaves the config IPv4-only rather than failing the whole tunnel.
+        async Task ConfigureIpv6BestEffortAsync(SoftEtherEthernetChannel channel, TunnelConfig config, NdiscResolver ndisc, Ipv6AddressConfigurator ipv6Config, CancellationToken cancellationToken)
+        {
+            Logger.LogHandshake(DriverName, "requesting IPv6 autoconfiguration from SecureNAT (RS/RA -> SLAAC or DHCPv6)");
+            // During the exchange the VirtualHost is not yet bound, so feed inbound frames (RA + DHCPv6 reply) straight from
+            // the data channel; once the bridge is up they ride VirtualHost.InboundIpPacket instead.
+            channel.InboundFrame += ndisc.HandleInboundFrame;
+            channel.InboundFrame += ipv6Config.HandleInboundFrame;
+            try
+            {
+                TunnelConfig v6 = await ipv6Config.ConfigureAsync(cancellationToken).ConfigureAwait(false);
+                config.AssignedAddressV6 = v6.AssignedAddressV6;
+                config.PrefixLengthV6 = v6.PrefixLengthV6;
+                foreach (IPAddress dns in v6.DnsServers)
+                    config.DnsServers.Add(dns);
+                foreach (string route in v6.Routes)
+                    config.Routes.Add(route);
+                Logger.LogHandshake(DriverName, $"IPv6 autoconfiguration succeeded: {v6.AssignedAddressV6}/{v6.PrefixLengthV6}");
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                // No RA / no DHCPv6 lease (IPv4-only SecureNAT): keep IPv4 working, drop only the IPv6 leg.
+                Logger.LogHandshake(DriverName, $"IPv6 autoconfiguration skipped ({ex.GetType().Name}: {ex.Message}); continuing IPv4-only");
+            }
+            finally
+            {
+                channel.InboundFrame -= ndisc.HandleInboundFrame;
+                channel.InboundFrame -= ipv6Config.HandleInboundFrame;
+            }
         }
 
         // ---- multi-host broadcast domain: attach the data channel as an uplink port, then DHCP the first station ----
@@ -316,7 +401,8 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther
 
         /// <summary>
         /// Adds a station to the multi-host broadcast domain with MAC <paramref name="mac"/>: it leases its own IPv4 over
-        /// the shared switch (the SecureNAT server serving it) and is surfaced as an <see cref="EthernetHostSession"/>.
+        /// the shared switch (the SecureNAT server serving it) and is surfaced as an <see cref="EthernetHostSession"/>. When
+        /// the connection has IPv6 enabled the station also runs SLAAC/DHCPv6 + NDISC v6 on the shared switch (best-effort).
         /// </summary>
         /// <exception cref="InvalidOperationException">This connection is not in multi-host mode.</exception>
         public async ValueTask<EthernetHostSession> AddStationAsync(MacAddress mac, CancellationToken cancellationToken = default)
@@ -333,11 +419,32 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther
                 var arp = new ArpResolver(mac, IPAddress.Any, port);
                 arpRef = arp;
                 var dhcp = new DhcpV4Configurator(mac, port, _dhcpOptions);
-                return new EthernetHostSpec(arp)
+
+                if (!_enableIpv6)
+                    return new EthernetHostSpec(arp)
+                    {
+                        Configurator = dhcp,
+                        NonIpFrameHandler = arp.HandleInboundFrame,      // ARP rides the non-IP seam
+                        IpPacketHandler = dhcp.HandleInboundFrame,       // DHCP rides inside ordinary IPv4
+                    };
+
+                // Dual-stack station: ARP for v4 + NDISC for v6, DHCPv4 (required) + SLAAC/DHCPv6 (best-effort).
+                IPAddress linkLocal = LinkLocalAddress(mac);
+                var ndisc = new NdiscResolver(mac, linkLocal, port);
+                var ipv6Config = new Ipv6AddressConfigurator(mac, linkLocal, port, ndisc, _ipv6Options);
+                var dualResolver = new DualStackNeighborResolver(arp, ndisc);                        // owns ARP + NDISC
+                var dualConfig = new DualStackAddressConfigurator(dhcp, new BestEffortIpv6Configurator(ipv6Config));
+                return new EthernetHostSpec(dualResolver)
                 {
-                    Configurator = dhcp,
+                    Configurator = dualConfig,
                     NonIpFrameHandler = arp.HandleInboundFrame,          // ARP rides the non-IP seam
-                    IpPacketHandler = dhcp.HandleInboundFrame,           // DHCP rides inside ordinary IPv4
+                    // NDISC (incl. RA), DHCPv4 and DHCPv6 all ride inside ordinary IP.
+                    IpPacketHandler = p =>
+                    {
+                        ndisc.HandleInboundFrame(p);
+                        dhcp.HandleInboundFrame(p);
+                        ipv6Config.HandleInboundFrame(p);
+                    },
                 };
             }, cancellationToken).ConfigureAwait(false);
 
@@ -348,6 +455,24 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther
             }
             arpRef?.SetLocalAddress(station.Config.AssignedAddress);     // ARP now answers for the leased address
             return station;
+        }
+
+        // Wraps an Ipv6AddressConfigurator so a server that advertises no IPv6 (no RA / no DHCPv6 lease) yields an empty
+        // IPv6 config instead of throwing — letting DualStackAddressConfigurator keep the IPv4 leg of a station on an
+        // IPv4-only SecureNAT. Cancellation still propagates.
+        sealed class BestEffortIpv6Configurator : IAddressConfigurator, IAsyncDisposable
+        {
+            readonly Ipv6AddressConfigurator _inner;
+            public BestEffortIpv6Configurator(Ipv6AddressConfigurator inner) => _inner = inner;
+
+            public async ValueTask<TunnelConfig> ConfigureAsync(CancellationToken cancellationToken = default)
+            {
+                try { return await _inner.ConfigureAsync(cancellationToken).ConfigureAwait(false); }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+                catch { return new TunnelConfig(); }   // IPv4-only SecureNAT: no v6 address, drop only the IPv6 leg
+            }
+
+            public ValueTask DisposeAsync() => _inner.DisposeAsync();
         }
 
         // ---- send/receive of data blocks is owned by the multi-connection mux (round-robin across N sockets,
@@ -401,9 +526,17 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther
             _arp = null;
             if (arp != null) { try { await arp.DisposeAsync().ConfigureAwait(false); } catch { } }
 
+            NdiscResolver? ndisc = _ndisc;
+            _ndisc = null;
+            if (ndisc != null) { try { await ndisc.DisposeAsync().ConfigureAwait(false); } catch { } }
+
             DhcpV4Configurator? dhcp = _dhcp;
             _dhcp = null;
             if (dhcp != null) { try { await dhcp.DisposeAsync().ConfigureAwait(false); } catch { } }
+
+            Ipv6AddressConfigurator? ipv6Config = _ipv6Config;
+            _ipv6Config = null;
+            if (ipv6Config != null) { try { await ipv6Config.DisposeAsync().ConfigureAwait(false); } catch { } }
 
             // multi-host fabric: disposing the session disposes the owned adapter (switch + every station + the uplink
             // port). The uplink port never disposes our data channel, so we dispose it ourselves below.

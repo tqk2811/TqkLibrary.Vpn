@@ -27,6 +27,7 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther
         readonly ISoftEtherTransportFactory? _transportFactory;
         readonly RemoteCertificateValidationCallback? _serverCertificateValidation;
         readonly bool _multiHost;
+        readonly bool _enableIpv6;
         readonly ILoggerFactory? _loggerFactory;
 
         /// <summary>
@@ -36,8 +37,10 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther
         /// in-process loopback drives the driver offline in tests); <paramref name="serverCertificateValidation"/> validates
         /// the server TLS certificate (null = accept any, since SoftEther binds identity through its own auth). When
         /// <paramref name="multiHost"/> is <c>true</c> the connection exposes the whole L2 broadcast domain (uplink-as-port);
-        /// <c>OpenSessionAsync</c> then adds a station instead of throwing. <paramref name="loggerFactory"/> receives
-        /// diagnostic traces (null = no logging).
+        /// <c>OpenSessionAsync</c> then adds a station instead of throwing. When <paramref name="enableIpv6"/> is <c>true</c>
+        /// the bridge also runs IPv6 autoconfiguration (SLAAC/DHCPv6 — L2.6) + NDISC v6 over SecureNAT, best-effort (an
+        /// IPv4-only SecureNAT still connects); the default keeps the wire IPv4-only so existing behaviour is unchanged.
+        /// <paramref name="loggerFactory"/> receives diagnostic traces (null = no logging).
         /// </summary>
         public SoftEtherDriver(string hubName,
             SoftEtherSessionParams? session = null,
@@ -45,6 +48,7 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther
             ISoftEtherTransportFactory? transportFactory = null,
             RemoteCertificateValidationCallback? serverCertificateValidation = null,
             bool multiHost = false,
+            bool enableIpv6 = false,
             ILoggerFactory? loggerFactory = null)
         {
             _hubName = hubName ?? throw new ArgumentNullException(nameof(hubName));
@@ -53,6 +57,7 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther
             _transportFactory = transportFactory;
             _serverCertificateValidation = serverCertificateValidation;
             _multiHost = multiHost;
+            _enableIpv6 = enableIpv6;
             _loggerFactory = loggerFactory;
         }
 
@@ -96,6 +101,7 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther
                 reconnectOptions: _reconnectOptions,
                 addressFamilyPreference: endpoint.AddressFamilyPreference,
                 multiHost: _multiHost,
+                enableIpv6: _enableIpv6,
                 loggerFactory: _loggerFactory);
             try
             {

@@ -199,6 +199,51 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.Tests
         }
 
         [Fact]
+        public void AfterChildSaRekey_DeleteTargetsTheOldInboundSpi_NotTheReplacement()
+        {
+            IkeClient client = HandshakeReady(out SimulatedResponder responder);
+            byte[] oldInboundSpi = client.ChildInboundSpi; // the SA being replaced — captured before the rekey overwrites it
+
+            Assert.NotNull(client.ProcessRekeyChildSaResponse(responder.HandleRekeyChildSa(client.BuildRekeyChildSaRequest())));
+            byte[] newInboundSpi = client.ChildInboundSpi;
+            Assert.NotEqual(oldInboundSpi, newInboundSpi);
+
+            // RFC 7296 §2.8: the initiator retires the old CHILD_SA by its (old) inbound SPI on the live IKE SA.
+            IkeMessage delChild = responder.Decrypt(client.BuildDeleteChildSa(oldInboundSpi))!;
+            DeletePayload childDelete = delChild.Find<DeletePayload>()!;
+            Assert.Equal(IkeProtocolId.Esp, childDelete.ProtocolId);
+            Assert.Equal(oldInboundSpi, Assert.Single(childDelete.Spis)); // the OLD SPI, not the replacement
+            Assert.Equal(3u, delChild.MessageId);                         // CREATE_CHILD_SA was message ID 2
+        }
+
+        [Fact]
+        public void AfterIkeSaRekey_DeleteRidesTheOldSa_AndNamesTheOldIkeSpis()
+        {
+            IkeClient client = HandshakeReady(out SimulatedResponder responder);
+            byte[] oldInitiatorSpi = responder.InitiatorSpi; // the retired IKE SA's header SPIs
+            byte[] oldResponderSpi = responder.ResponderSpi;
+
+            Assert.True(client.ProcessRekeyIkeSaResponse(responder.HandleRekeyIkeSa(client.BuildRekeyIkeSaRequest())));
+
+            // RFC 7296 §2.18: the DELETE of the replaced IKE SA must be encrypted with the OLD keys and addressed with
+            // the OLD SPIs — it was prepared the instant before the swing, so the new keys cannot read it.
+            byte[]? deleteOld = client.TakePendingOldIkeSaDelete();
+            Assert.NotNull(deleteOld);
+            Assert.Null(client.TakePendingOldIkeSaDelete()); // draining is one-shot
+
+            IkeMessage delIke = responder.Decrypt(deleteOld!)!; // the OLD cipher reads it
+            DeletePayload ikeDelete = delIke.Find<DeletePayload>()!;
+            Assert.Equal(IkeProtocolId.Ike, ikeDelete.ProtocolId);
+            Assert.Empty(ikeDelete.Spis);                       // an IKE-SA DELETE carries no SPIs (RFC 7296 §3.11)
+            Assert.Equal(oldInitiatorSpi, delIke.InitiatorSpi);
+            Assert.Equal(oldResponderSpi, delIke.ResponderSpi);
+            Assert.Equal(3u, delIke.MessageId);                 // rekey consumed ID 2 on the old SA, so the DELETE is 3
+
+            // The replacement SA cannot decrypt a DELETE meant for the retired SA.
+            Assert.Null(responder.DecryptRekeyed(deleteOld!));
+        }
+
+        [Fact]
         public void CreateChildSa_RekeysTheIkeSa_AndTheNewKeysCarryTheSkChannel()
         {
             IkeClient client = HandshakeReady(out SimulatedResponder responder);

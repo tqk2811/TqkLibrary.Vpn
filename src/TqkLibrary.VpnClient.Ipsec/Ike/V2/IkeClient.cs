@@ -333,6 +333,13 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.V2
         /// <summary>Builds an INFORMATIONAL request deleting the ESP CHILD_SA (our inbound SPI), for teardown.</summary>
         public byte[] BuildDeleteChildSa() => BuildInformationalRequest(DeletePayload.Esp(ChildInboundSpi));
 
+        /// <summary>
+        /// Builds an INFORMATIONAL request deleting a specific ESP CHILD_SA by its inbound SPI — used after a
+        /// CREATE_CHILD_SA rekey to retire the <em>old</em> SA (whose SPI is no longer <see cref="ChildInboundSpi"/>),
+        /// per RFC 7296 §2.8. The request rides the current (live) IKE SA.
+        /// </summary>
+        public byte[] BuildDeleteChildSa(byte[] inboundSpi) => BuildInformationalRequest(DeletePayload.Esp(inboundSpi));
+
         /// <summary>Builds an INFORMATIONAL request deleting the IKE SA itself — a clean tunnel teardown (RFC 7296 §1.4.1).</summary>
         public byte[] BuildDeleteIkeSa() => BuildInformationalRequest(DeletePayload.Ike());
 
@@ -451,6 +458,12 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.V2
         byte[]? _ikeRekeyInitiatorSpi;   // the 8-byte SPI we proposed for the replacement IKE SA
         byte[]? _ikeRekeyNonce;          // our Ni for the replacement IKE SA's SKEYSEED
 
+        // A DELETE of the OLD IKE SA, encrypted with the old SK keys + old header SPIs the instant before the SA is
+        // swung onto the new keys (RFC 7296 §2.18: the initiator SHOULD delete the replaced SA). Drained by the driver
+        // via TakePendingOldIkeSaDelete() and sent on the old SA; once the new SA is live the old keys are gone, so the
+        // wire must be built here while they still exist.
+        byte[]? _pendingOldIkeSaDelete;
+
         /// <summary>
         /// Builds a CREATE_CHILD_SA request that rekeys the IKE SA (RFC 7296 §1.3.2): an IKE proposal carrying a fresh
         /// 8-byte initiator SPI, a new D-H public value (KEi), and a new nonce (Ni). Unlike a CHILD_SA rekey there is
@@ -505,6 +518,10 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.V2
             IkeKeyMaterial newKeys = IkeKeyMaterial.DeriveRekeyDefault(
                 _currentSkD, _ikeRekeyNonce, nr.Nonce, sharedSecret, _ikeRekeyInitiatorSpi, newResponderSpi);
 
+            // Build (but do not send) a DELETE of the old IKE SA on the OLD keys/SPIs/message-id while they still exist
+            // (RFC 7296 §2.18). The driver drains and transmits it on the old SA; afterwards the old keys are discarded.
+            _pendingOldIkeSaDelete = BuildEncryptedRequest(IkeExchangeType.Informational, new IkePayload[] { DeletePayload.Ike() });
+
             // Swing onto the replacement IKE SA: new SPIs in every header, new SK cipher, fresh SK_d for child rekeys,
             // and a fresh message-ID window (each IKE SA counts its own message IDs from 0, RFC 7296 §2.2).
             _currentInitiatorSpi = _ikeRekeyInitiatorSpi;
@@ -517,6 +534,19 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.V2
             _ikeRekeyInitiatorSpi = null;
             _ikeRekeyNonce = null;
             return true;
+        }
+
+        /// <summary>
+        /// Returns and clears the INFORMATIONAL+DELETE for the old IKE SA prepared by the last successful
+        /// <see cref="ProcessRekeyIkeSaResponse"/>, or null if none is pending. The wire is encrypted with the
+        /// retired SA's keys and addressed with its SPIs, so the caller must send it as-is on the old SA (a peer ACK,
+        /// if any, would arrive on that SA too — the caller treats it best-effort since the SA is being torn down).
+        /// </summary>
+        public byte[]? TakePendingOldIkeSaDelete()
+        {
+            byte[]? pending = _pendingOldIkeSaDelete;
+            _pendingOldIkeSaDelete = null;
+            return pending;
         }
 
         /// <summary>

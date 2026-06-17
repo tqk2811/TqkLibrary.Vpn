@@ -343,6 +343,17 @@ namespace TqkLibrary.VpnClient.Drivers.Ikev2
             catch { }
         }
 
+        // Transmits an already-built INFORMATIONAL+DELETE wire on the current NAT-T channel, best-effort and without
+        // awaiting an ACK — used to retire a rekeyed-out SA (CHILD_SA or the old IKE SA) whose teardown does not need
+        // confirmation. Keeping it off the request/response gate avoids racing the live _ikeWaiter.
+        async Task SendDeleteAsync(byte[] deleteWire)
+        {
+            NatTraversalChannel? natt = _natt;
+            if (natt is null) return;
+            try { await natt.SendIkeAsync(deleteWire).ConfigureAwait(false); }
+            catch { }
+        }
+
         // Sends an SK request and awaits its response under the single-exchange gate (so DPD and rekey never race on
         // the shared _ikeWaiter). Throws on timeout.
         async Task<byte[]> SendRequestAwaitResponseAsync(byte[] request)
@@ -383,6 +394,7 @@ namespace TqkLibrary.VpnClient.Drivers.Ikev2
                 EspTunnelChannel? dataPlane = _dataPlane;
                 if (ike is null || dataPlane is null) return;
 
+                byte[] oldInboundSpi = ike.ChildInboundSpi;        // the SPI of the SA being replaced (overwritten below)
                 byte[] reply = await SendRequestAwaitResponseAsync(ike.BuildRekeyChildSaRequest()).ConfigureAwait(false);
                 ChildSaParameters? rekeyed = ike.ProcessRekeyChildSaResponse(reply);
                 if (rekeyed is null) return; // keep the current SA; retry at the next interval / signal
@@ -393,6 +405,10 @@ namespace TqkLibrary.VpnClient.Drivers.Ikev2
 
                 dataPlane.SwapSession(fresh);                       // send on the new SA now; keep the old for inbound
                 ScheduleDropPreviousInbound(dataPlane);             // drop the old SA after the grace window
+
+                // Retire the old CHILD_SA on the gateway (RFC 7296 §2.8): DELETE its inbound SPI on the live IKE SA.
+                // Best-effort and fire-and-forget — the grace window above still protects in-flight inbound packets.
+                await SendDeleteAsync(ike.BuildDeleteChildSa(oldInboundSpi)).ConfigureAwait(false);
             }
             catch { /* a failed rekey keeps the current SA; the lifetime timer / watermark retries */ }
             finally { Interlocked.Exchange(ref _rekeyInProgress, 0); }
@@ -420,7 +436,13 @@ namespace TqkLibrary.VpnClient.Drivers.Ikev2
                 if (ike is null) return;
 
                 byte[] reply = await SendRequestAwaitResponseAsync(ike.BuildRekeyIkeSaRequest()).ConfigureAwait(false);
-                ike.ProcessRekeyIkeSaResponse(reply); // false ⇒ keep the current IKE SA; the lifetime timer retries
+                if (!ike.ProcessRekeyIkeSaResponse(reply)) return; // false ⇒ keep the current IKE SA; the timer retries
+
+                // Retire the old IKE SA on the gateway (RFC 7296 §2.18): the DELETE was encrypted with the old SK keys
+                // the instant before the swing, so it must ride the old SA. Best-effort and fire-and-forget — the new
+                // SA already carries the control channel, so we do not wait for an ACK on the dying SA.
+                byte[]? deleteOld = ike.TakePendingOldIkeSaDelete();
+                if (deleteOld is not null) await SendDeleteAsync(deleteOld).ConfigureAwait(false);
             }
             catch { /* a failed rekey keeps the current IKE SA; the lifetime timer retries */ }
             finally { Interlocked.Exchange(ref _rekeyInProgress, 0); }

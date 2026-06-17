@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\TqkLibrary.VpnClient.Transport.Dtls\TqkLibrary.VpnClient.Transport.Dtls.csproj" />
+  </ItemGroup>
+
+  <!-- The simulated DTLS server is built from BouncyCastle (DtlsServerProtocol + a self-signed cert), so the test
+       project references BouncyCastle directly (the production project pulls it transitively, but the test's server
+       role uses server-only APIs the production project never touches). -->
+  <ItemGroup>
+    <PackageReference Include="BouncyCastle.Cryptography" Version="2.4.0" />
+  </ItemGroup>
+
+</Project>

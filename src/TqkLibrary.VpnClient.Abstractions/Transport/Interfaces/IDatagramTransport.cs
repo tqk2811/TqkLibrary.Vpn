@@ -4,7 +4,8 @@ namespace TqkLibrary.VpnClient.Abstractions.Transport.Interfaces
     /// An unreliable datagram pipe (UDP). Each send/receive is one datagram with preserved boundaries.
     /// IKE/ESP demultiplexing on UDP/4500 (RFC 3948) is done by the IPsec NAT-T layer
     /// (<c>Ipsec/Nat</c>: <c>NatTraversal</c>/<c>NatTraversalChannel</c>), not by a transport decorator.
-    /// Kept as the base contract for a future DTLS datagram transport (roadmap F.3).
+    /// Also the base contract for the DTLS datagram transport (<c>Transport.Dtls.DtlsDatagramTransport</c>, roadmap F.3),
+    /// which wraps an inner datagram pipe and encrypts/decrypts each datagram as one DTLS record.
     /// </summary>
     public interface IDatagramTransport : IAsyncDisposable
     {

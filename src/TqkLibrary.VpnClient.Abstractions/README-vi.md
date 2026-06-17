@@ -62,7 +62,7 @@ TqkLibrary.VpnClient.Abstractions/
 | Type | Vai trò | Vị trí |
 | --- | --- | --- |
 | `IByteStreamTransport` | Ống byte tin cậy, có thứ tự (TCP/TLS/SSH); nền cho PPP-over-stream và SSL-VPN. **Đã có hiện thực** đầu tiên: `TlsByteStream` trong driver SSTP (P0.1); một project `Transport.Tls` dùng chung là roadmap F.1 | [IByteStreamTransport.cs:4](Transport/Interfaces/IByteStreamTransport.cs#L4) |
-| `IDatagramTransport` | Ống datagram (UDP), giữ biên gói; comment trỏ IKE/ESP demux trên UDP/4500 (RFC 3948) về [`Ipsec/Nat`](../TqkLibrary.VpnClient.Ipsec/Nat) (`NatTraversal`/`NatTraversalChannel`) — chưa có impl, giữ làm nền DTLS (roadmap F.3) | [IDatagramTransport.cs:7](Transport/Interfaces/IDatagramTransport.cs#L7) |
+| `IDatagramTransport` | Ống datagram (UDP), giữ biên gói; comment trỏ IKE/ESP demux trên UDP/4500 (RFC 3948) về [`Ipsec/Nat`](../TqkLibrary.VpnClient.Ipsec/Nat) (`NatTraversal`/`NatTraversalChannel`); impl: `DtlsDatagramTransport` ([`Transport.Dtls`](../TqkLibrary.VpnClient.Transport.Dtls) — DTLS 1.2 client qua BouncyCastle, F.3 xong) + UDP socket trong driver OpenVPN/WireGuard | [IDatagramTransport.cs:7](Transport/Interfaces/IDatagramTransport.cs#L7) |
 
 ### Net — resolve outer host (P1.2)
 

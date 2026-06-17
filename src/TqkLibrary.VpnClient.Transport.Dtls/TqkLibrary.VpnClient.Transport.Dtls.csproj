@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>DTLS 1.2 datagram transport: a concrete IDatagramTransport that wraps an inner UDP datagram pipe and runs a BouncyCastle DTLS client handshake (Org.BouncyCastle.Tls.DtlsClientProtocol), then encrypts/decrypts each datagram. SslStream cannot do DTLS, so BouncyCastle is used on BOTH target frameworks. Consumer: the OpenConnect (V.5) DTLS data path (roadmap F.3 / V5.c).</Description>
+  </PropertyGroup>
+
+  <!-- BouncyCastle on BOTH TFMs: the BCL SslStream has no DTLS implementation on either net8.0 or netstandard2.0. -->
+  <ItemGroup>
+    <PackageReference Include="BouncyCastle.Cryptography" Version="2.4.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Abstractions\TqkLibrary.VpnClient.Abstractions.csproj" />
+  </ItemGroup>
+
+</Project>

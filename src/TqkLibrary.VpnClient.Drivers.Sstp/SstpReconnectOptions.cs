@@ -1,39 +1,23 @@
+using System;
+using System.Threading;
+using TqkLibrary.VpnClient.Drivers.Core.Models;
+
 namespace TqkLibrary.VpnClient.Drivers.Sstp
 {
     /// <summary>
     /// Auto-reconnect policy for an <see cref="SstpConnection"/>. Reconnect kicks in only after an initial successful
     /// connect, when the tunnel drops (read loop ended, missed Echo-Responses, or a server Call-Disconnect/Call-Abort).
-    /// Enabled by default; set <see cref="Enabled"/> to false to keep the old single-shot behaviour.
+    /// Enabled by default; set <see cref="VpnReconnectOptions.Enabled"/> to false to keep single-shot behaviour. The
+    /// backoff/jitter/max-attempts knobs live on the shared <see cref="VpnReconnectOptions"/> base (roadmap F.6); this
+    /// named type adds the SSTP-specific <see cref="ReadTimeout"/> knob and is kept for the driver's public API.
     /// </summary>
-    public sealed class SstpReconnectOptions
+    public sealed class SstpReconnectOptions : VpnReconnectOptions
     {
-        /// <summary>Whether a dropped tunnel is re-established automatically.</summary>
-        public bool Enabled { get; set; } = true;
-
-        /// <summary>Maximum reconnect attempts before giving up; 0 = retry indefinitely until DisconnectAsync.</summary>
-        public int MaxAttempts { get; set; } = 0;
-
-        /// <summary>Delay before the second attempt (the first retry runs immediately after the drop).</summary>
-        public TimeSpan InitialBackoff { get; set; } = TimeSpan.FromSeconds(1);
-
-        /// <summary>Upper bound the exponential backoff is capped at.</summary>
-        public TimeSpan MaxBackoff { get; set; } = TimeSpan.FromSeconds(30);
-
-        /// <summary>Factor the backoff grows by after each failed attempt.</summary>
-        public double BackoffMultiplier { get; set; } = 2.0;
-
-        /// <summary>Random jitter applied to each delay as ±(fraction × delay); 0 disables jitter.</summary>
-        public double JitterFraction { get; set; } = 0.2;
-
         /// <summary>
         /// Caps how long a single SSTP read may block without progress before the tunnel is treated as dropped (a server
         /// that hangs mid-handshake or mid-data — roadmap P1.5). Set to <see cref="Timeout.InfiniteTimeSpan"/> to disable.
         /// The default (60 s) sits above the 30 s keepalive interval so steady-state silence between Echoes never trips it.
         /// </summary>
         public TimeSpan ReadTimeout { get; set; } = TimeSpan.FromSeconds(60);
-
-        /// <summary>The next backoff in the geometric sequence, capped at <see cref="MaxBackoff"/> (jitter applied separately).</summary>
-        public TimeSpan NextBackoff(TimeSpan current)
-            => TimeSpan.FromMilliseconds(Math.Min(MaxBackoff.TotalMilliseconds, current.TotalMilliseconds * BackoffMultiplier));
     }
 }

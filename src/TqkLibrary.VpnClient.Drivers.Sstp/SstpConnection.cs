@@ -5,12 +5,12 @@ using System.Net.Sockets;
 using System.Security.Authentication;
 using System.Security.Cryptography;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Logging.Abstractions;
 using TqkLibrary.VpnClient.Abstractions.Channels;
 using TqkLibrary.VpnClient.Abstractions.Channels.Interfaces;
 using TqkLibrary.VpnClient.Abstractions.Diagnostics.Extensions;
 using TqkLibrary.VpnClient.Abstractions.Drivers;
 using TqkLibrary.VpnClient.Abstractions.Net;
+using TqkLibrary.VpnClient.Drivers.Core;
 using TqkLibrary.VpnClient.Drivers.Sstp.Enums;
 using TqkLibrary.VpnClient.Drivers.Sstp.Models;
 using TqkLibrary.VpnClient.Drivers.Sstp.Transport;
@@ -22,26 +22,23 @@ namespace TqkLibrary.VpnClient.Drivers.Sstp
     /// <summary>
     /// A complete MS-SSTP client connection: TLS + SSTP control + PPP + MS-CHAPv2 + crypto binding + IPCP.
     /// After <see cref="ConnectAsync"/> the tunnel carries IP traffic via the stable <see cref="PacketChannel"/>.
-    /// Keepalive (active SSTP Echo + missed-response detection), clean teardown (Call-Disconnect), and auto-reconnect
-    /// mirror the L2TP/IPsec driver: a dropped tunnel is re-established behind that same channel.
+    /// Keepalive (active SSTP Echo + missed-response detection) and clean teardown (Call-Disconnect) are SSTP-specific;
+    /// link-loss detection, auto-reconnect (backoff/jitter), the state machine and the stable facade are factored into
+    /// the shared supervisor (<see cref="ReconnectingVpnConnection{TState}"/>, roadmap F.6), mirroring the
+    /// OpenConnect / OpenVPN / WireGuard / SoftEther drivers: a dropped tunnel is re-established behind that same channel.
     /// </summary>
-    public sealed class SstpConnection : IDisposable, IAsyncDisposable
+    public sealed class SstpConnection : ReconnectingVpnConnection<SstpConnectionState>, IDisposable, IAsyncDisposable
     {
         static readonly TimeSpan EchoInterval = TimeSpan.FromSeconds(30);
         const int EchoMaxMissed = 3;
-        const string DriverName = "sstp";
+        const string DriverNameConst = "sstp";
 
-        readonly ILogger _logger;
         readonly string _host;
         readonly int _port;
         readonly uint _magic;
         readonly bool _enableIpv6;
         readonly SstpReconnectOptions _opts;
         readonly Func<ITlsByteStream> _transportFactory;
-        readonly SwappablePacketChannel _facade = new();
-        readonly CancellationTokenSource _lifetimeCts = new();
-        readonly Random _random = new();
-        readonly object _stateLock = new();
 
         string? _userName;
         string? _password;
@@ -55,12 +52,6 @@ namespace TqkLibrary.VpnClient.Drivers.Sstp
         System.Threading.Timer? _echoTimer;
         int _attemptId;
         int _echoMissed;
-        int _teardownStarted;
-        bool _supervisorActive;          // guarded by _stateLock
-        volatile bool _keepaliveRunning;
-        volatile bool _userTeardown;
-        Task? _supervisor;
-        SstpConnectionState _state = SstpConnectionState.Disconnected;
 
         /// <summary>
         /// Creates a connection to the given SSTP server. <paramref name="transportFactory"/> supplies the TLS byte
@@ -71,12 +62,13 @@ namespace TqkLibrary.VpnClient.Drivers.Sstp
         /// Set <paramref name="enableIpv6"/> to also run IPV6CP (RFC 5072) for a link-local IPv6 address alongside IPCP
         /// (best-effort: a server without IPv6 support simply never opens IPV6CP and the IPv4 link is unaffected).
         /// <paramref name="loggerFactory"/> receives diagnostic traces (handshake/keepalive/reconnect); null logs to
-        /// <see cref="NullLogger"/> (a no-op).
+        /// a no-op logger.
         /// </summary>
         public SstpConnection(string host, int port = 443, uint magic = 0x1A2B3C4D, SstpReconnectOptions? reconnectOptions = null,
             Func<ITlsByteStream>? transportFactory = null, RemoteCertificateValidationCallback? certificateValidationCallback = null,
             AddressFamilyPreference addressFamilyPreference = AddressFamilyPreference.Auto, bool enableIpv6 = false,
             ILoggerFactory? loggerFactory = null)
+            : base(DriverNameConst, reconnectOptions ?? new SstpReconnectOptions(), clock: null, loggerFactory: loggerFactory)
         {
             _host = host;
             _port = port;
@@ -84,11 +76,7 @@ namespace TqkLibrary.VpnClient.Drivers.Sstp
             _enableIpv6 = enableIpv6;
             _opts = reconnectOptions ?? new SstpReconnectOptions();
             _transportFactory = transportFactory ?? (() => new TlsByteStream(_host, _port, certificateValidationCallback, addressFamilyPreference));
-            _logger = (loggerFactory ?? NullLoggerFactory.Instance).CreateLogger("TqkLibrary.VpnClient.Drivers.Sstp");
         }
-
-        /// <summary>The stable L3 packet channel (valid after a successful connect; survives reconnect).</summary>
-        public IPacketChannel PacketChannel => _facade;
 
         /// <summary>The IP address assigned by the server (tracks the latest attempt).</summary>
         public IPAddress AssignedAddress => _engine!.AssignedAddress;
@@ -99,33 +87,37 @@ namespace TqkLibrary.VpnClient.Drivers.Sstp
         /// <summary>The link-local IPv6 address negotiated via IPV6CP, or null (IPv6 disabled / server has no IPV6CP).</summary>
         public IPAddress? AssignedAddressV6 => _engine?.AssignedAddressV6;
 
-        /// <summary>Raised whenever the connection state changes (handshake progress, drop, reconnect).</summary>
-        public event Action<SstpConnectionState>? StateChanged;
-
         /// <summary>Raised after a successful auto-reconnect, carrying the new address and whether it changed.</summary>
         public event Action<SstpReconnectInfo>? Reconnected;
 
-        /// <summary>The current lifecycle state.</summary>
-        public SstpConnectionState State => _state;
+        /// <inheritdoc/>
+        protected override SstpConnectionState DisconnectedState => SstpConnectionState.Disconnected;
+        /// <inheritdoc/>
+        protected override SstpConnectionState ConnectingState => SstpConnectionState.Connecting;
+        /// <inheritdoc/>
+        protected override SstpConnectionState ConnectedState => SstpConnectionState.Connected;
+        /// <inheritdoc/>
+        protected override SstpConnectionState ReconnectingState => SstpConnectionState.Reconnecting;
 
         /// <summary>Connects and authenticates, returning once IPCP has assigned an address.</summary>
         public async Task ConnectAsync(string userName, string password, CancellationToken cancellationToken = default)
         {
             _userName = userName;
             _password = password;
-            SetState(SstpConnectionState.Connecting);
 
-            await EstablishAsync(cancellationToken).ConfigureAwait(false);
+            await ConnectCoreAsync(cancellationToken).ConfigureAwait(false);
             _lastAssignedAddress = _engine!.AssignedAddress;
         }
+
+        // ---- one full tunnel attempt (reused by the first connect and every reconnect) ----
 
         /// <summary>
         /// Brings up one full tunnel attempt from scratch: a clean-slate factory reused by the first connect and by
         /// every reconnect. On success the fresh PPP channel is installed behind the stable facade and keepalive starts.
         /// </summary>
-        async Task EstablishAsync(CancellationToken cancellationToken)
+        protected override async Task EstablishAsync(CancellationToken cancellationToken)
         {
-            CleanupAttemptResources();
+            await CleanupAttemptResourcesAsync().ConfigureAwait(false);
             int attemptId = Interlocked.Increment(ref _attemptId); // bump BEFORE the new read loop starts
             Interlocked.Exchange(ref _echoMissed, 0);
 
@@ -133,7 +125,7 @@ namespace TqkLibrary.VpnClient.Drivers.Sstp
             _transport = transport;
 
             // TLS + SSTP_DUPLEX_POST handshake. Reclassify the transport's generic failures into typed VPN errors.
-            _logger.LogHandshake(DriverName, "TLS + SSTP_DUPLEX_POST handshake");
+            Logger.LogHandshake(DriverName, "TLS + SSTP_DUPLEX_POST handshake");
             try
             {
                 await transport.ConnectAsync(cancellationToken).ConfigureAwait(false);
@@ -168,7 +160,7 @@ namespace TqkLibrary.VpnClient.Drivers.Sstp
             }
 
             // Call Connect Request → Call Connect Ack (carries the 32-byte crypto-binding nonce).
-            _logger.LogHandshake(DriverName, "Call-Connect-Request -> Call-Connect-Ack (crypto-binding nonce)");
+            Logger.LogHandshake(DriverName, "Call-Connect-Request -> Call-Connect-Ack (crypto-binding nonce)");
             var encapsulatedProtocol = new SstpAttribute((byte)SstpAttributeId.EncapsulatedProtocolId, new byte[] { 0x00, 0x01 });
             await transport.SendControlAsync(SstpMessageType.CallConnectRequest, new[] { encapsulatedProtocol }, cancellationToken).ConfigureAwait(false);
 
@@ -219,15 +211,15 @@ namespace TqkLibrary.VpnClient.Drivers.Sstp
                 }
                 catch { /* binding send failed; the link simply won't come up and the handshake fails */ }
             };
-            engine.AuthSucceeded += () => _logger.LogHandshake(DriverName, "PPP MS-CHAPv2 authentication succeeded; sending crypto binding");
+            engine.AuthSucceeded += () => Logger.LogHandshake(DriverName, "PPP MS-CHAPv2 authentication succeeded; sending crypto binding");
             engine.AuthFailed += () =>
             {
-                _logger.LogHandshakeFailed(DriverName, "PPP MS-CHAPv2 authentication failed");
+                Logger.LogHandshakeFailed(DriverName, "PPP MS-CHAPv2 authentication failed");
                 linkUp.TrySetException(new VpnAuthenticationException("SSTP PPP MS-CHAPv2 authentication failed."));
             };
             engine.LinkUp += () => linkUp.TrySetResult(true);
 
-            var loopCts = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token, cancellationToken);
+            var loopCts = CancellationTokenSource.CreateLinkedTokenSource(LifetimeToken, cancellationToken);
             _loopCts = loopCts;
             CancellationToken loopToken = loopCts.Token;
             Task loopTask = Task.Run(() => channel.RunReadLoopAsync(loopToken));
@@ -242,7 +234,7 @@ namespace TqkLibrary.VpnClient.Drivers.Sstp
             await WaitForLinkUpAsync(linkUp.Task, loopTask, channel, cancellationToken).ConfigureAwait(false);
             await AwaitIpv6GraceAsync(engine, ipv6Up.Task, cancellationToken).ConfigureAwait(false);
 
-            _facade.SetInner(engine.PacketChannel);
+            Facade.SetInner(engine.PacketChannel);
             StartKeepalive();
             // If the loop died during the handshake window (before keepalive was running) OnReadLoopEnded no-op'd; re-check.
             if (loopTask.IsCompleted) OnReadLoopEnded(attemptId, loopToken.IsCancellationRequested);
@@ -275,9 +267,10 @@ namespace TqkLibrary.VpnClient.Drivers.Sstp
         }
 
         // Tears down the resources of the previous attempt before a fresh one (no-op on the very first attempt).
-        void CleanupAttemptResources()
+        /// <inheritdoc/>
+        protected override Task CleanupAttemptResourcesAsync()
         {
-            StopKeepalive();
+            StopAttemptLoop();
 
             if (_channel != null) _channel.ControlReceived -= OnControlReceived;
 
@@ -291,6 +284,7 @@ namespace TqkLibrary.VpnClient.Drivers.Sstp
             _transport = null;
             _channel = null;
             _engine = null;
+            return Task.CompletedTask;
         }
 
         void OnControlReceived(SstpControlMessage message)
@@ -326,29 +320,28 @@ namespace TqkLibrary.VpnClient.Drivers.Sstp
 
         void StartKeepalive()
         {
-            _keepaliveRunning = true;
-            _logger.LogHandshakeCompleted(DriverName);
-            SetState(SstpConnectionState.Connected);
+            Logger.LogHandshakeCompleted(DriverName);
+            MarkConnected();
             _echoTimer = new System.Threading.Timer(_ => _ = SendEchoTickAsync(), null, EchoInterval, EchoInterval);
         }
 
-        void StopKeepalive()
+        /// <summary>Stops the per-attempt keepalive timer (the shared supervisor drives the run/teardown flags around it).</summary>
+        protected override void StopAttemptLoop()
         {
-            _keepaliveRunning = false;
             _echoTimer?.Dispose();
             _echoTimer = null;
         }
 
         async Task SendEchoTickAsync()
         {
-            if (!_keepaliveRunning) return;
+            if (!IsRunning) return;
             if (Interlocked.CompareExchange(ref _echoMissed, 0, 0) >= EchoMaxMissed)
             {
                 OnLinkLost("SSTP keepalive: server stopped answering Echo-Request.");
                 return;
             }
             Interlocked.Increment(ref _echoMissed);
-            _logger.LogKeepalive(DriverName, "sent SSTP Echo-Request");
+            Logger.LogKeepalive(DriverName, "sent SSTP Echo-Request");
             try { await SendControlSafeAsync(SstpMessageType.EchoRequest).ConfigureAwait(false); }
             catch { }
         }
@@ -363,79 +356,12 @@ namespace TqkLibrary.VpnClient.Drivers.Sstp
             catch { }
         }
 
-        // ---- link-loss handling + auto-reconnect supervisor (mirrors L2tpIpsecConnection) ----
+        // ---- link-loss handling + auto-reconnect supervisor live in ReconnectingVpnConnection (roadmap F.6). ----
+        // The read loop ending / missed echoes / a server Call-Disconnect/Call-Abort call the inherited OnLinkLost,
+        // which arms the shared ReconnectLoopAsync.
 
-        // Any of {read loop ended, missed echoes, server Call-Disconnect/Call-Abort} may call this from different threads.
-        void OnLinkLost(string reason)
-        {
-            bool goDisconnected = false;
-            bool startSupervisor = false;
-            lock (_stateLock)
-            {
-                if (!_keepaliveRunning) return; // first signal stops keepalive; the rest no-op
-                _logger.LogLinkLost(DriverName, reason);
-                StopKeepalive();
-
-                if (_userTeardown || !_opts.Enabled)
-                    goDisconnected = true;
-                else if (!_supervisorActive)
-                {
-                    _supervisorActive = true;
-                    startSupervisor = true;
-                }
-                // else: a supervisor already owns the reconnect; it re-checks health after its next establish.
-            }
-
-            if (goDisconnected) { SetState(SstpConnectionState.Disconnected); return; }
-            if (startSupervisor)
-            {
-                SetState(SstpConnectionState.Reconnecting);
-                _supervisor = Task.Run(() => ReconnectLoopAsync(_lifetimeCts.Token));
-            }
-        }
-
-        async Task ReconnectLoopAsync(CancellationToken cancellationToken)
-        {
-            TimeSpan delay = _opts.InitialBackoff;
-            int failures = 0;
-            while (!_userTeardown && !cancellationToken.IsCancellationRequested)
-            {
-                bool established = false;
-                _logger.LogReconnectAttempt(DriverName, failures + 1);
-                try { await EstablishAsync(cancellationToken).ConfigureAwait(false); established = true; }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { break; }
-                catch { /* attempt failed — back off and retry below */ }
-
-                if (established)
-                {
-                    bool healthy;
-                    lock (_stateLock)
-                    {
-                        // If keepalive is still up the new tunnel is healthy and we hand ownership back. If a drop
-                        // landed during the connect window, OnLinkLost stopped keepalive but could not start a new
-                        // supervisor (we still own it) — so loop and reconnect again.
-                        healthy = _keepaliveRunning;
-                        if (healthy) _supervisorActive = false;
-                    }
-                    if (healthy) { _logger.LogReconnected(DriverName); RaiseReconnected(); return; }
-
-                    SetState(SstpConnectionState.Reconnecting);
-                    delay = _opts.InitialBackoff;
-                    failures = 0;
-                    continue;
-                }
-
-                if (_opts.MaxAttempts != 0 && ++failures >= _opts.MaxAttempts) break;
-                try { await Task.Delay(WithJitter(delay), cancellationToken).ConfigureAwait(false); }
-                catch (OperationCanceledException) { break; }
-                delay = _opts.NextBackoff(delay);
-            }
-
-            lock (_stateLock) { _supervisorActive = false; }
-            if (!_userTeardown) SetState(SstpConnectionState.Disconnected);
-        }
-
-        void RaiseReconnected()
+        /// <inheritdoc/>
+        protected override void OnReconnected()
         {
             IPAddress newAddress = _engine!.AssignedAddress;
             bool changed = _lastAssignedAddress != null && !newAddress.Equals(_lastAssignedAddress);
@@ -443,46 +369,19 @@ namespace TqkLibrary.VpnClient.Drivers.Sstp
             Reconnected?.Invoke(new SstpReconnectInfo(newAddress, changed));
         }
 
-        TimeSpan WithJitter(TimeSpan delay)
-        {
-            if (_opts.JitterFraction <= 0) return delay;
-            double jitter = delay.TotalMilliseconds * _opts.JitterFraction * (_random.NextDouble() * 2 - 1);
-            return TimeSpan.FromMilliseconds(Math.Max(0, delay.TotalMilliseconds + jitter));
-        }
-
-        void SetState(SstpConnectionState state)
-        {
-            if (_state == state) return;
-            _state = state;
-            _logger.LogStateChanged(DriverName, state.ToString());
-            StateChanged?.Invoke(state);
-        }
-
         // ---- teardown ----
 
         /// <summary>
-        /// Tears the tunnel down gracefully and permanently (no reconnect): cancels any reconnect in flight, sends an
-        /// SSTP Call-Disconnect, then cancels the read loop and disposes the transport. Best-effort and time-boxed;
-        /// safe to call more than once.
+        /// Tears the tunnel down gracefully and permanently (no reconnect): sends a best-effort SSTP Call-Disconnect,
+        /// then runs the shared teardown (cancel any reconnect in flight, cancel the read loop, dispose the transport).
+        /// Best-effort and time-boxed; safe to call more than once.
         /// </summary>
-        public async Task DisconnectAsync(CancellationToken cancellationToken = default)
+        public override async Task DisconnectAsync(CancellationToken cancellationToken = default)
         {
-            _userTeardown = true;
-            _lifetimeCts.Cancel(); // abort any in-flight backoff / supervisor / handshake
-
-            Task? supervisor = _supervisor;
-            if (supervisor != null) { try { await supervisor.ConfigureAwait(false); } catch { } }
-
-            if (Interlocked.Exchange(ref _teardownStarted, 1) != 0) return;
-
-            StopKeepalive();
-            SetState(SstpConnectionState.Disconnected);
-
+            // Notify the peer first so it releases the call immediately instead of waiting for the stream to drop.
             await SendTeardownAsync().ConfigureAwait(false);
 
-            _loopCts?.Cancel();
-            _transport?.Dispose();
-            await _facade.DisposeAsync().ConfigureAwait(false);
+            await DisconnectCoreAsync().ConfigureAwait(false);
 
             _userName = null;
             _password = null;
@@ -493,7 +392,6 @@ namespace TqkLibrary.VpnClient.Drivers.Sstp
             SstpTransport? transport = _transport;
             if (transport == null) return;
 
-            // Notify the peer so it releases the call immediately instead of waiting for the stream to drop.
             Task teardown = Task.Run(async () =>
             {
                 await Swallow(() => transport.SendControlAsync(SstpMessageType.CallDisconnect, Array.Empty<SstpAttribute>())).ConfigureAwait(false);
@@ -512,13 +410,14 @@ namespace TqkLibrary.VpnClient.Drivers.Sstp
         public async ValueTask DisposeAsync()
         {
             try { await DisconnectAsync().ConfigureAwait(false); } catch { }
+            await DisposeCoreAsync().ConfigureAwait(false);
         }
 
         /// <inheritdoc/>
         public void Dispose()
         {
             // Prefer DisposeAsync; this offloads to the thread pool to avoid a sync-context deadlock on the block.
-            try { Task.Run(() => DisconnectAsync()).GetAwaiter().GetResult(); } catch { }
+            try { Task.Run(() => DisposeAsync().AsTask()).GetAwaiter().GetResult(); } catch { }
         }
     }
 }

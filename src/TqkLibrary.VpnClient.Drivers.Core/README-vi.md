@@ -20,8 +20,9 @@
 | Được dùng bởi | [Drivers.OpenConnect](../TqkLibrary.VpnClient.Drivers.OpenConnect) | `OpenConnectConnection : ReconnectingVpnConnection<OpenConnectConnectionState>` (consumer F.6 #2) |
 | Được dùng bởi | [Drivers.OpenVpn](../TqkLibrary.VpnClient.Drivers.OpenVpn) | `OpenVpnConnection : ReconnectingVpnConnection<OpenVpnConnectionState>` (consumer F.6 #3) |
 | Được dùng bởi | [Drivers.SoftEther](../TqkLibrary.VpnClient.Drivers.SoftEther) | `SoftEtherConnection : ReconnectingVpnConnection<SoftEtherConnectionState>` (consumer F.6 #4) |
+| Được dùng bởi | [Drivers.Sstp](../TqkLibrary.VpnClient.Drivers.Sstp) | `SstpConnection : ReconnectingVpnConnection<SstpConnectionState>` (consumer F.6 #5; `SstpReconnectOptions : VpnReconnectOptions` thêm knob `ReadTimeout`) |
 
-> Các driver còn lại (IKEv2/SSTP/L2TP-IPsec) **chưa** migrate — ghi follow-up ở [Trạng thái](#trạng-thái--ghi-chú). `XxxReconnectOptions` của 3 driver đó vẫn là class độc lập (chưa kế thừa `VpnReconnectOptions`).
+> Các driver còn lại (IKEv2/L2TP-IPsec) **chưa** migrate — ghi follow-up ở [Trạng thái](#trạng-thái--ghi-chú). `XxxReconnectOptions` của 2 driver đó vẫn là class độc lập (chưa kế thừa `VpnReconnectOptions`).
 
 ## Cấu trúc thư mục
 
@@ -60,10 +61,9 @@ Driver cụ thể chỉ cần:
 
 ## Trạng thái & ghi chú
 
-- **Đã có (F.6)**: base `ReconnectingVpnConnection<TState>` + `VpnReconnectOptions`; **migrate 4 driver** WireGuard (UDP/Noise) + OpenConnect (TLS+DTLS/CSTP) + OpenVPN (UDP/TCP, rekey = re-establish) + SoftEther (TLS byte-stream + L2 bridge) sang base — chứng minh hợp đồng đủ cho cả transport datagram lẫn byte-stream, cả make-before-break (WG: timer-loop riêng `_timerRunning`) lẫn DTLS-fallback window (OC: `MarkRunning` sớm) lẫn keepalive ping/ping-restart trong timer riêng (OpenVPN: `StopAttemptLoop` dispose timer + tắt `_dataActive`, rekey re-establish gọi `OnLinkLost`) lẫn L2-bridge keep-alive timer (SoftEther: `MarkRunning` sớm trước DHCP, `StopAttemptLoop` dispose keep-alive timer, `OnReconnected` raise `Reconnected`). Test offline [`ReconnectingVpnConnectionTests`](../../tests/TqkLibrary.VpnClient.Drivers.Core.Tests/ReconnectingVpnConnectionTests.cs) (fake driver: connect/connect-fail/reconnect/reconnect-disabled/max-attempts/teardown-mid-loop + default policy) + toàn bộ test WireGuard/OpenConnect/OpenVPN/SoftEther cũ **vẫn xanh** (không đổi hành vi).
-- **Chưa (follow-up)**: migrate 3 driver còn lại sang base —
+- **Đã có (F.6)**: base `ReconnectingVpnConnection<TState>` + `VpnReconnectOptions`; **migrate 5 driver** WireGuard (UDP/Noise) + OpenConnect (TLS+DTLS/CSTP) + OpenVPN (UDP/TCP, rekey = re-establish) + SoftEther (TLS byte-stream + L2 bridge) + SSTP (TLS + PPP + crypto-binding) sang base — chứng minh hợp đồng đủ cho cả transport datagram lẫn byte-stream, cả make-before-break (WG: timer-loop riêng `_timerRunning`) lẫn DTLS-fallback window (OC: `MarkRunning` sớm) lẫn keepalive ping/ping-restart trong timer riêng (OpenVPN: `StopAttemptLoop` dispose timer + tắt `_dataActive`, rekey re-establish gọi `OnLinkLost`) lẫn L2-bridge keep-alive timer (SoftEther: `MarkRunning` sớm trước DHCP, `StopAttemptLoop` dispose keep-alive timer, `OnReconnected` raise `Reconnected`) lẫn active Echo keepalive (SSTP: `StopAttemptLoop` dispose Echo timer, override `DisconnectAsync` gửi Call-Disconnect, `OnReconnected` raise `Reconnected(SstpReconnectInfo)`; `SstpReconnectOptions : VpnReconnectOptions` **thêm knob riêng `ReadTimeout`** — minh chứng pattern "subclass thêm knob ngoài policy chung"). Test offline [`ReconnectingVpnConnectionTests`](../../tests/TqkLibrary.VpnClient.Drivers.Core.Tests/ReconnectingVpnConnectionTests.cs) (fake driver: connect/connect-fail/reconnect/reconnect-disabled/max-attempts/teardown-mid-loop + default policy) + toàn bộ test WireGuard/OpenConnect/OpenVPN/SoftEther/SSTP cũ **vẫn xanh** (không đổi hành vi).
+- **Chưa (follow-up)**: migrate 2 driver còn lại sang base —
   - **IKEv2** (`Ikev2Connection`): rekey IKE/CHILD SA in-place trên kênh SK — `EstablishAsync`/`CleanupAttemptResourcesAsync` map được, nhưng rekey không phải re-establish nên cần giữ logic riêng ngoài supervisor.
-  - **SSTP** (`SstpConnection`): `SstpReconnectOptions` có thêm `ReadTimeout` → khi migrate cho kế thừa `VpnReconnectOptions` + thêm knob; supervisor map được.
   - **L2TP/IPsec** (`L2tpIpsecConnection`): rekey Phase 1/2 in-place + multi-session — phức tạp nhất; supervisor map được nhưng cần thận trọng với swap SA.
 - **Tham chiếu**: roadmap [`11`](../../.docs/11-todo-roadmap.md) §F.6; mẫu consumer [Drivers.WireGuard README](../TqkLibrary.VpnClient.Drivers.WireGuard/README-vi.md) + [Drivers.OpenConnect README](../TqkLibrary.VpnClient.Drivers.OpenConnect/README-vi.md).
 

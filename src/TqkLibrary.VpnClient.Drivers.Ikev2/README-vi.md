@@ -15,6 +15,7 @@ Driver **IKEv2-native** (RFC 7296) — kết nối trực tiếp tới gateway I
 | Hướng | Project | Lý do |
 |-------|---------|-------|
 | Dùng | [Abstractions](../TqkLibrary.VpnClient.Abstractions) | `IVpnProtocolDriver`/`IVpnConnection`/`IVpnSession`, `IPacketChannel`, `SwappablePacketChannel`, exceptions, `IHostResolver`, **`Diagnostics`** (`VpnEventIds`/`VpnLogExtensions` — log handshake/DPD/rekey/reconnect, Q.2) |
+| Dùng | [Drivers.Core](../TqkLibrary.VpnClient.Drivers.Core) | base [`ReconnectingVpnConnection<TState>`](../TqkLibrary.VpnClient.Drivers.Core/ReconnectingVpnConnection.cs#L25) (supervisor/reconnect/backoff-jitter/facade/state, F.6) + [`VpnReconnectOptions`](../TqkLibrary.VpnClient.Drivers.Core/Models/VpnReconnectOptions.cs#L17) |
 | Dùng | [Ipsec](../TqkLibrary.VpnClient.Ipsec) | `Ike/V2` (IkeClient + payloads), `Esp` (EspSession/EspTunnelChannel), `Nat` (NAT-T) |
 | Được dùng bởi | [TqkLibrary.VpnClient](../TqkLibrary.VpnClient) (façade) | `VpnClientBuilder.UseIkev2()` đăng ký driver |
 
@@ -23,10 +24,10 @@ Driver **IKEv2-native** (RFC 7296) — kết nối trực tiếp tới gateway I
 ```
 TqkLibrary.VpnClient.Drivers.Ikev2/
 ├─ Ikev2Driver.cs              IVpnProtocolDriver: capabilities + ConnectAsync → Ikev2Connection
-├─ Ikev2Connection.cs          Điều phối control plane: handshake, DPD keepalive, rekey CHILD_SA, teardown, reconnect
+├─ Ikev2Connection.cs          : ReconnectingVpnConnection<…> (F.6). Override Establish/Cleanup/StopAttemptLoop + ánh xạ state; giữ DPD/rekey IKE+CHILD SA/DELETE trên timer riêng (ngoài supervisor)
 ├─ Ikev2VpnConnection.cs       IVpnConnection: 1 session; OpenSessionAsync ném NotSupportedException (1 CHILD_SA)
 ├─ Ikev2VpnSession.cs          IVpnSession: PacketChannel ổn định + TunnelConfig; ApplyReconnect khi reconnect
-├─ Ikev2ReconnectOptions.cs    Chính sách auto-reconnect (backoff + jitter, mirror L2TP/IPsec)
+├─ Ikev2ReconnectOptions.cs    : VpnReconnectOptions (F.6) — không thêm knob, giữ cho public API
 ├─ Enums/Ikev2ConnectionState.cs   Disconnected/Connecting/Connected/Reconnecting
 └─ Models/Ikev2ReconnectInfo.cs    Địa chỉ mới + cờ AddressChanged sau reconnect
 ```
@@ -36,10 +37,10 @@ TqkLibrary.VpnClient.Drivers.Ikev2/
 | Type | Vai trò | Vị trí |
 |------|---------|--------|
 | `Ikev2Driver` | `IVpnProtocolDriver`: capabilities (L3Ip, **không PPP**, ESP, **PSK\|EAP**, ConfigPush), `ConnectAsync` dựng `Ikev2Connection`; có username+password ⇒ EAP, không ⇒ PSK (lệch một nửa ⇒ `ArgumentException`) | [Ikev2Driver.cs:8](Ikev2Driver.cs#L8) |
-| `Ikev2Connection` | Bộ điều phối: forced NAT-T (500→4500) → IKE_SA_INIT → IKE_AUTH (PSK **hoặc** EAP-MSCHAPv2 loop `RunEapAuthAsync`) +CP → `EspTunnelChannel`; keepalive DPD, rekey CHILD_SA make-before-break **+ rekey IKE SA** (`RekeyIkeSaAsync`, ~90% lifetime 8h), **DELETE SA cũ sau cả 2 loại rekey** (`SendDeleteAsync`), DELETE teardown, supervisor reconnect sau `SwappablePacketChannel` ổn định | [Ikev2Connection.cs:25](Ikev2Connection.cs#L25) |
+| `Ikev2Connection` | Bộ điều phối, **kế thừa** [`ReconnectingVpnConnection<Ikev2ConnectionState>`](../TqkLibrary.VpnClient.Drivers.Core/ReconnectingVpnConnection.cs#L25) (F.6): override `EstablishAsync` (forced NAT-T 500→4500 → IKE_SA_INIT → IKE_AUTH PSK **hoặc** EAP-MSCHAPv2 loop `RunEapAuthAsync` +CP → `EspTunnelChannel` bind sau `Facade`) + `CleanupAttemptResourcesAsync`/`StopAttemptLoop` + ánh xạ 4 state + `OnReconnected`. **Phần IKEv2-riêng giữ ngoài supervisor trên timer riêng**: keepalive DPD, rekey CHILD_SA make-before-break **+ rekey IKE SA** (`RekeyIkeSaAsync`, ~90% lifetime 8h), **DELETE SA cũ sau cả 2 loại rekey** (`SendDeleteAsync`); `DisconnectAsync` gửi DELETE IKE SA trước teardown base. Supervisor/reconnect/backoff-jitter/facade/lifetime/state ở base | [Ikev2Connection.cs:36](Ikev2Connection.cs#L36) |
 | `Ikev2VpnConnection` | `IVpnConnection`: 1 session; `OpenSessionAsync` ⇒ `NotSupportedException` (IKEv2 strictly 1 CHILD_SA ở driver này) | [Ikev2VpnConnection.cs:7](Ikev2VpnConnection.cs#L7) |
 | `Ikev2VpnSession` | `IVpnSession`: `PacketChannel` (facade) + `Config`; `ApplyReconnect` cập nhật IP/DNS sau reconnect | [Ikev2VpnSession.cs:10](Ikev2VpnSession.cs#L10) |
-| `Ikev2ReconnectOptions` | `Enabled`/`MaxAttempts`/backoff/jitter | [Ikev2ReconnectOptions.cs:8](Ikev2ReconnectOptions.cs#L8) |
+| `Ikev2ReconnectOptions` | **kế thừa** [`VpnReconnectOptions`](../TqkLibrary.VpnClient.Drivers.Core/Models/VpnReconnectOptions.cs#L17) (F.6): `Enabled`/`MaxAttempts`/backoff/jitter — IKEv2 không thêm knob, giữ named type cho public API | [Ikev2ReconnectOptions.cs:11](Ikev2ReconnectOptions.cs#L11) |
 
 ## Luồng kết nối (as-built)
 
@@ -50,15 +51,15 @@ TqkLibrary.VpnClient.Drivers.Ikev2/
 5. **IKE_AUTH** (UDP/4500, SK-encrypted):
    - **PSK**: IDi(IPv4 0.0.0.0) + AUTH(PSK) + **CFG_REQUEST** + SAi2 (chào AES-CBC-256 + AES-GCM) + TSi/TSr. `ProcessAuthResponse` verify AUTH responder → CHILD_SA keys + đọc **CFG_REPLY** (virtual IP/DNS).
    - **EAP-MSCHAPv2** (`RunEapAuthAsync`): IDi = username (Rfc822/FQDN), IKE_AUTH đầu **không** AUTH (báo dùng EAP); loop `BuildAuthRequestEap`→`ProcessAuthResponseEap` chạy EAP-Identity → MSCHAPv2 Challenge/Response/Success qua các message-id liên tiếp; cả 2 bên tính AUTH cuối từ **EAP MSK**. Responder vẫn xác thực bằng PSK (lab Q.1 sẽ kiểm cert). Không có IP ảo ⇒ `VpnServerRejectedException`.
-6. **Data plane**: dựng `EspSession` (suite gateway chọn) → `EspTunnelChannel(esp, natt.SendEspAsync, mtu=1400)`; `_facade.SetInner(dataPlane)`; bật keepalive.
+6. **Data plane**: dựng `EspSession` (suite gateway chọn) → `EspTunnelChannel(esp, natt.SendEspAsync, mtu=1400)`; `Facade.SetInner(dataPlane)` (facade ổn định của base) → `MarkConnected()`; bật keepalive/rekey timer.
 
 ## Vòng đời
 
 - **DPD keepalive** (RFC 7296 §2.4): mỗi 20s gửi INFORMATIONAL rỗng (`BuildDeadPeerDetection`) qua exchange-gate; quá 3 lần không hồi đáp ⇒ link lost. Probe đến từ gateway (INFORMATIONAL rỗng) ⇒ ack bằng `BuildInformationalResponse`.
 - **Rekey CHILD_SA** (make-before-break): timer ~90% lifetime (1h) **hoặc** watermark sequence ESP ~2³² (`EspTunnelChannel.RekeyNeeded`) → `BuildRekeyChildSaRequest`/`ProcessRekeyChildSaResponse` → `EspTunnelChannel.SwapSession` (gửi SA mới ngay, giữ SA cũ nhận thêm 10s rồi `DropPreviousInbound`); sau swap, **DELETE CHILD_SA cũ** trên IKE SA đang sống — `BuildDeleteChildSa(oldInboundSpi)` (SPI cũ capture trước khi `ProcessRekeyChildSaResponse` ghi đè) gửi best-effort qua `SendDeleteAsync` (RFC 7296 §2.8).
 - **Rekey IKE SA** (Phase-1-equivalent, RFC 7296 §1.3.2/§2.18): timer ~90% lifetime (8h) → `RekeyIkeSaAsync` gửi `BuildRekeyIkeSaRequest` (CREATE_CHILD_SA: SPI/DH/Nonce mới) trên SK channel **cũ** → `ProcessRekeyIkeSaResponse` swing SK_* mới + reset message-id về 0. **Chỉ refresh khóa control-channel** — ESP CHILD_SA/data plane không đổi nên không cần make-before-break trên traffic. Sau swing, **DELETE IKE SA cũ**: wire đã được `IkeClient` mã hóa bằng SK_* **cũ** + SPI cũ ngay trước swing (`TakePendingOldIkeSaDelete`) → gửi best-effort trên SA cũ qua `SendDeleteAsync` (không chờ ACK trên SA sắp chết). Chung guard `_rekeyInProgress` với rekey CHILD_SA (không chạy chồng).
-- **Teardown** (`DisconnectAsync`): gửi `BuildDeleteIkeSa` (best-effort), hủy receive loop, đóng socket.
-- **Auto-reconnect**: gateway DELETE / DPD chết ⇒ supervisor dựng lại tunnel sau `SwappablePacketChannel`; backoff mũ + jitter.
+- **Teardown** (`DisconnectAsync` override): gửi `BuildDeleteIkeSa` (best-effort) **trước**, rồi gọi `DisconnectCoreAsync` của base (hủy reconnect đang chờ, dừng timer qua `StopAttemptLoop`, hủy receive loop, đóng socket).
+- **Auto-reconnect** (ở base, F.6): gateway DELETE / DPD chết ⇒ gọi `OnLinkLost` của base → `ReconnectLoopAsync` dựng lại tunnel (`EstablishAsync`) sau `Facade` (`SwappablePacketChannel`); backoff mũ + jitter; `OnReconnected` raise `Reconnected(Ikev2ReconnectInfo)`. **Rekey IKE/CHILD SA cố ý KHÔNG đi qua supervisor** — làm tươi SA in-place, tunnel không rớt.
 - **Logging/diagnostics (Q.2)**: ctor `Ikev2Connection`/`Ikev2Driver` nhận `ILoggerFactory?` (mặc định [`NullLogger`](../TqkLibrary.VpnClient.Abstractions/Diagnostics/Extensions/VpnLogExtensions.cs) ⇒ no-op, **ADDITIVE không đổi hành vi**). Log qua [`VpnLogExtensions`](../TqkLibrary.VpnClient.Abstractions/Diagnostics/Extensions/VpnLogExtensions.cs): IKE_SA_INIT + IKE_AUTH (PSK/EAP)→Handshake (auth fail→HandshakeFailed); bind ESP plane→HandshakeCompleted; DPD probe→Keepalive; rekey CHILD_SA/IKE SA→Rekey; `SetState`→StateChanged; `OnLinkLost`→LinkLost; reconnect attempt/success→ReconnectAttempt/Reconnected.
 
 ## Trạng thái & ghi chú

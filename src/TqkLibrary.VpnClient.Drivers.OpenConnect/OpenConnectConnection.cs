@@ -13,6 +13,7 @@ using TqkLibrary.VpnClient.Drivers.OpenConnect.Enums;
 using TqkLibrary.VpnClient.Drivers.OpenConnect.Models;
 using TqkLibrary.VpnClient.Drivers.OpenConnect.Transport;
 using TqkLibrary.VpnClient.OpenConnect;
+using TqkLibrary.VpnClient.OpenConnect.Enums;
 using TqkLibrary.VpnClient.OpenConnect.Models;
 using TqkLibrary.VpnClient.Transport.Dtls;
 
@@ -37,8 +38,18 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
     /// whichever channel is active. If DTLS is not offered, no factory is supplied, or the handshake fails, the data
     /// plane stays on CSTP-over-TLS (fallback). Not a server — the responder role lives only in tests.
     /// </para>
+    /// <para>
+    /// <b>Rekey (V.5):</b> when the gateway pushes <c>X-CSTP-Rekey-Method</c>/<c>X-CSTP-Rekey-Time</c>, the same 1 s
+    /// timer arms a <see cref="CstpRekeyState"/>; at the rekey period the connection re-establishes a fresh tunnel
+    /// (new auth + CONNECT + channel + optional DTLS) <b>make-before-break</b> behind the stable facade and swaps onto
+    /// it, then tears the old one down — so the IP stack never rebinds and traffic is not dropped. Both
+    /// <c>new-tunnel</c> and <c>ssl</c> use re-establish: <see cref="SslStream"/> exposes no client-initiated TLS
+    /// renegotiation on net8/netstandard2.0, so the <c>ssl</c> method is handled as a re-establish (documented fallback).
+    /// A rekey failure leaves the current tunnel in place and lets DPD/keep-alive + the supervisor catch a genuinely
+    /// dead session.
+    /// </para>
     /// </summary>
-    public sealed class OpenConnectConnection : ReconnectingVpnConnection<OpenConnectConnectionState>, IDisposable, IAsyncDisposable
+    public sealed partial class OpenConnectConnection : ReconnectingVpnConnection<OpenConnectConnectionState>, IDisposable, IAsyncDisposable
     {
         static readonly TimeSpan TimerTick = TimeSpan.FromSeconds(1);
         const string DriverNameConst = "openconnect";
@@ -61,11 +72,14 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
         CstpDatagramChannel? _dtlsChannel;
         IDatagramTransport? _dtls;
         CstpDpdState? _dpd;
-        CancellationTokenSource? _loopCts;
+        CstpRekeyState? _rekey;
+        CancellationTokenSource? _loopCts;   // attempt lifetime (cancelled on cleanup/teardown)
+        CancellationTokenSource? _recvCts;   // the current receive loops' token — rotated on each rekey so the old loops can be cancelled
         Task? _receiveTask;
         Task? _dtlsReceiveTask;
         System.Threading.Timer? _timer;
         bool _dtlsActive; // true once the data plane is bound to the DTLS channel
+        int _rekeyInProgress; // 0/1 guard: at most one rekey runs at a time (and never overlaps a reconnect)
 
         IPAddress? _assignedAddress;
         IPAddress? _lastAssignedAddress;
@@ -80,9 +94,9 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
         /// on failure); null = TLS-only. <paramref name="dtlsCertificateValidation"/> validates the gateway's DTLS
         /// certificate (null = accept any). <paramref name="dtlsHandshakeTimeout"/> bounds the DTLS handshake before the
         /// data plane falls back to TLS (default 10s). <paramref name="requestedMtu"/> is advertised in
-        /// <c>X-CSTP-Base-MTU</c>; <paramref name="clock"/> supplies the DPD/keep-alive millisecond clock (default: the
-        /// system tick clock) — tests inject a deterministic one. <paramref name="loggerFactory"/> receives diagnostic
-        /// traces (auth/connect/DTLS/DPD/drop); null logs to a no-op logger.
+        /// <c>X-CSTP-Base-MTU</c>; <paramref name="clock"/> supplies the DPD/keep-alive/rekey millisecond clock (default:
+        /// the system tick clock) — tests inject a deterministic one. <paramref name="loggerFactory"/> receives diagnostic
+        /// traces (auth/connect/DTLS/DPD/rekey/drop); null logs to a no-op logger.
         /// </summary>
         public OpenConnectConnection(string host, int port, IOpenConnectTransportFactory transportFactory,
             string? username = null, string? password = null, string groupSelect = "",
@@ -121,8 +135,17 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
         /// <summary>True when the data plane is running over the DTLS datagram channel; false when it is on CSTP-over-TLS (the fallback).</summary>
         public bool IsDtlsDataPlane => _dtlsActive;
 
+        /// <summary>The CSTP rekey method the gateway requested (<c>X-CSTP-Rekey-Method</c>); <see cref="OpenConnectRekeyMethod.None"/> when rekey is disabled.</summary>
+        public OpenConnectRekeyMethod RekeyMethod => _rekey?.Method ?? OpenConnectRekeyMethod.None;
+
+        /// <summary>How many times the CSTP session has been rekeyed (re-established) since the first connect (test/diagnostic hook).</summary>
+        public int RekeyCount { get; private set; }
+
         /// <summary>Raised after a successful auto-reconnect, carrying the new address and whether it changed.</summary>
         public event Action<OpenConnectReconnectInfo>? Reconnected;
+
+        /// <summary>Raised after a successful CSTP rekey (the data plane swapped onto a freshly re-established tunnel).</summary>
+        public event Action? Rekeyed;
 
         /// <inheritdoc/>
         protected override OpenConnectConnectionState DisconnectedState => OpenConnectConnectionState.Disconnected;
@@ -149,12 +172,50 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
 
             IPAddress serverIp = await _hostResolver.ResolveAsync(_host, _addressFamilyPreference, cancellationToken).ConfigureAwait(false);
             _loopCts = CancellationTokenSource.CreateLinkedTokenSource(LifetimeToken, cancellationToken);
-            CancellationToken loopToken = _loopCts.Token;
+            _recvCts = CancellationTokenSource.CreateLinkedTokenSource(_loopCts.Token);
+            CancellationToken connectToken = _loopCts.Token;
+            CancellationToken recvToken = _recvCts.Token;
 
+            // Build the CSTP-over-TLS channel + parse the in-band config (no live-field side effects until the bind).
+            (IByteStreamTransport stream, CstpChannel channel, OpenConnectTunnelInfo tunnelInfo, TunnelConfig config, int mtu) =
+                await BuildCstpChannelAsync(serverIp, cancellationToken).ConfigureAwait(false);
+
+            _stream = stream;
+            WireChannelEvents(channel);
+            _channel = channel;
+
+            _config = config;
+            _assignedAddress = config.AssignedAddress;
+            Facade.SetInner(channel);
+
+            // Start the CSTP-over-TLS receive loop and the DPD/keep-alive + rekey timer (seeded from X-CSTP-DPD/Keepalive/Rekey-*).
+            _dpd = new CstpDpdState(tunnelInfo.Dpd ?? 0, tunnelInfo.Keepalive ?? 0, Now());
+            _rekey = new CstpRekeyState(tunnelInfo.ParsedRekeyMethod, tunnelInfo.RekeyTime ?? 0, Now());
+            MarkRunning(); // a peer-close/fault from the receive loop below must now arm reconnect (before MarkConnected)
+            _dtlsActive = false;
+            _receiveTask = Task.Run(() => channel.RunReceiveLoopAsync(recvToken));
+
+            Logger.LogHandshake(DriverName, $"CSTP CONNECT accepted; tunnel address {config.AssignedAddress} (CSTP-over-TLS bound)");
+
+            // --- try to swap the data plane onto a parallel DTLS datagram channel (fallback to TLS on any failure) ---
+            if (_datagramFactory != null && tunnelInfo.HasDtls)
+                await TryEstablishDtlsAsync(serverIp, tunnelInfo, mtu, recvToken, connectToken).ConfigureAwait(false);
+
+            _timer = new System.Threading.Timer(_ => _ = TimerTickAsync(), null, TimerTick, TimerTick);
+
+            Logger.LogHandshakeCompleted(DriverName);
+            MarkConnected();
+        }
+
+        // Connects a fresh TLS byte stream, runs auth + the HTTP CONNECT, and wraps the result in a CstpChannel —
+        // without touching any live field. Returned to the caller, which decides whether to bind it (first connect /
+        // reconnect) or swap it in make-before-break (rekey).
+        async Task<(IByteStreamTransport stream, CstpChannel channel, OpenConnectTunnelInfo tunnelInfo, TunnelConfig config, int mtu)>
+            BuildCstpChannelAsync(IPAddress serverIp, CancellationToken cancellationToken)
+        {
             OpenConnectTransportHandle handle = await _transportFactory
                 .ConnectAsync(_host, new IPEndPoint(serverIp, _port), cancellationToken).ConfigureAwait(false);
             IByteStreamTransport stream = handle.Stream;
-            _stream = stream;
 
             var http = new OpenConnectHttpTransactor(stream, _host);
 
@@ -174,38 +235,45 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
             if (tunnelInfo.Address is null && tunnelInfo.AddressV6 is null)
                 throw new VpnServerRejectedException("OpenConnect CONNECT response carried no tunnel address (no X-CSTP-Address).");
 
-            // --- bind the CSTP-over-TLS data plane behind the stable facade (control + fallback path) ---
             TunnelConfig config = tunnelInfo.ToTunnelConfig();
             int mtu = tunnelInfo.Mtu ?? _requestedMtu;
             config.Mtu = mtu;
 
             var channel = new CstpChannel(stream, mtu);
+            return (stream, channel, tunnelInfo, config, mtu);
+        }
+
+        // Subscribes / unsubscribes the shared DPD/peer-close/liveness handlers on a TLS channel.
+        void WireChannelEvents(CstpChannel channel)
+        {
             channel.DpdRequestReceived += OnDpdRequest;
             channel.PeerClosed += OnPeerClosed;
             channel.PacketReceived += OnPacketReceived;
             channel.PacketSent += OnPacketSent;
-            _channel = channel;
+        }
 
-            _config = config;
-            _assignedAddress = config.AssignedAddress;
-            Facade.SetInner(channel);
+        void UnwireChannelEvents(CstpChannel channel)
+        {
+            channel.DpdRequestReceived -= OnDpdRequest;
+            channel.PeerClosed -= OnPeerClosed;
+            channel.PacketReceived -= OnPacketReceived;
+            channel.PacketSent -= OnPacketSent;
+        }
 
-            // Start the CSTP-over-TLS receive loop and the DPD/keep-alive timer (seeded from X-CSTP-DPD/Keepalive).
-            _dpd = new CstpDpdState(tunnelInfo.Dpd ?? 0, tunnelInfo.Keepalive ?? 0, Now());
-            MarkRunning(); // a peer-close/fault from the receive loop below must now arm reconnect (before MarkConnected)
-            _dtlsActive = false;
-            _receiveTask = Task.Run(() => channel.RunReceiveLoopAsync(loopToken));
+        void WireDatagramEvents(CstpDatagramChannel channel)
+        {
+            channel.DpdRequestReceived += OnDpdRequest;
+            channel.PeerClosed += OnPeerClosed;
+            channel.PacketReceived += OnPacketReceived;
+            channel.PacketSent += OnPacketSent;
+        }
 
-            Logger.LogHandshake(DriverName, $"CSTP CONNECT accepted; tunnel address {config.AssignedAddress} (CSTP-over-TLS bound)");
-
-            // --- try to swap the data plane onto a parallel DTLS datagram channel (fallback to TLS on any failure) ---
-            if (requestDtls && tunnelInfo.HasDtls)
-                await TryEstablishDtlsAsync(serverIp, tunnelInfo, mtu, loopToken, cancellationToken).ConfigureAwait(false);
-
-            _timer = new System.Threading.Timer(_ => _ = TimerTickAsync(), null, TimerTick, TimerTick);
-
-            Logger.LogHandshakeCompleted(DriverName);
-            MarkConnected();
+        void UnwireDatagramEvents(CstpDatagramChannel channel)
+        {
+            channel.DpdRequestReceived -= OnDpdRequest;
+            channel.PeerClosed -= OnPeerClosed;
+            channel.PacketReceived -= OnPacketReceived;
+            channel.PacketSent -= OnPacketSent;
         }
 
         // Opens UDP → DTLS → CstpDatagramChannel and swaps the data plane onto it. Any failure leaves the data plane on
@@ -228,10 +296,7 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
                 await dtls.ConnectAsync(handshakeCts.Token).ConfigureAwait(false);
 
                 var dtlsChannel = new CstpDatagramChannel(dtls, mtu, ownsTransport: false);
-                dtlsChannel.DpdRequestReceived += OnDpdRequest;
-                dtlsChannel.PeerClosed += OnPeerClosed;
-                dtlsChannel.PacketReceived += OnPacketReceived;
-                dtlsChannel.PacketSent += OnPacketSent;
+                WireDatagramEvents(dtlsChannel);
 
                 _dtls = dtls;
                 _dtlsChannel = dtlsChannel;
@@ -377,7 +442,7 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
 
         void OnPacketSent() => _dpd?.OnDataSent(Now());
 
-        // ---- timer loop: DPD probe + dead detection + idle keep-alive (driven by CstpDpdState) ----
+        // ---- timer loop: DPD probe + dead detection + idle keep-alive + session rekey (driven by CstpDpdState/CstpRekeyState) ----
 
         async Task TimerTickAsync()
         {
@@ -392,6 +457,15 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
                 OnLinkLost("X-CSTP-DPD: no traffic from the OpenConnect gateway within the dead-peer-detection window.");
                 return;
             }
+
+            // Session rekey (X-CSTP-Rekey-*): refresh the tunnel make-before-break before the gateway times it out.
+            CstpRekeyState? rekey = _rekey;
+            if (rekey != null && rekey.ShouldRekey(now))
+            {
+                await MaybeRekeyAsync(rekey).ConfigureAwait(false);
+                return; // a rekey already exchanges traffic; skip the DPD/keep-alive probe this tick
+            }
+
             if (dpd.ShouldSendDpd(now))
             {
                 dpd.OnDpdSent(now);
@@ -413,6 +487,93 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
         {
             try { await send(default).ConfigureAwait(false); }
             catch { /* a missed control frame trips DPD/keep-alive later; never crash the timer */ }
+        }
+
+        // ---- session rekey (V.5): re-establish a fresh tunnel make-before-break and swap onto it ----
+
+        // Runs at most one rekey at a time; a rekey that fails leaves the current tunnel up (DPD/supervisor cover a real
+        // dead session). Both new-tunnel and ssl re-establish (SslStream has no client TLS renegotiation on these TFMs).
+        async Task MaybeRekeyAsync(CstpRekeyState rekey)
+        {
+            if (Interlocked.CompareExchange(ref _rekeyInProgress, 1, 0) != 0) return; // a rekey is already running
+            try
+            {
+                if (!IsRunning) return; // dropped between the timer check and here
+                await RekeyAsync(rekey).ConfigureAwait(false);
+            }
+            catch
+            {
+                Logger.LogHandshakeFailed(DriverName, "CSTP rekey failed; keeping the current tunnel (DPD/supervisor will catch a dead session)");
+                // Keep the live tunnel; re-arm so the next period retries. DPD/keep-alive + the supervisor remain the
+                // safety net for a genuinely dead session.
+                rekey.OnRekeyDone(Now());
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _rekeyInProgress, 0);
+            }
+        }
+
+        async Task RekeyAsync(CstpRekeyState rekey)
+        {
+            Logger.LogHandshake(DriverName, $"CSTP rekey ({rekey.Method}) due; re-establishing the tunnel make-before-break");
+            CancellationToken connectToken = _loopCts?.Token ?? LifetimeToken;
+            IPAddress serverIp = await _hostResolver.ResolveAsync(_host, _addressFamilyPreference, connectToken).ConfigureAwait(false);
+
+            // 1) Build a fresh tunnel into locals (the current tunnel keeps carrying traffic throughout).
+            (IByteStreamTransport newStream, CstpChannel newChannel, OpenConnectTunnelInfo newInfo, TunnelConfig newConfig, int newMtu) =
+                await BuildCstpChannelAsync(serverIp, connectToken).ConfigureAwait(false);
+
+            // 2) Capture the old resources + the old receive-loop token so we can cancel the old loops after the swap.
+            CstpChannel? oldChannel = _channel;
+            CstpDatagramChannel? oldDtlsChannel = _dtlsChannel;
+            IDatagramTransport? oldDtls = _dtls;
+            IByteStreamTransport? oldStream = _stream;
+            Task? oldReceive = _receiveTask;
+            Task? oldDtlsReceive = _dtlsReceiveTask;
+            CancellationTokenSource? oldRecvCts = _recvCts;
+
+            // 3) Swap onto the new CSTP-over-TLS channel behind the stable facade (the IP stack never rebinds). The new
+            //    loops run under a fresh receive-loop token so the old ones can be cancelled independently.
+            var newRecvCts = CancellationTokenSource.CreateLinkedTokenSource(connectToken);
+            CancellationToken newRecvToken = newRecvCts.Token;
+            WireChannelEvents(newChannel);
+            _stream = newStream;
+            _channel = newChannel;
+            _dtlsChannel = null;
+            _dtls = null;
+            _dtlsActive = false;
+            _config = newConfig;
+            _assignedAddress = newConfig.AssignedAddress;
+            _dpd = new CstpDpdState(newInfo.Dpd ?? 0, newInfo.Keepalive ?? 0, Now());
+            _recvCts = newRecvCts;
+            _receiveTask = Task.Run(() => newChannel.RunReceiveLoopAsync(newRecvToken));
+            _dtlsReceiveTask = null;
+            Facade.SetInner(newChannel);
+
+            // Re-open the DTLS data path on the new tunnel when the gateway still offers it (fallback to TLS otherwise).
+            if (_datagramFactory != null && newInfo.HasDtls)
+                await TryEstablishDtlsAsync(serverIp, newInfo, newMtu, newRecvToken, connectToken).ConfigureAwait(false);
+
+            // 4) Tear the old tunnel down: detach its events (so its EOF cannot call OnLinkLost), send a best-effort
+            //    DISCONNECT, cancel + await its loops, then dispose it. Done after the swap = make-before-break.
+            if (oldDtlsChannel != null) UnwireDatagramEvents(oldDtlsChannel);
+            if (oldChannel != null) UnwireChannelEvents(oldChannel);
+            if (oldDtlsChannel != null) { try { await oldDtlsChannel.SendDisconnectAsync(connectToken).ConfigureAwait(false); } catch { } }
+            if (oldChannel != null) { try { await oldChannel.SendDisconnectAsync(connectToken).ConfigureAwait(false); } catch { } }
+            try { oldRecvCts?.Cancel(); } catch { }
+            if (oldReceive != null) { try { await oldReceive.ConfigureAwait(false); } catch { } }
+            if (oldDtlsReceive != null) { try { await oldDtlsReceive.ConfigureAwait(false); } catch { } }
+            oldRecvCts?.Dispose();
+            if (oldDtlsChannel != null) { try { await oldDtlsChannel.DisposeAsync().ConfigureAwait(false); } catch { } }
+            if (oldDtls != null) { try { await oldDtls.DisposeAsync().ConfigureAwait(false); } catch { } }
+            if (oldChannel != null) { try { await oldChannel.DisposeAsync().ConfigureAwait(false); } catch { } }
+            if (oldStream != null) { try { await oldStream.DisposeAsync().ConfigureAwait(false); } catch { } }
+
+            RekeyCount++;
+            rekey.OnRekeyDone(Now());
+            Logger.LogHandshake(DriverName, $"CSTP rekey complete (#{RekeyCount}); tunnel address {newConfig.AssignedAddress}");
+            Rekeyed?.Invoke();
         }
 
         // ---- link-loss handling + auto-reconnect supervisor live in ReconnectingVpnConnection (roadmap F.6). ----
@@ -450,26 +611,19 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
         {
             StopAttemptLoop();
             _dtlsActive = false;
+            _rekey = null;
 
             CstpChannel? channel = _channel;
             _channel = null;
-            if (channel != null)
-            {
-                channel.DpdRequestReceived -= OnDpdRequest;
-                channel.PeerClosed -= OnPeerClosed;
-                channel.PacketReceived -= OnPacketReceived;
-                channel.PacketSent -= OnPacketSent;
-            }
+            if (channel != null) UnwireChannelEvents(channel);
 
             CstpDatagramChannel? dtlsChannel = _dtlsChannel;
             _dtlsChannel = null;
-            if (dtlsChannel != null)
-            {
-                dtlsChannel.DpdRequestReceived -= OnDpdRequest;
-                dtlsChannel.PeerClosed -= OnPeerClosed;
-                dtlsChannel.PacketReceived -= OnPacketReceived;
-                dtlsChannel.PacketSent -= OnPacketSent;
-            }
+            if (dtlsChannel != null) UnwireDatagramEvents(dtlsChannel);
+
+            CancellationTokenSource? recv = _recvCts;
+            _recvCts = null;
+            try { recv?.Cancel(); } catch { } // cancels the current receive loops (linked to _loopCts)
 
             CancellationTokenSource? loop = _loopCts;
             _loopCts = null;
@@ -482,6 +636,7 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
             Task? dtlsReceive = _dtlsReceiveTask;
             _dtlsReceiveTask = null;
             if (dtlsReceive != null) { try { await dtlsReceive.ConfigureAwait(false); } catch { } }
+            recv?.Dispose();
             loop?.Dispose();
 
             if (dtlsChannel != null) { try { await dtlsChannel.DisposeAsync().ConfigureAwait(false); } catch { } }

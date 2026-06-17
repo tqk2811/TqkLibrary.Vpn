@@ -1,5 +1,6 @@
 using System.Net;
 using TqkLibrary.VpnClient.Abstractions.Drivers.Models;
+using TqkLibrary.VpnClient.OpenConnect.Enums;
 
 namespace TqkLibrary.VpnClient.OpenConnect.Models
 {
@@ -44,6 +45,25 @@ namespace TqkLibrary.VpnClient.OpenConnect.Models
 
         /// <summary>The rekey period in seconds (<c>X-CSTP-Rekey-Time</c>); null when unset.</summary>
         public int? RekeyTime { get; set; }
+
+        /// <summary>
+        /// The parsed <see cref="OpenConnectRekeyMethod"/> the gateway requested (from <see cref="RekeyMethod"/>):
+        /// <c>ssl</c> ⇒ <see cref="OpenConnectRekeyMethod.Ssl"/>, <c>new-tunnel</c> ⇒ <see cref="OpenConnectRekeyMethod.NewTunnel"/>,
+        /// anything else (including <c>none</c> / unset / a zero <see cref="RekeyTime"/>) ⇒ <see cref="OpenConnectRekeyMethod.None"/>.
+        /// </summary>
+        public OpenConnectRekeyMethod ParsedRekeyMethod
+        {
+            get
+            {
+                if (!RekeyTime.HasValue || RekeyTime.Value <= 0 || string.IsNullOrEmpty(RekeyMethod))
+                    return OpenConnectRekeyMethod.None;
+                if (string.Equals(RekeyMethod, "ssl", StringComparison.OrdinalIgnoreCase))
+                    return OpenConnectRekeyMethod.Ssl;
+                if (string.Equals(RekeyMethod, "new-tunnel", StringComparison.OrdinalIgnoreCase))
+                    return OpenConnectRekeyMethod.NewTunnel;
+                return OpenConnectRekeyMethod.None; // "none" or an unknown method
+            }
+        }
 
         /// <summary>The session cookie echoed by the server (<c>Set-Cookie: webvpn=…</c>), if present on the CONNECT response.</summary>
         public string? SessionCookie { get; set; }

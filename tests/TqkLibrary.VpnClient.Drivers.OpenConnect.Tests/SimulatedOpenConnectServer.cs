@@ -29,6 +29,8 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect.Tests
         readonly int _keepaliveSeconds;
         readonly string _address;
         readonly int _dtlsPort;
+        readonly string? _rekeyMethod;
+        readonly int _rekeyTime;
         readonly CstpFraming _framing = new();
         readonly object _writeLock = new();
 
@@ -47,7 +49,7 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect.Tests
         public SimulatedOpenConnectServer(IByteStreamTransport stream,
             string? expectedUser = null, string? expectedPassword = null,
             int dpdSeconds = 30, int keepaliveSeconds = 20, string address = "10.10.0.5",
-            int dtlsPort = 0)
+            int dtlsPort = 0, string? rekeyMethod = "ssl", int rekeyTime = 0)
         {
             _stream = stream;
             _expectedUser = expectedUser;
@@ -56,6 +58,8 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect.Tests
             _keepaliveSeconds = keepaliveSeconds;
             _address = address;
             _dtlsPort = dtlsPort; // 0 = do not advertise the DTLS data path (client stays on CSTP-over-TLS)
+            _rekeyMethod = rekeyMethod; // null = do not advertise X-CSTP-Rekey-Method
+            _rekeyTime = rekeyTime;     // 0 = do not advertise X-CSTP-Rekey-Time (rekey disabled)
         }
 
         /// <summary>Runs the responder until the stream closes or cancellation.</summary>
@@ -134,7 +138,8 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect.Tests
             sb.Append("X-CSTP-MTU: 1400\r\n");
             sb.Append("X-CSTP-DPD: ").Append(_dpdSeconds.ToString(CultureInfo.InvariantCulture)).Append("\r\n");
             sb.Append("X-CSTP-Keepalive: ").Append(_keepaliveSeconds.ToString(CultureInfo.InvariantCulture)).Append("\r\n");
-            sb.Append("X-CSTP-Rekey-Method: ssl\r\n");
+            if (_rekeyMethod != null) sb.Append("X-CSTP-Rekey-Method: ").Append(_rekeyMethod).Append("\r\n");
+            if (_rekeyTime > 0) sb.Append("X-CSTP-Rekey-Time: ").Append(_rekeyTime.ToString(CultureInfo.InvariantCulture)).Append("\r\n");
             if (_dtlsPort > 0)
             {
                 // Advertise the parallel DTLS data path. The session id is the cookie tying the UDP/DTLS session to CSTP.

@@ -1,6 +1,7 @@
 using System.Net;
 using TqkLibrary.VpnClient.Abstractions.Drivers.Models;
 using TqkLibrary.VpnClient.OpenConnect;
+using TqkLibrary.VpnClient.OpenConnect.Enums;
 using TqkLibrary.VpnClient.OpenConnect.Models;
 using Xunit;
 
@@ -58,6 +59,7 @@ namespace TqkLibrary.VpnClient.OpenConnect.Tests
             Assert.Equal(20, info.Keepalive);
             Assert.Equal("ssl", info.RekeyMethod);
             Assert.Equal(3600, info.RekeyTime);
+            Assert.Equal(OpenConnectRekeyMethod.Ssl, info.ParsedRekeyMethod);
 
             TunnelConfig cfg = info.ToTunnelConfig();
             Assert.Equal(IPAddress.Parse("10.10.10.5"), cfg.AssignedAddress);

@@ -2,6 +2,14 @@
 
 > Cô lập trong family `TqkLibrary.VpnClient.Crypto.*` sau interface (`Crypto.Abstractions`) để façade & driver không phụ thuộc chi tiết framework. netstandard2.0 thiếu nhiều API → ẩn sau shim.
 
+> **[As-built]** Lệch tổ chức (xem [`10`](10-codebase-architecture-and-flow.md) §5 + [README Crypto](../src/TqkLibrary.VpnClient.Crypto/README-vi.md)):
+> tất cả nằm trong **một project** [`TqkLibrary.VpnClient.Crypto`](../src/TqkLibrary.VpnClient.Crypto) — `Crypto.Aead`/`Crypto.Mppe`/
+> `Crypto.Noise` ở cột "DLL" thực ra là **sub-namespace**, không có project `Crypto.Abstractions` tách riêng (interface để ngay
+> trong `Crypto/Interfaces`). **BouncyCastle.Cryptography** nay ref **không điều kiện** cả 2 TFM (net8 lẫn ns2.0 đều thiếu
+> X25519/BLAKE2s/ChaCha20-Poly1305-ns2.0). Code `#if` rào theo phiên bản .NET **thấp nhất** hỗ trợ (vd ChaCha20-Poly1305 BCL
+> native từ **net5+**, không phải net8). Các primitive đã hiện thực + KAT: MD4/DES/AES-CTR/AES-GCM-shim/DH/SHA-0/RC4/MPPE/
+> Tls1Prf/ChaCha20-Poly1305/X25519/BLAKE2s/HMAC-BLAKE2s/Noise-KDF/NoiseSymmetricState.
+
 ## Bảng tổng hợp
 
 | Thuật toán | Dùng cho | net8.0 | netstandard2.0 | Hành động | DLL |
@@ -38,3 +46,7 @@
 ## Lưu ý netstandard2.0
 - Thêm package: `System.Memory`, `System.IO.Pipelines`, `System.Buffers`, `System.Numerics.Vectors`, `Portable.BouncyCastle`/`BouncyCastle.Cryptography`.
 - Cô lập code net8-only sau `#if NET8_0_OR_GREATER`.
+
+> **[As-built]** Không rào cứng `#if NET8_0_OR_GREATER`: rào theo phiên bản .NET **thấp nhất** hỗ trợ API (vd `AesGcm`/
+> `ChaCha20Poly1305` BCL có từ **net5+** ⇒ `#if NET5_0_OR_GREATER`), để code dùng được trên nhiều TFM hơn. `record`/`init`/
+> `required` dùng được cả 2 TFM nhờ package source-only `TqkLibrary.CompilerServices`. Xem [CLAUDE.md](../CLAUDE.md).

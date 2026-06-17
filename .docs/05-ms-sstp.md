@@ -1,5 +1,11 @@
 # 05 — MS-SSTP (driver Tier 0, dễ nhất — pure userspace)
 
+> **[As-built]** File này **khớp code** ở mức cao (đã chạy live). Đã bổ sung as-built không nêu trong design: Echo keepalive
+> chủ động + teardown Call-Disconnect + auto-reconnect (`SwappablePacketChannel`), retransmit-backoff + read-timeout
+> (`SstpTransport`), callback verify cert TLS tùy chọn (`UseSstp(callback)`), crypto-binding HMAC theo cert server. SSTP giữ
+> **strictly 1:1** (`OpenSessionAsync` ⇒ `NotSupportedException`). Transport thật là `IByteStreamTransport`/[`TlsByteStream`](../src/TqkLibrary.VpnClient.Drivers.Sstp/Transport/TlsByteStream.cs#L20).
+> Chi tiết: [`10`](10-codebase-architecture-and-flow.md) §7/§"Khác biệt".
+
 ## Chồng giao thức
 
 ```

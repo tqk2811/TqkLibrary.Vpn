@@ -2,6 +2,13 @@
 
 > KHÔNG dùng PPP. Giao thức riêng: control channel (TLS) + data channel, ghép trên 1 socket UDP/TCP, demux theo byte đầu.
 
+> **[As-built]** Không còn "tương lai": driver [`Drivers.OpenVpn`](../src/TqkLibrary.VpnClient.Drivers.OpenVpn) **đã có** (V2.a–V2.h,
+> offline) — reliability layer + TLS-in-control + tls-auth/tls-crypt + key-method-2 (`Tls1Prf`) + data channel AES-GCM/
+> ChaCha20-Poly1305 + NCP + PUSH_REPLY + keepalive + UDP/TCP transport + tun **và** tap (3 chế độ: bắc-cầu-1-host / pure-DHCP /
+> multi-host). **Chưa làm**: `tls-ekm` (RFC 5705 — `SslStream` net8/ns2.0 không lộ keying-material exporter, chỉ net9+ — đã
+> scaffold `ITlsKeyingMaterialExporter`); soft-reset make-before-break thật (hiện rekey = re-establish); tap-IPv6 ifconfig;
+> validate live (Q.1). Chi tiết & trạng thái: [`10`](10-codebase-architecture-and-flow.md) §5/§9 + roadmap [`11`](11-todo-roadmap.md) V.2.
+
 ## Header gói
 - 1 byte đầu: **5-bit opcode** (cao) + **3-bit key_id** (thấp; tới 8 phiên key chồng nhau cho rekey liền mạch).
 - Opcode: 1=HARD_RESET_CLIENT_V1, 2=HARD_RESET_SERVER_V1, 3=SOFT_RESET_V1, 4=P_CONTROL_V1, 5=P_ACK_V1, 6=P_DATA_V1, 7=HARD_RESET_CLIENT_V2, 8=HARD_RESET_SERVER_V2, 9=P_DATA_V2, 10=HARD_RESET_CLIENT_V3, 11=P_CONTROL_WKC_V1.

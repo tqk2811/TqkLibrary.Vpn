@@ -2,6 +2,11 @@
 
 > Mỗi driver = một toạ độ trên 6 trục. Bảng này quyết định driver nào cắm ở đâu và tier triển khai.
 
+> **[As-built]** Phân loại 6-trục vẫn đúng. Lệch về **trạng thái & tổ chức DLL** (xem [`10`](10-codebase-architecture-and-flow.md)
+> §5/§"Khác biệt" + roadmap [`11`](11-todo-roadmap.md)): nhiều driver "Tier 1/2" đã **làm xong phần offline** (WireGuard,
+> OpenVPN, OpenConnect-CSTP, SoftEther, IKEv2-native; PPTP mới xong control+CCP offline, chờ F.9 cho data plane GRE);
+> bảng "Khối dùng chung (DLL)" bên dưới có vài DLL **chưa tách project riêng** — xem ghi chú tại bảng đó.
+
 ## 6 trục phân loại
 
 1. **Transport:** byte-stream tin cậy (TCP/TLS) | datagram (UDP) | **raw-IP proto-less** (ESP/50, GRE/47, EtherIP/97, L2TPv3/115 — cần elevate).
@@ -61,5 +66,12 @@
 | Reliability | `Reliability` | L2TP, L2TPv3, PPTP-control, oNCP, IF-T |
 | Ethernet adapter | `Ethernet` | SoftEther, OpenVPN-tap, VXLAN, EtherIP, L2TPv3-ETH, ZeroTier, tinc-switch |
 | Raw-IP transport | `Transport.RawIp` | PPTP, GRE, EtherIP, L2TPv3, native-ESP |
+
+> **[As-built]** Lệch tên/ranh giới DLL (xem [`10`](10-codebase-architecture-and-flow.md) §5/§"Khác biệt"):
+> **`Transport.Udp` đã gom vào `Ipsec`** (namespace `…Ipsec.Nat`, `NatTraversalChannel`) — không còn project riêng;
+> **`Crypto.Noise`/`Crypto.Mppe` là sub-namespace** trong project `TqkLibrary.VpnClient.Crypto` (không phải DLL tách);
+> `Transport.Tls` hiện vẫn là `TlsByteStream` **trong driver SSTP** (F.1 sẽ nâng ra dùng chung); `Transport.Dtls`
+> **đã tách project** [`TqkLibrary.VpnClient.Transport.Dtls`](../src/TqkLibrary.VpnClient.Transport.Dtls); `Transport.RawIp`
+> **chưa build** (F.9). `Ethernet`/`Reliability`/`Ppp`/`Ipsec.Ike`/`Ipsec.Esp` đã có.
 
 Nguồn chi tiết: xem `references.md` và các file `04`–`07`.

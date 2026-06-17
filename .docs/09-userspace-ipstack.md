@@ -2,6 +2,11 @@
 
 > Không có stack userspace .NET sẵn → tự viết. Thiết kế boundary theo tiền lệ gVisor netstack / smoltcp / lwIP.
 
+> **[As-built]** Boundary (`ILinkChannel`/`Medium`/`IPacketChannel`/`IEthernetChannel` + quy tắc vàng) **đã hiện thực đúng**.
+> Lệch: stack TCP **vượt** mức "tối giản" của design — đã có **SACK** (RFC 2018), **window-scaling** (RFC 7323), **NewReno**
+> congestion control, **PMTUD động**, fragment reassembly, half-close FSM, zero-window persist; và **IPv6/ICMPv6 dual-stack**
+> đã làm (không "để sau"). Chi tiết: [`10`](10-codebase-architecture-and-flow.md) §5/§8 + [README IpStack](../src/TqkLibrary.VpnClient.IpStack/README-vi.md).
+
 ## Tiền lệ: boundary = 1 link object có thuộc tính Medium
 
 | Stack | Abstraction | L3 (IP) | L2 (Ethernet) |
@@ -38,10 +43,10 @@ EthernetAdapter (: IPacketChannel-provider)
 
 ## Userspace TCP/IP stack — phạm vi
 
-- **IPv4:** parse/checksum/reassembly/demux (TCP/UDP/ICMP). IPv6 sau.
+- **IPv4:** parse/checksum/reassembly/demux (TCP/UDP/ICMP). ~~IPv6 sau.~~ *(as-built: **IPv6/ICMPv6 dual-stack đã có** — header + extension-header + Fragment reassembly + ICMPv6 echo/error + Path-MTU)*
 - **UDP:** demux theo port, datagram in/out.
 - **ICMP:** echo (ping) + error.
-- **TCP state machine:** CLOSED→SYN_SENT→ESTABLISHED→...→TIME_WAIT; RTO (RFC 6298 đơn giản), sliding window, MSS/MTU. **Bản tối giản:** no SACK, no window-scaling, cwnd nhỏ cố định — đủ client outbound. Tham chiếu cấu trúc smoltcp/lwIP.
+- **TCP state machine:** CLOSED→SYN_SENT→ESTABLISHED→...→TIME_WAIT; RTO (RFC 6298 đơn giản), sliding window, MSS/MTU. ~~**Bản tối giản:** no SACK, no window-scaling, cwnd nhỏ cố định~~ — đủ client outbound. Tham chiếu cấu trúc smoltcp/lwIP. *(as-built: **đã vượt tối giản** — có SACK RFC 2018, window-scaling RFC 7323, NewReno, PMTUD động, half-close FSM, zero-window persist; xem [`10`](10-codebase-architecture-and-flow.md) §5/§8)*
 
 ## Hiệu năng
 - `System.Threading.Channels` / `PipeReader`/`PipeWriter` cho mỗi channel, backpressure rõ; **1 read-loop / VirtualHost**.

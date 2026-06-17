@@ -1,5 +1,12 @@
 # 04 — L2TP/IPsec (driver Tier 0)
 
+> **[As-built] LỆCH LỚN:** driver L2TP/IPsec thật dùng **IKEv1** (Main Mode + Quick Mode, [`IkeV1Client`](../src/TqkLibrary.VpnClient.Ipsec/Ike/V1/IkeV1Client.cs#L18)),
+> **không phải IKEv2** như mô tả dưới đây. (IKEv2 nay là **driver riêng** [`Drivers.Ikev2`](../src/TqkLibrary.VpnClient.Drivers.Ikev2)
+> — ESP tunnel-mode không-PPP, không phải transport cho L2TP.) Lý do: L2TP/IPsec triển khai/RRAS/strongSwan-xl2tpd thực tế
+> dùng IKEv1, đã verify live trên VPN Gate. Ngoài ra design "Bỏ rekey" đã lỗi thời: code **đã có** rekey Phase 1 in-place
+> (P1.3) + Phase 2 make-before-break + DPD + teardown. Chi tiết: [`10`](10-codebase-architecture-and-flow.md) §6/§"Khác biệt".
+> Mọi chỗ ghi "IKEv2" trong file này hãy đọc là **IKEv1**.
+
 ## Chồng giao thức
 
 ```
@@ -8,16 +15,16 @@ userspace IP packets
    │  L2TP (control SCCRQ.. + data, Tunnel/Session ID)
    │  ESP (transport mode, mã hoá L2TP/UDP 1701)
    │  UDP/4500 NAT-T (RFC 3948)                    ← đường userspace
-   │  IKEv2 (UDP/4500, PSK)                         ← thiết lập IPsec SA
+   │  IKEv2 (UDP/4500, PSK)  [as-built: IKEv1]      ← thiết lập IPsec SA
    └─ UDP socket cổng nguồn ephemeral
 ```
 
 ## Lộ trình thiết lập (M5–M6)
 
-1. **IKEv2 (RFC 7296), PSK:**
+1. **IKEv2 (RFC 7296), PSK:** *(as-built: **IKEv1** RFC 2409 — Main Mode MM1-6 + Quick Mode QM1-3, PSK; NAT-D/NAT-T RFC 3947)*
    - `IKE_SA_INIT`: trao đổi SA proposal + KE (DH group 14) + Nonce + NAT-D payload (báo "có NAT" → ép NAT-T).
    - `IKE_AUTH`: xác thực PSK, thiết lập **CHILD_SA** cho ESP transport mode bảo vệ UDP/1701.
-   - v1 chỉ: **PSK**, 1 transform cố định (AES-CBC-256 + HMAC-SHA256 + DH14 + ESP AES-CBC-256/HMAC-SHA256). Bỏ rekey/MOBIKE/fragmentation/EAP/cert.
+   - v1 chỉ: **PSK**, 1 transform cố định (AES-CBC-256 + HMAC-SHA256 + DH14 + ESP AES-CBC-256/HMAC-SHA256). ~~Bỏ rekey/MOBIKE/fragmentation/EAP/cert.~~ *(as-built: **đã có rekey** Phase 1 in-place + Phase 2 make-before-break + DPD; MOBIKE/EAP/cert vẫn ngoài phạm vi L2TP)*
 2. **ESP (RFC 4303) transport mode:** bọc gói UDP/1701 (L2TP). SPI demux, sequence, anti-replay window, padding. Chạy trong **UDP/4500** (RFC 3948): 4 byte 0x00000000 Non-ESP-Marker phân biệt IKE vs ESP.
 3. **L2TP (RFC 2661):** control 3-way `SCCRQ→SCCRP→SCCCN` mở tunnel; `ICRQ→ICRP→ICCN` mở session; data carry PPP. Header có Tunnel ID + Session ID.
 4. **PPP:** chạy LCP → auth (MS-CHAPv2) → IPCP. IPCP cấp IP + DNS (xem `03`).

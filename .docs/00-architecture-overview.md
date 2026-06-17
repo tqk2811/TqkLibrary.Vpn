@@ -3,6 +3,14 @@
 > Nền tảng plugin VPN chạy userspace, expose API Socket-like (`VpnTcpClient`/`VpnUdpClient`).
 > Mọi giao thức hội tụ về một "đường ống gói IP" (`IPacketChannel`). Tài liệu này là bản đồ tầng.
 
+> **[As-built]** File này là **design-intent**; vài chỗ đã lệch khỏi code thật (xem chi tiết ở
+> [`10-codebase-architecture-and-flow.md`](10-codebase-architecture-and-flow.md) §"Khác biệt so với design docs").
+> Tóm tắt lệch: tên interface thật là `IVpnConnection`/`IVpnSession` (không phải `VpnConnection`/`VpnSession`)
+> và `ConnectAsync` **không có** tham số `options`; `IVpnTransport` tách thành `IByteStreamTransport`/`IDatagramTransport`;
+> decorator `EspIkeDemuxTransport` **không tồn tại** (demux IKE/ESP nằm trong `NatTraversalChannel`);
+> hai hợp đồng `ISecuritySession`/`IPacketEncapsulator` **đã xóa** (P0.1) — sẽ tái thiết kế từ ≥2 consumer thật (roadmap F.2);
+> nền L2 (`EthernetAdapter`/`VirtualHost`/multi-host) **đã hiện thực đầy đủ** (phase L2.0–L2.9).
+
 ## Nguyên tắc cốt lõi
 
 Mọi thứ dưới tầng IP chỉ là **cách vận chuyển gói IP**; mọi thứ trên tầng IP đều dùng chung. Hai ranh giới trừu tượng cho phép mọi driver cắm vào cùng một stack:
@@ -36,7 +44,16 @@ Mọi thứ dưới tầng IP chỉ là **cách vận chuyển gói IP**; mọi 
 | 3 | **`IPacketEncapsulator`** | `LengthPrefix`, `HdlcAsync`, `FixedHeader<T>`, `Tlv`. |
 | 4 | **Output (link-layer pivot)** | đúng 1 trong: `IPacketChannel` (L3) hoặc `IEthernetChannel` (L2). |
 
+> **[As-built]** Bảng 4-abstraction trên là design-intent. Thực tế (xem [`10`](10-codebase-architecture-and-flow.md)
+> §"Khác biệt"): (1) `IVpnTransport` → tách `IByteStreamTransport`/`IDatagramTransport`, **không có** `EspIkeDemuxTransport`
+> (demux trong [`NatTraversalChannel`](../src/TqkLibrary.VpnClient.Ipsec/Nat/NatTraversalChannel.cs#L13)); (2)+(3) `ISecuritySession`
+> + `IPacketEncapsulator` **đã xóa ở P0.1** — shape thật phân kỳ (`EspSession` dùng `TryUnprotect` bool; framing là HDLC/
+> `L2tpCodec`/SSTP-4-byte/opcode-OpenVPN riêng từng driver) — tái thiết kế từ ≥2 consumer thật ở roadmap F.2.
+
 `IVpnProtocolDriver` = entry point: `VpnDriverCapabilities Capabilities` + `Task<IVpnSession> ConnectAsync(endpoint, credentials, options, ct)`.
+
+> **[As-built]** Tên thật là `IVpnProtocolDriver.ConnectAsync(endpoint, credentials, ct)` — **không có** tham số `options`;
+> consumer dùng `IVpnConnection`/`IVpnSession` (không phải `VpnConnection`/`VpnSession`).
 
 `VpnDriverCapabilities` khai báo: `LinkLayer` (L3Ip|L2Ethernet|Both), `SupportsMultiHost`, `MultiHostModel` (None|RoutedPrefixes|L2BroadcastDomain), `UsesPpp`, `TransportKinds`, `SecurityKinds`, `AuthMethods`, `AddressAssignment` (Ipcp|ConfigPush|OutOfBand|Dhcp), `RequiresRawIpSocket`, `RequiresElevation`.
 
@@ -60,3 +77,9 @@ VpnClient (façade, đăng ký driver)
 ```
 
 Xem chi tiết multi-host ở `03-multihost-l2-vs-l3.md`.
+
+> **[As-built]** Nền L2 (`EthernetSwitch`/`VirtualHost`/`EthernetAdapter`/`MultiHostSession`, phase L2.0–L2.9) **đã hiện thực**
+> trong project [`TqkLibrary.VpnClient.Ethernet`](../src/TqkLibrary.VpnClient.Ethernet) và **đã có driver L2 thật** tiêu thụ
+> (OpenVPN tap-mode V2.h + SoftEther V4.c — cả hai có chế độ bắc-cầu-1-host và multi-host). Hợp đồng `IEthernetChannel`
+> **có impl src** (`EthernetSwitch.Port`). Đường live **L3** (SSTP/L2TP/IKEv2/WireGuard/OpenConnect/OpenVPN-tun) vẫn cắm
+> thẳng `IPacketChannel` như sơ đồ. Chi tiết & trạng thái: [`10`](10-codebase-architecture-and-flow.md) §5/§8/§"Khác biệt".

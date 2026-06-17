@@ -3,6 +3,13 @@
 > "Ethernet over HTTPS". KHÔNG dùng PPP, transport **khung Ethernet** (L2). Là driver L2 điển hình → đi qua `EthernetAdapter`.
 > ⚠️ Source GPL/AGPL — **KHÔNG copy code**; re-implement từ hành vi. Watermark là *data* tái tạo byte-exact.
 
+> **[As-built]** Không còn "tương lai": protocol [`SoftEther`](../src/TqkLibrary.VpnClient.SoftEther) + driver
+> [`Drivers.SoftEther`](../src/TqkLibrary.VpnClient.Drivers.SoftEther) **đã có** (V4.a–V4.c + IPv6-in-tunnel, offline) —
+> PACK codec + watermark/hello/login + auth SHA-0 + data plane Ethernet-over-TLS + bridge SecureNAT (DHCP/ARP/VirtualHost,
+> dual-stack SLAAC/DHCPv6). **Đây là driver L2 thật đầu tiên** tiêu thụ nền Ethernet (1-host + multi-host opt-in). **Chưa làm**:
+> watermark **blob thật** (hiện test bằng server giả lập), RC4-on-TLS/compression deflate/half_connection, validate live + IPv6 pool
+> (Q.1). Chi tiết & trạng thái: [`10`](10-codebase-architecture-and-flow.md) §5/§8/§9 + roadmap [`11`](11-todo-roadmap.md) V.4.
+
 ## Wire framing: PACK
 - Mọi control/RPC = **PACK** (binary typed key-value, KHÔNG phải JSON). `PACK` = LIST các `ELEMENT`; mỗi ELEMENT có name (≤63 ký tự), type, mảng `VALUE`.
 - VALUE type: `VALUE_INT=0`, `VALUE_DATA=1` (raw bytes), `VALUE_STR=2` (ANSI), `VALUE_UNISTR=3` (Unicode), `VALUE_INT64=4`.

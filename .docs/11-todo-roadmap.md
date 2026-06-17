@@ -97,7 +97,6 @@
 - [ ] **Q.5 — CI đa OS** (plan M0): đã có workflow GitHub Actions Linux ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml)) build 2 TFM + chạy offline suite trên push/PR `master`/`dev` (as-built ở [`10`](10-codebase-architecture-and-flow.md)). **Còn lại**: mở rộng matrix sang Windows/macOS + (sau Q.1) job integration lab.
 - [ ] **Q.6 — Adapter proxy tách project**: hiện inline trong [`demo/Vpn2ProxyDemo`](../demo/Vpn2ProxyDemo) ([`12`](12-demo-vpn2proxy.md)) — `IConnectSource` + `IUdpAssociateSource` + probe DNS. Còn thiếu: BIND (không khả thi với VPN Gate — [`12`](12-demo-vpn2proxy.md) §5), resolve host qua tunnel (hiện dùng DNS của host), IPv6 (chờ **P1.1**). Nếu cần tái dùng → tách thành `TqkLibrary.VpnClient.Proxy`.
 - [ ] **Q.7 — NuGet packaging** nếu phát hành: version (GitVersion), `GenerateDocumentationFile`, symbols/snupkg.
-- [ ] **Q.8 — Đồng bộ design docs 00–09 ↔ as-built**: cập nhật/đánh dấu rõ design-intent theo bảng khác biệt trong [`10`](10-codebase-architecture-and-flow.md) (L2TP dùng IKEv1; không có `EspIkeDemuxTransport`; …).
 
 ---
 
@@ -111,4 +110,4 @@
 5. **L2.7** (L2.4 NDISC + L2.5 DHCPv4 + L2.6 SLAAC/DHCPv6 đã xong) + **V.4 SoftEther** (driver L2 thật đầu tiên).
 6. **V.5 OpenConnect** (V5.a codec + V5.b CSTP-over-TLS driver + **V5.c DTLS data path song song + fallback TLS đã xong**; còn dialect Fortinet/F5/GlobalProtect + validate live ocserv Q.1).
 7. **V.6 PPTP** + F.9 Transport.RawIp (kèm P0.8c native ESP) — cuối cùng, legacy.
-8. **Q.2–Q.8** chạy song song theo nhu cầu từng giai đoạn.
+8. **Q.2–Q.7** chạy song song theo nhu cầu từng giai đoạn.

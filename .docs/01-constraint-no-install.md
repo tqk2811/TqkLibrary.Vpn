@@ -1,5 +1,10 @@
 # 01 — Ràng buộc nền tảng: KHÔNG bước cài đặt; được xin quyền lúc chạy
 
+> **[As-built]** Ràng buộc thật là **no-install**, không phải no-admin: admin/raw-socket nay là **tùy chọn hạng nhất**
+> khi consumer cần proto tùy ý (PPTP GRE proto-47 V.6; native ESP proto-50 P0.8c) qua `Transport.RawIp` (F.9, chưa build,
+> cần elevate). SSTP/L2TP/IKEv2/OpenVPN/WireGuard/SoftEther/OpenConnect vẫn no-admin. Chi tiết: [`10`](10-codebase-architecture-and-flow.md)
+> §"Khác biệt". File này (mô tả "đường mặc định KHÔNG cần quyền") vẫn khớp các driver đó.
+
 ## Lằn ranh cứng DUY NHẤT = không có bước cài đặt/setup
 
 - KHÔNG TUN/TAP adapter, KHÔNG kernel driver (Npcap/Wintun/WinTap), KHÔNG cài service.
@@ -43,6 +48,11 @@
 - ESP không đi raw proto-50 ở core → **bắt buộc ESP-in-UDP/4500 (NAT-T, RFC 3948)**.
 - IKE+ESP chạy trên UDP socket **cổng nguồn ephemeral** (KHÔNG bind 500/4500 — tránh đụng dịch vụ **IKEEXT** của Windows đang giữ 2 cổng đó); gửi tới `server:500` → float `server:4500`; **ép NAT-T** (client tự xưng "sau NAT").
 - **Rủi ro #1:** vài server từ chối forced-NAT-T khi không thực sự có NAT, hoặc đòi src-port=500 → fallback **native ESP (proto-50 raw, cần elevate)**. Test theo từng server (strongSwan/RRAS/SoftEther).
+
+> **[As-built]** Đã làm phần userspace của rủi ro #1: (a) phân loại lỗi reject (`IkeV1Client.TryReadRejectNotify`) +
+> (b) honest-first NAT-T opt-in (`L2tpIpsecNatTraversalMode.HonestFirst` — bind cổng 500 thật + NAT-D trung thực +
+> `IkeV1Client.DetectNat`, không-NAT ⇒ fallback forced). **Chưa làm**: (c) native ESP proto-50 — cần `Transport.RawIp`
+> (F.9, admin) + lab Docker (Q.1). Roadmap [`11`](11-todo-roadmap.md) §P0.8; trạng thái [`10`](10-codebase-architecture-and-flow.md) §6/§9.
 
 ## Nguồn
 - MS — TCP/IP raw sockets: https://learn.microsoft.com/en-us/windows/win32/winsock/tcp-ip-raw-sockets-2

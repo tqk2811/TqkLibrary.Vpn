@@ -2,6 +2,12 @@
 
 > Câu hỏi gốc: "Một kết nối tới VPN server có tạo được nhiều máy trong LAN không?"
 
+> **[As-built]** Kết luận thiết kế ở file này **đã hiện thực đúng** (xem [`10`](10-codebase-architecture-and-flow.md) §5/§8):
+> SSTP giữ **strictly 1:1** (`OpenSessionAsync` ⇒ `NotSupportedException`); L2TP **multi-session best-effort** đã có
+> (`L2tpClient.OpenSessionAsync` mở session phụ trên cùng IKE/IPsec SA — P1.7, session phụ không sống qua reconnect);
+> nền L2 multi-host (`EthernetSwitch`+`VirtualHost`+`EthernetAdapter`+`MultiHostSession`) **đã đầy đủ** (L2.0–L2.9) và
+> có driver L2 thật tiêu thụ (OpenVPN tap V2.h + SoftEther V4.c). Validate live đa-session/đa-MAC chờ lab Q.1.
+
 ## Kết luận ngắn
 
 - **L3/PPP (L2TP/IPsec, MS-SSTP)** = point-to-point IP, **1 IP/session**, KHÔNG ARP/DHCP/broadcast. Không phải "máy trong LAN".

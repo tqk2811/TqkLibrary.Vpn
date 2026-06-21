@@ -3,43 +3,43 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 18
 VisualStudioVersion = 18.6.11822.322
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient", "TqkLibrary.VpnClient\TqkLibrary.VpnClient.csproj", "{F0E0EDE6-8247-4C2F-937E-AFFE7DE3B881}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient", "src\TqkLibrary.VpnClient\TqkLibrary.VpnClient.csproj", "{F0E0EDE6-8247-4C2F-937E-AFFE7DE3B881}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Abstractions", "TqkLibrary.VpnClient.Abstractions\TqkLibrary.VpnClient.Abstractions.csproj", "{AACD4D96-BD0B-4138-A125-D598ACD60804}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Abstractions", "src\TqkLibrary.VpnClient.Abstractions\TqkLibrary.VpnClient.Abstractions.csproj", "{AACD4D96-BD0B-4138-A125-D598ACD60804}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Crypto", "TqkLibrary.VpnClient.Crypto\TqkLibrary.VpnClient.Crypto.csproj", "{233B75A9-7529-4CBC-A4D0-620978009D7A}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Crypto", "src\TqkLibrary.VpnClient.Crypto\TqkLibrary.VpnClient.Crypto.csproj", "{233B75A9-7529-4CBC-A4D0-620978009D7A}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Ppp", "TqkLibrary.VpnClient.Ppp\TqkLibrary.VpnClient.Ppp.csproj", "{C7BA0915-B299-49C8-8304-9D6E03A8A5CE}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Ppp", "src\TqkLibrary.VpnClient.Ppp\TqkLibrary.VpnClient.Ppp.csproj", "{C7BA0915-B299-49C8-8304-9D6E03A8A5CE}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.L2tp", "TqkLibrary.VpnClient.L2tp\TqkLibrary.VpnClient.L2tp.csproj", "{84BE9C23-8F2E-4921-B329-14DF8735264F}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.L2tp", "src\TqkLibrary.VpnClient.L2tp\TqkLibrary.VpnClient.L2tp.csproj", "{84BE9C23-8F2E-4921-B329-14DF8735264F}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.IpStack", "TqkLibrary.VpnClient.IpStack\TqkLibrary.VpnClient.IpStack.csproj", "{51CB1E8C-A814-4A8B-A62D-A0968E4EFA56}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.IpStack", "src\TqkLibrary.VpnClient.IpStack\TqkLibrary.VpnClient.IpStack.csproj", "{51CB1E8C-A814-4A8B-A62D-A0968E4EFA56}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Sockets", "TqkLibrary.VpnClient.Sockets\TqkLibrary.VpnClient.Sockets.csproj", "{AAEBC2B5-D180-4333-8FBA-2F630031A0ED}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Sockets", "src\TqkLibrary.VpnClient.Sockets\TqkLibrary.VpnClient.Sockets.csproj", "{AAEBC2B5-D180-4333-8FBA-2F630031A0ED}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Crypto.Tests", "..\tests\TqkLibrary.VpnClient.Crypto.Tests\TqkLibrary.VpnClient.Crypto.Tests.csproj", "{4BD5EDDD-2F36-473D-8FE9-7DCC8D2B909F}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Crypto.Tests", "tests\TqkLibrary.VpnClient.Crypto.Tests\TqkLibrary.VpnClient.Crypto.Tests.csproj", "{4BD5EDDD-2F36-473D-8FE9-7DCC8D2B909F}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Ppp.Tests", "..\tests\TqkLibrary.VpnClient.Ppp.Tests\TqkLibrary.VpnClient.Ppp.Tests.csproj", "{4605FB99-A5F1-4C47-A5E9-4E05F61E40EF}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Ppp.Tests", "tests\TqkLibrary.VpnClient.Ppp.Tests\TqkLibrary.VpnClient.Ppp.Tests.csproj", "{4605FB99-A5F1-4C47-A5E9-4E05F61E40EF}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Ppp.Auth.Tests", "..\tests\TqkLibrary.VpnClient.Ppp.Auth.Tests\TqkLibrary.VpnClient.Ppp.Auth.Tests.csproj", "{282ABF65-D737-468E-9F52-EA40D770C961}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Ppp.Auth.Tests", "tests\TqkLibrary.VpnClient.Ppp.Auth.Tests\TqkLibrary.VpnClient.Ppp.Auth.Tests.csproj", "{282ABF65-D737-468E-9F52-EA40D770C961}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Sstp.Tests", "..\tests\TqkLibrary.VpnClient.Sstp.Tests\TqkLibrary.VpnClient.Sstp.Tests.csproj", "{B9B4093E-B76F-4615-8930-E0085DA26AF3}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Sstp.Tests", "tests\TqkLibrary.VpnClient.Sstp.Tests\TqkLibrary.VpnClient.Sstp.Tests.csproj", "{B9B4093E-B76F-4615-8930-E0085DA26AF3}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Tests", "..\tests\TqkLibrary.VpnClient.Tests\TqkLibrary.VpnClient.Tests.csproj", "{A895FB0A-8EF5-4991-BF8D-C0F8235BB2F0}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Tests", "tests\TqkLibrary.VpnClient.Tests\TqkLibrary.VpnClient.Tests.csproj", "{A895FB0A-8EF5-4991-BF8D-C0F8235BB2F0}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Ipsec.Esp.Tests", "..\tests\TqkLibrary.VpnClient.Ipsec.Esp.Tests\TqkLibrary.VpnClient.Ipsec.Esp.Tests.csproj", "{A2512B6B-1693-4452-9B0E-39EAC853237B}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Ipsec.Esp.Tests", "tests\TqkLibrary.VpnClient.Ipsec.Esp.Tests\TqkLibrary.VpnClient.Ipsec.Esp.Tests.csproj", "{A2512B6B-1693-4452-9B0E-39EAC853237B}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Ipsec.Ike.Tests", "..\tests\TqkLibrary.VpnClient.Ipsec.Ike.Tests\TqkLibrary.VpnClient.Ipsec.Ike.Tests.csproj", "{52696DA7-DC37-41BB-8C80-71D239922391}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Ipsec.Ike.Tests", "tests\TqkLibrary.VpnClient.Ipsec.Ike.Tests\TqkLibrary.VpnClient.Ipsec.Ike.Tests.csproj", "{52696DA7-DC37-41BB-8C80-71D239922391}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.L2tp.Tests", "..\tests\TqkLibrary.VpnClient.L2tp.Tests\TqkLibrary.VpnClient.L2tp.Tests.csproj", "{DC7FF2E2-B5A1-408F-A70A-68D969DEC7C8}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.L2tp.Tests", "tests\TqkLibrary.VpnClient.L2tp.Tests\TqkLibrary.VpnClient.L2tp.Tests.csproj", "{DC7FF2E2-B5A1-408F-A70A-68D969DEC7C8}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Drivers.L2tpIpsec.Tests", "..\tests\TqkLibrary.VpnClient.Drivers.L2tpIpsec.Tests\TqkLibrary.VpnClient.Drivers.L2tpIpsec.Tests.csproj", "{04076DEC-B2CE-4FCA-827B-7ECAB8744820}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Drivers.L2tpIpsec.Tests", "tests\TqkLibrary.VpnClient.Drivers.L2tpIpsec.Tests\TqkLibrary.VpnClient.Drivers.L2tpIpsec.Tests.csproj", "{04076DEC-B2CE-4FCA-827B-7ECAB8744820}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.IpStack.Tests", "..\tests\TqkLibrary.VpnClient.IpStack.Tests\TqkLibrary.VpnClient.IpStack.Tests.csproj", "{5CFC0347-488E-40DC-A1FB-C457805F34D4}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.IpStack.Tests", "tests\TqkLibrary.VpnClient.IpStack.Tests\TqkLibrary.VpnClient.IpStack.Tests.csproj", "{5CFC0347-488E-40DC-A1FB-C457805F34D4}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Ipsec", "TqkLibrary.VpnClient.Ipsec\TqkLibrary.VpnClient.Ipsec.csproj", "{19262392-AB95-4113-8BB8-A9694D22B36A}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Ipsec", "src\TqkLibrary.VpnClient.Ipsec\TqkLibrary.VpnClient.Ipsec.csproj", "{19262392-AB95-4113-8BB8-A9694D22B36A}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Vpn2ProxyDemo", "..\demo\Vpn2ProxyDemo\Vpn2ProxyDemo.csproj", "{0E09D657-B407-45C6-B172-A68B4253D865}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Vpn2ProxyDemo", "demo\Vpn2ProxyDemo\Vpn2ProxyDemo.csproj", "{0E09D657-B407-45C6-B172-A68B4253D865}"
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "2.Tests", "2.Tests", "{B5674C29-4DD8-4665-AED9-66972F3F9830}"
 EndProject
@@ -49,64 +49,64 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "1.Src", "1.Src", "{5A9BE3D6
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "0.Solution Items", "0.Solution Items", "{98B060D2-A113-46FF-AF09-8721D46E6279}"
 	ProjectSection(SolutionItems) = preProject
-		Directory.Build.props = Directory.Build.props
+		src\Directory.Build.props = src\Directory.Build.props
 	EndProjectSection
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Drivers.L2tpIpsec", "TqkLibrary.VpnClient.Drivers.L2tpIpsec\TqkLibrary.VpnClient.Drivers.L2tpIpsec.csproj", "{44861339-41CD-424C-AA8C-8C14C8E2F85B}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Drivers.L2tpIpsec", "src\TqkLibrary.VpnClient.Drivers.L2tpIpsec\TqkLibrary.VpnClient.Drivers.L2tpIpsec.csproj", "{44861339-41CD-424C-AA8C-8C14C8E2F85B}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Drivers.Sstp", "TqkLibrary.VpnClient.Drivers.Sstp\TqkLibrary.VpnClient.Drivers.Sstp.csproj", "{AAD17727-A124-47CA-BE01-12F7BF7E6A7B}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Drivers.Sstp", "src\TqkLibrary.VpnClient.Drivers.Sstp\TqkLibrary.VpnClient.Drivers.Sstp.csproj", "{AAD17727-A124-47CA-BE01-12F7BF7E6A7B}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Ethernet", "TqkLibrary.VpnClient.Ethernet\TqkLibrary.VpnClient.Ethernet.csproj", "{912903F9-695D-4997-9D21-4EA222D49D85}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Ethernet", "src\TqkLibrary.VpnClient.Ethernet\TqkLibrary.VpnClient.Ethernet.csproj", "{912903F9-695D-4997-9D21-4EA222D49D85}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Ethernet.Tests", "..\tests\TqkLibrary.VpnClient.Ethernet.Tests\TqkLibrary.VpnClient.Ethernet.Tests.csproj", "{D9DB7961-0EFB-44FC-AC67-FF883D693136}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Ethernet.Tests", "tests\TqkLibrary.VpnClient.Ethernet.Tests\TqkLibrary.VpnClient.Ethernet.Tests.csproj", "{D9DB7961-0EFB-44FC-AC67-FF883D693136}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Drivers.Ikev2", "TqkLibrary.VpnClient.Drivers.Ikev2\TqkLibrary.VpnClient.Drivers.Ikev2.csproj", "{24C49B6D-5E24-460C-BB16-F25CDF8B2DE8}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Drivers.Ikev2", "src\TqkLibrary.VpnClient.Drivers.Ikev2\TqkLibrary.VpnClient.Drivers.Ikev2.csproj", "{24C49B6D-5E24-460C-BB16-F25CDF8B2DE8}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Drivers.Ikev2.Tests", "..\tests\TqkLibrary.VpnClient.Drivers.Ikev2.Tests\TqkLibrary.VpnClient.Drivers.Ikev2.Tests.csproj", "{D778908D-1821-4A16-A98F-A626EE37F0AE}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Drivers.Ikev2.Tests", "tests\TqkLibrary.VpnClient.Drivers.Ikev2.Tests\TqkLibrary.VpnClient.Drivers.Ikev2.Tests.csproj", "{D778908D-1821-4A16-A98F-A626EE37F0AE}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.OpenVpn", "TqkLibrary.VpnClient.OpenVpn\TqkLibrary.VpnClient.OpenVpn.csproj", "{D50A18D2-1EE1-4548-A29B-73A1E8D99286}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.OpenVpn", "src\TqkLibrary.VpnClient.OpenVpn\TqkLibrary.VpnClient.OpenVpn.csproj", "{D50A18D2-1EE1-4548-A29B-73A1E8D99286}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.OpenVpn.Tests", "..\tests\TqkLibrary.VpnClient.OpenVpn.Tests\TqkLibrary.VpnClient.OpenVpn.Tests.csproj", "{EB1DACED-58D4-4B3E-86D4-EFD9B269F02F}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.OpenVpn.Tests", "tests\TqkLibrary.VpnClient.OpenVpn.Tests\TqkLibrary.VpnClient.OpenVpn.Tests.csproj", "{EB1DACED-58D4-4B3E-86D4-EFD9B269F02F}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Drivers.OpenVpn", "TqkLibrary.VpnClient.Drivers.OpenVpn\TqkLibrary.VpnClient.Drivers.OpenVpn.csproj", "{0E94DD4A-EF39-49CB-9142-2E5C0F3F8A46}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Drivers.OpenVpn", "src\TqkLibrary.VpnClient.Drivers.OpenVpn\TqkLibrary.VpnClient.Drivers.OpenVpn.csproj", "{0E94DD4A-EF39-49CB-9142-2E5C0F3F8A46}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Drivers.OpenVpn.Tests", "..\tests\TqkLibrary.VpnClient.Drivers.OpenVpn.Tests\TqkLibrary.VpnClient.Drivers.OpenVpn.Tests.csproj", "{2EBD6850-444B-4E08-8035-7502C23580C6}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Drivers.OpenVpn.Tests", "tests\TqkLibrary.VpnClient.Drivers.OpenVpn.Tests\TqkLibrary.VpnClient.Drivers.OpenVpn.Tests.csproj", "{2EBD6850-444B-4E08-8035-7502C23580C6}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.WireGuard", "TqkLibrary.VpnClient.WireGuard\TqkLibrary.VpnClient.WireGuard.csproj", "{4F6A2FC0-0648-4A4B-9C6A-726D0B620EA5}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.WireGuard", "src\TqkLibrary.VpnClient.WireGuard\TqkLibrary.VpnClient.WireGuard.csproj", "{4F6A2FC0-0648-4A4B-9C6A-726D0B620EA5}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.WireGuard.Tests", "..\tests\TqkLibrary.VpnClient.WireGuard.Tests\TqkLibrary.VpnClient.WireGuard.Tests.csproj", "{49EA8CBC-B061-4DF8-94D3-873CD446A5A8}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.WireGuard.Tests", "tests\TqkLibrary.VpnClient.WireGuard.Tests\TqkLibrary.VpnClient.WireGuard.Tests.csproj", "{49EA8CBC-B061-4DF8-94D3-873CD446A5A8}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Drivers.WireGuard", "TqkLibrary.VpnClient.Drivers.WireGuard\TqkLibrary.VpnClient.Drivers.WireGuard.csproj", "{B4B5CD48-800E-4C98-B930-9AA99735E485}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Drivers.WireGuard", "src\TqkLibrary.VpnClient.Drivers.WireGuard\TqkLibrary.VpnClient.Drivers.WireGuard.csproj", "{B4B5CD48-800E-4C98-B930-9AA99735E485}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Drivers.WireGuard.Tests", "..\tests\TqkLibrary.VpnClient.Drivers.WireGuard.Tests\TqkLibrary.VpnClient.Drivers.WireGuard.Tests.csproj", "{D5262A17-75DB-43F5-A912-E9A2AA5F2844}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Drivers.WireGuard.Tests", "tests\TqkLibrary.VpnClient.Drivers.WireGuard.Tests\TqkLibrary.VpnClient.Drivers.WireGuard.Tests.csproj", "{D5262A17-75DB-43F5-A912-E9A2AA5F2844}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.SoftEther", "TqkLibrary.VpnClient.SoftEther\TqkLibrary.VpnClient.SoftEther.csproj", "{CB6E9517-9D12-4AC1-A3ED-EC7F7C352D41}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.SoftEther", "src\TqkLibrary.VpnClient.SoftEther\TqkLibrary.VpnClient.SoftEther.csproj", "{CB6E9517-9D12-4AC1-A3ED-EC7F7C352D41}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.SoftEther.Tests", "..\tests\TqkLibrary.VpnClient.SoftEther.Tests\TqkLibrary.VpnClient.SoftEther.Tests.csproj", "{99DF1659-1E1F-4593-96A9-BB682A948D1C}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.SoftEther.Tests", "tests\TqkLibrary.VpnClient.SoftEther.Tests\TqkLibrary.VpnClient.SoftEther.Tests.csproj", "{99DF1659-1E1F-4593-96A9-BB682A948D1C}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Drivers.SoftEther", "TqkLibrary.VpnClient.Drivers.SoftEther\TqkLibrary.VpnClient.Drivers.SoftEther.csproj", "{28754A90-FE29-4168-888F-E4203AB9FFDA}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Drivers.SoftEther", "src\TqkLibrary.VpnClient.Drivers.SoftEther\TqkLibrary.VpnClient.Drivers.SoftEther.csproj", "{28754A90-FE29-4168-888F-E4203AB9FFDA}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Drivers.SoftEther.Tests", "..\tests\TqkLibrary.VpnClient.Drivers.SoftEther.Tests\TqkLibrary.VpnClient.Drivers.SoftEther.Tests.csproj", "{1DF9E74E-CCE8-488D-8BD3-D69828287110}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Drivers.SoftEther.Tests", "tests\TqkLibrary.VpnClient.Drivers.SoftEther.Tests\TqkLibrary.VpnClient.Drivers.SoftEther.Tests.csproj", "{1DF9E74E-CCE8-488D-8BD3-D69828287110}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.OpenConnect", "TqkLibrary.VpnClient.OpenConnect\TqkLibrary.VpnClient.OpenConnect.csproj", "{6DE92606-41E8-4F22-8871-70C11343DA75}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.OpenConnect", "src\TqkLibrary.VpnClient.OpenConnect\TqkLibrary.VpnClient.OpenConnect.csproj", "{6DE92606-41E8-4F22-8871-70C11343DA75}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.OpenConnect.Tests", "..\tests\TqkLibrary.VpnClient.OpenConnect.Tests\TqkLibrary.VpnClient.OpenConnect.Tests.csproj", "{7AD71575-0ACD-48CB-8B43-C13DF17C13F7}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.OpenConnect.Tests", "tests\TqkLibrary.VpnClient.OpenConnect.Tests\TqkLibrary.VpnClient.OpenConnect.Tests.csproj", "{7AD71575-0ACD-48CB-8B43-C13DF17C13F7}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Drivers.OpenConnect", "TqkLibrary.VpnClient.Drivers.OpenConnect\TqkLibrary.VpnClient.Drivers.OpenConnect.csproj", "{FA920A9C-95EA-4A94-BC55-E006B0B04962}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Drivers.OpenConnect", "src\TqkLibrary.VpnClient.Drivers.OpenConnect\TqkLibrary.VpnClient.Drivers.OpenConnect.csproj", "{FA920A9C-95EA-4A94-BC55-E006B0B04962}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Drivers.OpenConnect.Tests", "..\tests\TqkLibrary.VpnClient.Drivers.OpenConnect.Tests\TqkLibrary.VpnClient.Drivers.OpenConnect.Tests.csproj", "{069A5265-B5A0-45BA-8FA9-3E3909B06DA5}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Drivers.OpenConnect.Tests", "tests\TqkLibrary.VpnClient.Drivers.OpenConnect.Tests\TqkLibrary.VpnClient.Drivers.OpenConnect.Tests.csproj", "{069A5265-B5A0-45BA-8FA9-3E3909B06DA5}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Pptp", "TqkLibrary.VpnClient.Pptp\TqkLibrary.VpnClient.Pptp.csproj", "{FD814F76-5B20-479C-86D4-6E0A2FDAB8C3}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Pptp", "src\TqkLibrary.VpnClient.Pptp\TqkLibrary.VpnClient.Pptp.csproj", "{FD814F76-5B20-479C-86D4-6E0A2FDAB8C3}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Pptp.Tests", "..\tests\TqkLibrary.VpnClient.Pptp.Tests\TqkLibrary.VpnClient.Pptp.Tests.csproj", "{F9BC75D5-6863-4957-8534-37899F8B6BB7}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Pptp.Tests", "tests\TqkLibrary.VpnClient.Pptp.Tests\TqkLibrary.VpnClient.Pptp.Tests.csproj", "{F9BC75D5-6863-4957-8534-37899F8B6BB7}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Transport.Dtls", "TqkLibrary.VpnClient.Transport.Dtls\TqkLibrary.VpnClient.Transport.Dtls.csproj", "{64979F27-AC06-4E8D-9EFA-AA18719D4D7E}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Transport.Dtls", "src\TqkLibrary.VpnClient.Transport.Dtls\TqkLibrary.VpnClient.Transport.Dtls.csproj", "{64979F27-AC06-4E8D-9EFA-AA18719D4D7E}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Transport.Dtls.Tests", "..\tests\TqkLibrary.VpnClient.Transport.Dtls.Tests\TqkLibrary.VpnClient.Transport.Dtls.Tests.csproj", "{8B5218B6-2892-45D6-91FD-096602E3C4F0}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Transport.Dtls.Tests", "tests\TqkLibrary.VpnClient.Transport.Dtls.Tests\TqkLibrary.VpnClient.Transport.Dtls.Tests.csproj", "{8B5218B6-2892-45D6-91FD-096602E3C4F0}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Drivers.Core", "TqkLibrary.VpnClient.Drivers.Core\TqkLibrary.VpnClient.Drivers.Core.csproj", "{3631546D-7452-4613-ABA2-2B18740CCCE6}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Drivers.Core", "src\TqkLibrary.VpnClient.Drivers.Core\TqkLibrary.VpnClient.Drivers.Core.csproj", "{3631546D-7452-4613-ABA2-2B18740CCCE6}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Drivers.Core.Tests", "..\tests\TqkLibrary.VpnClient.Drivers.Core.Tests\TqkLibrary.VpnClient.Drivers.Core.Tests.csproj", "{AE50F710-3D71-4A00-8B0E-F56BCF7E2508}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "TqkLibrary.VpnClient.Drivers.Core.Tests", "tests\TqkLibrary.VpnClient.Drivers.Core.Tests\TqkLibrary.VpnClient.Drivers.Core.Tests.csproj", "{AE50F710-3D71-4A00-8B0E-F56BCF7E2508}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

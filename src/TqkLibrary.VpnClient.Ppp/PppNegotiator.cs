@@ -1,3 +1,4 @@
+using System.Threading;
 using TqkLibrary.VpnClient.Ppp.Enums;
 using TqkLibrary.VpnClient.Ppp.Models;
 
@@ -7,19 +8,48 @@ namespace TqkLibrary.VpnClient.Ppp
     /// Generic PPP option-negotiation state machine shared by LCP and IPCP (RFC 1661 §4, simplified for a
     /// voluntary client). Reaches <see cref="PppNegotiationState.Opened"/> once our request is acked AND we
     /// have acked the peer's request.
+    /// <para>
+    /// A <b>Restart timer</b> (RFC 1661 §4.6) retransmits the current Configure-Request until the peer answers it:
+    /// a single Configure-Request that is lost — or one the peer drops because its own layer is not yet up (e.g.
+    /// accel-ppp/SSTP discards an IPCP Configure-Request that arrives before <c>NPMODE_PASS</c>, then sends an LCP
+    /// Protocol-Reject) — would otherwise stall the whole link until the outer connect timeout. Retransmission makes
+    /// the negotiation self-healing: the peer answers a later copy once it is ready. The timer stops the moment our
+    /// request is acknowledged (or the layer opens); the peer drives its own side with its own Restart timer.
+    /// </para>
     /// </summary>
-    public abstract class PppNegotiator
+    public abstract class PppNegotiator : IDisposable
     {
+        /// <summary>Default delay between Configure-Request retransmissions (RFC 1661 default Restart timer).</summary>
+        public static readonly TimeSpan DefaultRestartInterval = TimeSpan.FromSeconds(3);
+
+        /// <summary>Default number of Configure-Request transmissions before giving up (RFC 1661 Max-Configure).</summary>
+        public const int DefaultMaxRequests = 10;
+
         readonly Action<byte[]> _send;
+        readonly object _lock = new();
+        readonly TimeSpan _restartInterval;
+        readonly int _maxRequests;
+
+        Timer? _restartTimer;
         byte _nextId = 1;
         byte _lastRequestId;
+        byte[]? _lastRequest;     // exact bytes of the in-flight Configure-Request (retransmitted verbatim, §4.6)
+        int _requestAttempts;     // how many times the current Configure-Request has been transmitted
         bool _localAcked;
         bool _peerAcked;
+        bool _disposed;
 
-        /// <summary>Creates a negotiator that emits control packets through <paramref name="send"/>.</summary>
-        protected PppNegotiator(Action<byte[]> send)
+        /// <summary>
+        /// Creates a negotiator that emits control packets through <paramref name="send"/>. The Restart timer resends
+        /// the current Configure-Request every <paramref name="restartInterval"/> (default <see cref="DefaultRestartInterval"/>)
+        /// until it is acknowledged, at most <paramref name="maxRequests"/> total transmissions
+        /// (default <see cref="DefaultMaxRequests"/>; ≤0 ⇒ unbounded).
+        /// </summary>
+        protected PppNegotiator(Action<byte[]> send, TimeSpan? restartInterval = null, int maxRequests = DefaultMaxRequests)
         {
             _send = send;
+            _restartInterval = restartInterval ?? DefaultRestartInterval;
+            _maxRequests = maxRequests <= 0 ? int.MaxValue : maxRequests;
         }
 
         /// <summary>Current negotiation state.</summary>
@@ -28,11 +58,18 @@ namespace TqkLibrary.VpnClient.Ppp
         /// <summary>Raised once when the negotiator reaches <see cref="PppNegotiationState.Opened"/>.</summary>
         public event Action? Opened;
 
-        /// <summary>Sends the first Configure-Request to begin negotiation.</summary>
+        /// <summary>Sends the first Configure-Request to begin negotiation and arms the Restart timer.</summary>
         public void Start()
         {
-            State = PppNegotiationState.RequestSent;
-            SendConfigureRequest();
+            byte[]? wire;
+            lock (_lock)
+            {
+                if (_disposed) return;
+                State = PppNegotiationState.RequestSent;
+                wire = BuildRequestLocked();
+                ArmRestartTimerLocked();
+            }
+            if (wire != null) _send(wire);
         }
 
         /// <summary>Feeds one received control packet (Code/Id/Length + options) into the state machine.</summary>
@@ -41,53 +78,106 @@ namespace TqkLibrary.VpnClient.Ppp
             PppControlPacket parsed = PppControlCodec.Parse(packet);
             List<PppOption> options = PppControlCodec.ParseOptions(parsed.Data);
 
-            switch ((PppCode)parsed.Code)
+            byte[]? toSend = null;
+            bool raiseOpened = false;
+            lock (_lock)
             {
-                case PppCode.ConfigureRequest:
-                    HandlePeerRequest(parsed.Identifier, options);
-                    break;
-                case PppCode.ConfigureAck:
-                    if (parsed.Identifier == _lastRequestId)
-                    {
-                        _localAcked = true;
-                        CheckOpened();
-                    }
-                    break;
-                case PppCode.ConfigureNak:
-                    OnNak(options);
-                    SendConfigureRequest();
-                    break;
-                case PppCode.ConfigureReject:
-                    OnReject(options);
-                    SendConfigureRequest();
-                    break;
+                if (_disposed) return;
+                switch ((PppCode)parsed.Code)
+                {
+                    case PppCode.ConfigureRequest:
+                        toSend = EvaluatePeerRequestLocked(parsed.Identifier, options, out raiseOpened);
+                        break;
+                    case PppCode.ConfigureAck:
+                        if (parsed.Identifier == _lastRequestId)
+                        {
+                            _localAcked = true;
+                            StopRestartTimerLocked();   // our request is acknowledged; stop retransmitting it
+                            raiseOpened = CheckOpenedLocked();
+                        }
+                        break;
+                    case PppCode.ConfigureNak:
+                        OnNak(options);
+                        toSend = BuildRequestLocked();  // resend with adjusted options + restart the timer/counter
+                        ArmRestartTimerLocked();
+                        break;
+                    case PppCode.ConfigureReject:
+                        OnReject(options);
+                        toSend = BuildRequestLocked();
+                        ArmRestartTimerLocked();
+                        break;
+                }
             }
+            // Emit outside the lock: _send may run inline and the Opened handler may re-enter the engine.
+            if (toSend != null) _send(toSend);
+            if (raiseOpened) Opened?.Invoke();
         }
 
-        void SendConfigureRequest()
+        // Builds a fresh Configure-Request, stores it for verbatim retransmission, and resets the attempt counter.
+        byte[] BuildRequestLocked()
         {
             _lastRequestId = _nextId++;
-            _send(PppControlCodec.BuildConfigure((byte)PppCode.ConfigureRequest, _lastRequestId, BuildLocalOptions()));
+            _lastRequest = PppControlCodec.BuildConfigure((byte)PppCode.ConfigureRequest, _lastRequestId, BuildLocalOptions());
+            _requestAttempts = 1;
+            return _lastRequest;
         }
 
-        void HandlePeerRequest(byte identifier, List<PppOption> peerOptions)
+        // Evaluates the peer's Configure-Request, returns the response wire, and reports whether the link just opened.
+        byte[] EvaluatePeerRequestLocked(byte identifier, List<PppOption> peerOptions, out bool raiseOpened)
         {
+            raiseOpened = false;
             (byte code, IReadOnlyList<PppOption> responseOptions) = EvaluatePeerRequest(peerOptions);
-            _send(PppControlCodec.BuildConfigure(code, identifier, responseOptions));
+            byte[] wire = PppControlCodec.BuildConfigure(code, identifier, responseOptions);
             if (code == (byte)PppCode.ConfigureAck)
             {
                 _peerAcked = true;
-                CheckOpened();
+                raiseOpened = CheckOpenedLocked();
             }
+            return wire;
         }
 
-        void CheckOpened()
+        bool CheckOpenedLocked()
         {
             if (_localAcked && _peerAcked && State != PppNegotiationState.Opened)
             {
                 State = PppNegotiationState.Opened;
-                Opened?.Invoke();
+                StopRestartTimerLocked();
+                return true;
             }
+            return false;
+        }
+
+        void ArmRestartTimerLocked()
+        {
+            if (_disposed) return;
+            if (_restartTimer == null)
+                _restartTimer = new Timer(_ => OnRestartTick(), null, _restartInterval, Timeout.InfiniteTimeSpan);
+            else
+                TryChangeTimer(_restartInterval);
+        }
+
+        void StopRestartTimerLocked() => TryChangeTimer(Timeout.InfiniteTimeSpan);
+
+        void TryChangeTimer(TimeSpan due)
+        {
+            try { _restartTimer?.Change(due, Timeout.InfiniteTimeSpan); }
+            catch (ObjectDisposedException) { }
+        }
+
+        // Restart timer (RFC 1661 §4.6): resend the in-flight Configure-Request verbatim until it is acked.
+        void OnRestartTick()
+        {
+            byte[]? wire = null;
+            lock (_lock)
+            {
+                if (_disposed || _localAcked || State == PppNegotiationState.Opened || _lastRequest == null) return;
+                if (_requestAttempts >= _maxRequests) return; // give up; the outer connect timeout surfaces the failure
+                _requestAttempts++;
+                wire = _lastRequest;
+                TryChangeTimer(_restartInterval);
+            }
+            // The timer fires on a pool thread; a send against a torn-down channel must not crash the callback.
+            try { _send(wire); } catch { }
         }
 
         /// <summary>The options to request for ourselves (rebuilt on each Configure-Request, after any Nak/Reject).</summary>
@@ -101,5 +191,19 @@ namespace TqkLibrary.VpnClient.Ppp
 
         /// <summary>Drops options the peer rejected before resending.</summary>
         protected virtual void OnReject(List<PppOption> rejectedOptions) { }
+
+        /// <summary>Stops and releases the Restart timer; safe to call more than once.</summary>
+        public void Dispose()
+        {
+            Timer? timer;
+            lock (_lock)
+            {
+                if (_disposed) return;
+                _disposed = true;
+                timer = _restartTimer;
+                _restartTimer = null;
+            }
+            timer?.Dispose();
+        }
     }
 }

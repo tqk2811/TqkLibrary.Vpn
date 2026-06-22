@@ -317,6 +317,7 @@ namespace TqkLibrary.VpnClient.Drivers.Sstp
             loop?.Dispose();
 
             _transport?.Dispose();
+            _engine?.Dispose();   // stop the PPP negotiators' Restart timers before abandoning the engine
 
             _transport = null;
             _channel = null;

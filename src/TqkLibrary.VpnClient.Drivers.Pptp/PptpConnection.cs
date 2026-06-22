@@ -301,6 +301,7 @@ namespace TqkLibrary.VpnClient.Drivers.Pptp
                 try { await controlTransport.DisposeAsync().ConfigureAwait(false); } catch { }
             }
 
+            _ppp?.Dispose();   // stop the PPP negotiators' Restart timers before abandoning the engine
             _ppp = null;
         }
 

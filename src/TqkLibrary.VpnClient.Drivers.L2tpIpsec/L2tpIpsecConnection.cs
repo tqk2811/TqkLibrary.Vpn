@@ -184,7 +184,15 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
             session.Disconnected += reason => linkUp.TrySetException(new VpnServerRejectedException(reason));
             ppp.Start();
 
-            await WaitAsync(linkUp.Task, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await WaitAsync(linkUp.Task, cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                ppp.Dispose();   // a failed bring-up must not leave the negotiator's Restart timer running
+                throw;
+            }
             return new L2tpIpsecAdditionalSession(ppp.PacketChannel, ppp.AssignedAddress, ppp.AssignedDns);
         }
 
@@ -439,6 +447,8 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
                 try { await natt.DisposeAsync().ConfigureAwait(false); } catch { }
             }
 
+            _ppp?.Dispose();   // stop the PPP negotiators' Restart timers before abandoning the engine
+            _ppp = null;
             _l2tp = null;
             _ike = null;
             _dataTransport = null;

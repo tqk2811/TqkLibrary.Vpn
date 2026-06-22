@@ -11,7 +11,7 @@ namespace TqkLibrary.VpnClient.Ppp
     /// (e.g. MS-CHAPv2 over CHAP), then IPCP; demultiplexes inbound frames by protocol field and exposes an
     /// <see cref="IPacketChannel"/> once the link is up.
     /// </summary>
-    public sealed class PppEngine
+    public sealed class PppEngine : IDisposable
     {
         readonly IPppFrameChannel _channel;
         readonly LcpNegotiator _lcp;
@@ -20,6 +20,7 @@ namespace TqkLibrary.VpnClient.Ppp
         readonly PppPacketChannel _packetChannel;
         readonly IPppAuthenticator? _authenticator;
         readonly object _sync = new();
+        bool _disposed;
 
         /// <summary>
         /// Creates an engine. <paramref name="localAddress"/> is the IP we request (0.0.0.0 for a client).
@@ -198,6 +199,24 @@ namespace TqkLibrary.VpnClient.Ppp
             frame[3] = (byte)proto;
             payload.CopyTo(frame.AsSpan(4));
             return frame;
+        }
+
+        /// <summary>
+        /// Detaches from the frame channel and stops every negotiator's Restart timer. Call this when the attempt is
+        /// torn down (drop/reconnect/teardown) so a half-finished negotiation's timer cannot keep retransmitting onto a
+        /// disposed channel. Safe to call more than once.
+        /// </summary>
+        public void Dispose()
+        {
+            lock (_sync)
+            {
+                if (_disposed) return;
+                _disposed = true;
+            }
+            _channel.FrameReceived -= OnFrame;
+            _lcp.Dispose();
+            _ipcp.Dispose();
+            _ipv6cp?.Dispose();
         }
     }
 }

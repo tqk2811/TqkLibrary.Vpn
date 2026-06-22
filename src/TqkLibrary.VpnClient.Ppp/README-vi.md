@@ -70,9 +70,9 @@ TqkLibrary.VpnClient.Ppp/
 
 | Type | Vai trò | Vị trí |
 |------|---------|--------|
-| `PppEngine` | Điều phối toàn phiên: chạy LCP → (auth) → IPCP (+ IPV6CP nếu bật), demux khung vào theo trường Protocol, lộ `IPacketChannel`, raise `LinkUp`/`Ipv6Up`/`AuthSucceeded`/`AuthFailed` | [PppEngine.cs:14](PppEngine.cs#L14) |
+| `PppEngine` | Điều phối toàn phiên: chạy LCP → (auth) → IPCP (+ IPV6CP nếu bật), demux khung vào theo trường Protocol, lộ `IPacketChannel`, raise `LinkUp`/`Ipv6Up`/`AuthSucceeded`/`AuthFailed`. `IDisposable`: `Dispose()` gỡ handler `FrameReceived` + dispose 3 negotiator (dừng Restart timer) — driver gọi khi teardown/reconnect | [PppEngine.cs:14](PppEngine.cs#L14) |
 | `PppPacketChannel` | `IPacketChannel` tầng L3 (LinkMedium.Ip, MaxHeaderLength=0, không ARP); ghi gói IP ra khung PPP, raise gói IP vào | [PppPacketChannel.cs:10](PppPacketChannel.cs#L10) |
-| `PppNegotiator` | State machine thương lượng option dùng chung (RFC 1661 rút gọn); Opened khi cả hai chiều đã Ack | [PppNegotiator.cs:11](PppNegotiator.cs#L11) |
+| `PppNegotiator` | State machine thương lượng option dùng chung (RFC 1661 rút gọn); Opened khi cả hai chiều đã Ack. **Có Restart timer (§4.6)** — retransmit Configure-Request nguyên văn mỗi 3s (tối đa 10) tới khi được Ack; một ConfReq lạc/bị peer loại (vd accel-ppp/SSTP loại IPCP trước `NPMODE_PASS` rồi ProtoRej) không còn treo link. `IDisposable` (dừng+giải phóng timer khi teardown) | [PppNegotiator.cs:20](PppNegotiator.cs#L20), [OnRestartTick:168](PppNegotiator.cs#L168) |
 | `LcpNegotiator` | LCP cụ thể: yêu cầu MRU + Magic-Number, chấp nhận Auth-Protocol = MS-CHAPv2 (C223+algo 0x81), reject phần còn lại | [LcpNegotiator.cs:10](LcpNegotiator.cs#L10) |
 | `IpcpNegotiator` | IPCP cụ thể: client xin IP (0.0.0.0) + DNS rồi học giá trị Nak; server gán IP cho peer | [IpcpNegotiator.cs:12](IpcpNegotiator.cs#L12) |
 | `Ipv6cpNegotiator` | IPV6CP cụ thể (RFC 5072): thương lượng Interface-Identifier 8 byte (client xin/học Nak, server gán), reject Compression; lộ `LinkLocalAddress` fe80::/64 | [Ipv6cpNegotiator.cs:13](Ipv6cpNegotiator.cs#L13) |
@@ -91,7 +91,7 @@ TqkLibrary.VpnClient.Ppp/
 
 | Chuẩn | Class / Namespace áp dụng | Vị trí (link code) | Ghi chú |
 |-------|---------------------------|--------------------|---------|
-| **RFC 1661** (PPP, automaton & option negotiation) | `PppNegotiator` | [PppNegotiator.cs:7](PppNegotiator.cs#L7) | Automaton §4 rút gọn cho client tự nguyện |
+| **RFC 1661** (PPP, automaton & option negotiation) | `PppNegotiator` | [PppNegotiator.cs:7](PppNegotiator.cs#L7) | Automaton §4 rút gọn cho client tự nguyện; **§4.6 Restart timer** retransmit Configure-Request |
 | **RFC 1661 §5–6** (control packet + TLV option) | `PppControlCodec`, `PppOption` | [PppControlCodec.cs:7](PppControlCodec.cs#L7), [Models/PppOption.cs:3](Models/PppOption.cs#L3) | Code/Id/Length + TLV |
 | **RFC 1661 §5** (mã gói control) | `PppCode` | [Enums/PppCode.cs:3](Enums/PppCode.cs#L3) | Configure/Terminate/Echo... |
 | **RFC 1661 §6** + **RFC 1570** (LCP option) | `LcpOptionType` | [Enums/LcpOptionType.cs:3](Enums/LcpOptionType.cs#L3) | MRU, Auth-Protocol, Magic-Number, PFC/ACFC |

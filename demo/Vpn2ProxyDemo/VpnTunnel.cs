@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Sockets;
 using System.Text;
 using Microsoft.Extensions.Logging;
 using TqkLibrary.VpnClient.Abstractions.Drivers.Interfaces;
@@ -30,7 +31,8 @@ namespace Vpn2ProxyDemo
         readonly Func<ValueTask> _disposeAsync;
 
         public VpnTunnel(TcpIpStack stack, Func<ValueTask> disposeAsync,
-            IPAddress assignedAddress, int mtu, VpnDriverCapabilities capabilities, string protocolName, IPAddress? assignedDns = null)
+            IPAddress assignedAddress, int mtu, VpnDriverCapabilities capabilities, string protocolName,
+            IPAddress? assignedDns = null, IPAddress? assignedAddressV6 = null)
         {
             Stack = stack ?? throw new ArgumentNullException(nameof(stack));
             _disposeAsync = disposeAsync ?? throw new ArgumentNullException(nameof(disposeAsync));
@@ -39,6 +41,7 @@ namespace Vpn2ProxyDemo
             Capabilities = capabilities ?? throw new ArgumentNullException(nameof(capabilities));
             ProtocolName = protocolName ?? throw new ArgumentNullException(nameof(protocolName));
             AssignedDns = assignedDns;
+            AssignedAddressV6 = assignedAddressV6;
         }
 
         /// <summary>Userspace TCP/IP stack chạy trong tunnel — dùng làm ctor của <c>VpnProxySource</c>.</summary>
@@ -46,6 +49,12 @@ namespace Vpn2ProxyDemo
 
         /// <summary>IP ảo do VPN cấp (IPv4) — dùng cho panel khả năng + suy luận NAT/subnet.</summary>
         public IPAddress AssignedAddress { get; }
+
+        /// <summary>
+        /// Địa chỉ IPv6 <b>global</b> do tunnel cấp (SLAAC/DHCPv6 qua PPP, P1.1), hoặc null nếu chỉ có link-local /
+        /// server không cấp IPv6. Khi khác null thì stack chạy dual-stack và proxy bật <c>IsSupportIpv6</c>.
+        /// </summary>
+        public IPAddress? AssignedAddressV6 { get; }
 
         /// <summary>MTU của link tunnel (lấy từ <c>IPacketChannel.Mtu</c>) — hiển thị ở panel khả năng.</summary>
         public int Mtu { get; }
@@ -61,11 +70,12 @@ namespace Vpn2ProxyDemo
 
         public ValueTask DisposeAsync() => _disposeAsync();
 
-        /// <summary>Connect VPN Gate qua MS-SSTP (TLS) bằng host/port/user/pass; trả tunnel đã lên (đang sống).</summary>
-        public static async Task<VpnTunnel> ConnectSstpAsync(string host, int port, string user, string pass, CancellationToken ct)
+        /// <summary>Connect VPN Gate qua MS-SSTP (TLS) bằng host/port/user/pass; trả tunnel đã lên (đang sống).
+        /// <paramref name="enableIpv6"/>: bật IPV6CP + lấy IPv6 global qua SLAAC/DHCPv6 trên link PPP (P1.1, best-effort).</summary>
+        public static async Task<VpnTunnel> ConnectSstpAsync(string host, int port, string user, string pass, CancellationToken ct, bool enableIpv6 = false)
         {
             Console.WriteLine("=== [MS-SSTP] ===");
-            var vpn = new SstpConnection(host, port);
+            var vpn = new SstpConnection(host, port, enableIpv6: enableIpv6);
             try
             {
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -73,12 +83,13 @@ namespace Vpn2ProxyDemo
 
                 Console.WriteLine($"[sstp] connecting to {host}:{port} (TLS) ...");
                 await vpn.ConnectAsync(user, pass, cts.Token);
-                Console.WriteLine($"[sstp] tunnel up. assigned IP = {vpn.AssignedAddress}, dns = {vpn.AssignedDns}");
+                IPAddress? v6 = GlobalV6(vpn.AssignedAddressV6);
+                Console.WriteLine($"[sstp] tunnel up. assigned IP = {vpn.AssignedAddress}, ipv6 = {v6?.ToString() ?? "(none)"}, dns = {vpn.AssignedDns}");
 
-                var stack = new TcpIpStack(vpn.PacketChannel, vpn.AssignedAddress);
+                var stack = new TcpIpStack(vpn.PacketChannel, vpn.AssignedAddress, v6);
                 var driver = new SstpDriver();
                 return new VpnTunnel(stack, () => { vpn.Dispose(); return ValueTask.CompletedTask; },
-                    vpn.AssignedAddress, vpn.PacketChannel.Mtu, driver.Capabilities, driver.Name, vpn.AssignedDns);
+                    vpn.AssignedAddress, vpn.PacketChannel.Mtu, driver.Capabilities, driver.Name, vpn.AssignedDns, v6);
             }
             catch
             {
@@ -87,12 +98,13 @@ namespace Vpn2ProxyDemo
             }
         }
 
-        /// <summary>Connect VPN Gate qua L2TP/IPsec (IKEv1 PSK, NAT-T) bằng host/user/pass + group PSK; trả tunnel đã lên (đang sống).</summary>
-        public static async Task<VpnTunnel> ConnectL2tpAsync(string host, string user, string pass, string preSharedKey, CancellationToken ct)
+        /// <summary>Connect VPN Gate qua L2TP/IPsec (IKEv1 PSK, NAT-T) bằng host/user/pass + group PSK; trả tunnel đã lên (đang sống).
+        /// <paramref name="enableIpv6"/>: bật IPV6CP + lấy IPv6 global qua SLAAC/DHCPv6 trên link PPP-trong-L2TP (P1.1, best-effort).</summary>
+        public static async Task<VpnTunnel> ConnectL2tpAsync(string host, string user, string pass, string preSharedKey, CancellationToken ct, bool enableIpv6 = false)
         {
             Console.WriteLine("=== [L2TP/IPsec] ===");
             // PSK do caller cấp (VpnTarget mặc định "vpn" của VPN Gate). Driver không còn nhét PSK mặc định (P0.4).
-            var vpn = new L2tpIpsecConnection(host, Encoding.ASCII.GetBytes(preSharedKey));
+            var vpn = new L2tpIpsecConnection(host, Encoding.ASCII.GetBytes(preSharedKey), enableIpv6: enableIpv6);
             try
             {
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -100,12 +112,13 @@ namespace Vpn2ProxyDemo
 
                 Console.WriteLine($"[l2tp] connecting to {host} (IKEv1/NAT-T UDP 500->4500) ...");
                 await vpn.ConnectAsync(user, pass, cts.Token);
-                Console.WriteLine($"[l2tp] tunnel up. assigned IP = {vpn.AssignedAddress}, dns = {vpn.AssignedDns}");
+                IPAddress? v6 = GlobalV6(vpn.AssignedAddressV6);
+                Console.WriteLine($"[l2tp] tunnel up. assigned IP = {vpn.AssignedAddress}, ipv6 = {v6?.ToString() ?? "(none)"}, dns = {vpn.AssignedDns}");
 
-                var stack = new TcpIpStack(vpn.PacketChannel, vpn.AssignedAddress);
+                var stack = new TcpIpStack(vpn.PacketChannel, vpn.AssignedAddress, v6);
                 var driver = new L2tpIpsecDriver();
                 return new VpnTunnel(stack, () => vpn.DisposeAsync(),
-                    vpn.AssignedAddress, vpn.PacketChannel.Mtu, driver.Capabilities, driver.Name, vpn.AssignedDns);
+                    vpn.AssignedAddress, vpn.PacketChannel.Mtu, driver.Capabilities, driver.Name, vpn.AssignedDns, v6);
             }
             catch
             {
@@ -153,11 +166,12 @@ namespace Vpn2ProxyDemo
                 IVpnSession session = connection.Sessions[0];
                 IPAddress assigned = session.Config.AssignedAddress ?? IPAddress.Any;
                 IPAddress? dns = session.Config.DnsServers.Count > 0 ? session.Config.DnsServers[0] : null;
-                Console.WriteLine($"[softether] tunnel up. assigned IP = {assigned}, dns = {dns}");
+                IPAddress? v6 = GlobalV6(session.Config.AssignedAddressV6);
+                Console.WriteLine($"[softether] tunnel up. assigned IP = {assigned}, ipv6 = {v6?.ToString() ?? "(none)"}, dns = {dns}");
 
-                var stack = new TcpIpStack(session.PacketChannel, assigned);
+                var stack = new TcpIpStack(session.PacketChannel, assigned, v6);
                 return new VpnTunnel(stack, async () => { await connection.DisposeAsync(); loggerFactory.Dispose(); },
-                    assigned, session.PacketChannel.Mtu, driver.Capabilities, driver.Name, dns);
+                    assigned, session.PacketChannel.Mtu, driver.Capabilities, driver.Name, dns, v6);
             }
             catch
             {
@@ -202,11 +216,12 @@ namespace Vpn2ProxyDemo
                 IVpnSession session = connection.Sessions[0];
                 IPAddress assigned = session.Config.AssignedAddress ?? IPAddress.Any;
                 IPAddress? dns = session.Config.DnsServers.Count > 0 ? session.Config.DnsServers[0] : null;
-                Console.WriteLine($"[openvpn] tunnel up. assigned IP = {assigned}, dns = {dns}");
+                IPAddress? v6 = GlobalV6(session.Config.AssignedAddressV6);
+                Console.WriteLine($"[openvpn] tunnel up. assigned IP = {assigned}, ipv6 = {v6?.ToString() ?? "(none)"}, dns = {dns}");
 
-                var stack = new TcpIpStack(session.PacketChannel, assigned);
+                var stack = new TcpIpStack(session.PacketChannel, assigned, v6);
                 return new VpnTunnel(stack, async () => { await connection.DisposeAsync(); loggerFactory.Dispose(); },
-                    assigned, session.PacketChannel.Mtu, driver.Capabilities, driver.Name, dns);
+                    assigned, session.PacketChannel.Mtu, driver.Capabilities, driver.Name, dns, v6);
             }
             catch
             {
@@ -215,6 +230,11 @@ namespace Vpn2ProxyDemo
                 throw;
             }
         }
+
+        // Chỉ địa chỉ IPv6 GLOBAL mới định tuyến ra internet — link-local (fe80::/10) thì bỏ qua nên không bật IPv6 egress
+        // (đa số server VPN Gate chỉ cấp link-local hoặc IPv4-only). Trả null ⇒ stack IPv4-only, proxy IsSupportIpv6=false.
+        static IPAddress? GlobalV6(IPAddress? address)
+            => address is not null && address.AddressFamily == AddressFamily.InterNetworkV6 && !address.IsIPv6LinkLocal ? address : null;
 
         // Console logger so the driver's handshake/state/link-loss/rekey traces are visible while running the demo live.
         static ILoggerFactory CreateDriverLoggerFactory()

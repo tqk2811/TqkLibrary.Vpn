@@ -62,7 +62,8 @@ namespace Vpn2ProxyDemo.CommandModules
             using ILoggerFactory loggerFactory = CreateLoggerFactory();
 
             // Phần dùng chung: stack -> IProxySource -> ProxyServer (cùng chia sẻ ILoggerFactory).
-            IProxySource source = new VpnProxySource(tunnel.Stack, loggerFactory);
+            // Bật egress IPv6 khi tunnel cấp IPv6 global (stack đã dual-stack — P1.1); link-local/không-v6 ⇒ IPv4-only.
+            IProxySource source = new VpnProxySource(tunnel.Stack, loggerFactory, supportIpv6: tunnel.AssignedAddressV6 is not null);
             using var proxyServer = new ProxyServer(new IPEndPoint(bindAddress, proxyPort), source, loggerFactory);
             proxyServer.StartListen();
             int port = proxyServer.IPEndPoint!.Port;

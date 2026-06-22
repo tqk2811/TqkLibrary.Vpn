@@ -19,6 +19,7 @@ namespace Vpn2ProxyDemo.CommandModules
     {
         Option<string> VpnOption { get; }
         Option<string> WatermarkOption { get; }
+        Option<bool> Ipv6Option { get; }
 
         readonly Command _command;
         public Command Command => _command;
@@ -43,6 +44,14 @@ namespace Vpn2ProxyDemo.CommandModules
                 DefaultValueFactory = _ => string.Empty,
             };
             _command.Options.Add(WatermarkOption);
+
+            Ipv6Option = new Option<bool>("--ipv6")
+            {
+                Description = "Bật IPv6 trong tunnel (IPV6CP + lấy địa chỉ global qua SLAAC/DHCPv6 trên link PPP — P1.1). "
+                    + "Chỉ SSTP/L2TP; best-effort: server không cấp IPv6 ⇒ vẫn IPv4 (chỉ thêm ~2s chờ). Mặc định tắt.",
+                DefaultValueFactory = _ => false,
+            };
+            _command.Options.Add(Ipv6Option);
 
             _command.SetAction(InvokeAsync);
         }
@@ -69,11 +78,12 @@ namespace Vpn2ProxyDemo.CommandModules
             PrintHeader(tag);
 
             string watermarkPath = parseResult.GetValue(WatermarkOption) ?? string.Empty;
+            bool enableIpv6 = parseResult.GetValue(Ipv6Option);
 
             try
             {
                 // Connect VPN theo giao thức đã chọn và trả về tunnel (giữ vòng đời kết nối).
-                await using VpnTunnel tunnel = await ConnectAsync(target, watermarkPath, ct);
+                await using VpnTunnel tunnel = await ConnectAsync(target, watermarkPath, enableIpv6, ct);
 
                 // Panel "VPN này hỗ trợ gì" — probe (UDP/LAN ảo) + suy luận (IPv6/listen-external) ngay sau khi tunnel lên,
                 // TRƯỚC hành động (tự bao timeout, nuốt lỗi nên không làm hỏng lệnh).
@@ -130,11 +140,12 @@ namespace Vpn2ProxyDemo.CommandModules
         protected virtual string? ValidateOptions(ParseResult parseResult) => null;
 
         /// <summary>Dispatch connect theo giao thức đã parse về hàm static tương ứng của <see cref="VpnTunnel"/>.</summary>
-        Task<VpnTunnel> ConnectAsync(VpnTarget target, string watermarkPath, CancellationToken ct)
+        Task<VpnTunnel> ConnectAsync(VpnTarget target, string watermarkPath, bool enableIpv6, CancellationToken ct)
             => target.Protocol switch
             {
-                VpnProtocol.Sstp => VpnTunnel.ConnectSstpAsync(target.Host, target.Port, target.User, target.Pass, ct),
-                VpnProtocol.L2tp => VpnTunnel.ConnectL2tpAsync(target.Host, target.User, target.Pass, target.PreSharedKey, ct),
+                // enableIpv6 chỉ áp cho đường PPP (SSTP/L2TP — P1.1); SoftEther/OpenVPN bật IPv6 theo cấu hình driver riêng.
+                VpnProtocol.Sstp => VpnTunnel.ConnectSstpAsync(target.Host, target.Port, target.User, target.Pass, ct, enableIpv6),
+                VpnProtocol.L2tp => VpnTunnel.ConnectL2tpAsync(target.Host, target.User, target.Pass, target.PreSharedKey, ct, enableIpv6),
                 VpnProtocol.SoftEther => VpnTunnel.ConnectSoftEtherAsync(target.Host, target.Port, target.User, target.Pass, target.HubName, watermarkPath, ct),
                 VpnProtocol.OpenVpn => VpnTunnel.ConnectOpenVpnAsync(target.ConfigPath!, target.User, target.Pass, ct),
                 _ => throw new ArgumentOutOfRangeException(nameof(target), target.Protocol, "Giao thức VPN không hỗ trợ."),

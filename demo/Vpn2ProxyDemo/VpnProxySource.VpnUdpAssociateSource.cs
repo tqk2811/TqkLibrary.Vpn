@@ -1,6 +1,5 @@
 using Microsoft.Extensions.Logging;
 using System.Net;
-using System.Net.Sockets;
 using TqkLibrary.Proxy.Interfaces;
 using TqkLibrary.VpnClient.IpStack;
 using TqkLibrary.VpnClient.IpStack.Udp;
@@ -15,8 +14,8 @@ namespace Vpn2ProxyDemo
         /// the real destination and back, via a userspace <see cref="UdpConnection"/> on the tunnel's <see cref="TcpIpStack"/>.
         /// <para>
         /// Because the underlying socket is connection-less (a destination is supplied per <see cref="SendAsync"/> and
-        /// reported per <see cref="ReceiveAsync"/>), one source serves every destination the client targets. IPv4-only:
-        /// the demo stack binds a single IPv4 tunnel address, so an IPv6 destination is rejected.
+        /// reported per <see cref="ReceiveAsync"/>), one source serves every destination the client targets. Dual-stack:
+        /// IPv4 and (when the tunnel carries a global IPv6) IPv6 destinations both ride the same userspace UDP socket (P1.1).
         /// </para>
         /// </summary>
         public sealed class VpnUdpAssociateSource : IUdpAssociateSource
@@ -61,9 +60,8 @@ namespace Vpn2ProxyDemo
                 if (offset < 0 || count < 0 || offset + count > payload.Length) throw new ArgumentOutOfRangeException(nameof(count));
                 if (_disposed) throw new ObjectDisposedException(nameof(VpnUdpAssociateSource));
                 if (_socket is null) throw new InvalidOperationException($"Call {nameof(AssociateAsync)} first.");
-                if (destination.AddressFamily == AddressFamily.InterNetworkV6)
-                    throw new NotSupportedException("IPv6 is not supported over the VPN userspace stack.");
 
+                // IPv4 or IPv6: the dual-stack tunnel stack routes the datagram by the destination's family (P1.1).
                 _socket.SendTo(destination.Address, (ushort)destination.Port, payload.AsSpan(offset, count));
                 _logger?.LogDebug("UDP gửi {Count} byte -> {Destination} qua tunnel.", count, destination);
                 return Task.CompletedTask;

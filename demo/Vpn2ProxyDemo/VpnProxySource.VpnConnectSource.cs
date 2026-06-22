@@ -11,9 +11,10 @@ namespace Vpn2ProxyDemo
     public sealed partial class VpnProxySource
     {
         /// <summary>
-        /// One proxied TCP connection opened through the VPN tunnel. <see cref="ConnectAsync"/> resolves the
-        /// target host to an IPv4 address, then dials it through the userspace stack; <see cref="GetStreamAsync"/>
-        /// returns the in-tunnel duplex byte stream the proxy pipes the client's traffic over.
+        /// One proxied TCP connection opened through the VPN tunnel. <see cref="ConnectAsync"/> resolves the target host
+        /// to an IPv4 or IPv6 address (P1.1 — IPv6 only reaches the internet when the tunnel carries a global IPv6), then
+        /// dials it through the userspace stack; <see cref="GetStreamAsync"/> returns the in-tunnel duplex byte stream the
+        /// proxy pipes the client's traffic over.
         /// </summary>
         public sealed class VpnConnectSource : IConnectSource
         {
@@ -42,8 +43,8 @@ namespace Vpn2ProxyDemo
                     ? address.Port
                     : (Uri.UriSchemeHttps.Equals(address.Scheme, StringComparison.OrdinalIgnoreCase) ? 443 : 80);
 
-                _logger?.LogDebug("CONNECT {Host}:{Port} — đang phân giải IPv4...", address.Host, port);
-                IPAddress ip = await ResolveIpv4Async(address.Host, address.HostNameType).ConfigureAwait(false);
+                _logger?.LogDebug("CONNECT {Host}:{Port} — đang phân giải địa chỉ...", address.Host, port);
+                IPAddress ip = await ResolveAsync(address.Host, address.HostNameType).ConfigureAwait(false);
                 _logger?.LogDebug("CONNECT {Host} -> {Ip}, đang dial qua tunnel...", address.Host, ip);
                 try
                 {
@@ -71,20 +72,22 @@ namespace Vpn2ProxyDemo
                 return Task.FromResult(_stream);
             }
 
-            static async Task<IPAddress> ResolveIpv4Async(string host, UriHostNameType hostType)
+            // Resolve the target to an address the dual-stack tunnel can dial (P1.1): an IPv4 or IPv6 literal as-is, or a
+            // DNS name preferring IPv4 (A) and falling back to IPv6 (AAAA) so an IPv6-only host still works when the
+            // tunnel carries IPv6. The exit IP is determined by the tunnel, not by where DNS runs.
+            static async Task<IPAddress> ResolveAsync(string host, UriHostNameType hostType)
             {
                 switch (hostType)
                 {
                     case UriHostNameType.IPv4:
-                        return IPAddress.Parse(host);
-
                     case UriHostNameType.IPv6:
-                        throw new NotSupportedException("IPv6 is not supported over the VPN userspace stack.");
+                        return IPAddress.Parse(host);
 
                     case UriHostNameType.Dns:
                         IPAddress[] ips = await Dns.GetHostAddressesAsync(host).ConfigureAwait(false);
                         IPAddress? v4 = ips.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork);
-                        return v4 ?? throw new InitConnectSourceFailedException($"No IPv4 address resolved for host '{host}'.");
+                        IPAddress? v6 = ips.FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetworkV6);
+                        return v4 ?? v6 ?? throw new InitConnectSourceFailedException($"No IP address resolved for host '{host}'.");
 
                     default:
                         throw new NotSupportedException($"Unsupported host name type '{hostType}'.");

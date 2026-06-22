@@ -10,28 +10,32 @@ namespace Vpn2ProxyDemo
     /// listening on localhost forwards its traffic out the VPN.
     /// <para>
     /// Supports SOCKS4/5 + HTTP/HTTPS CONNECT (TCP) and SOCKS5 UDP-ASSOCIATE (datagrams ride the stack's userspace
-    /// UDP socket). IPv4-only. BIND is not offered: the stack is active-open only, and the private tunnel address
-    /// is not routable from the internet, so an external peer could never dial in.
+    /// UDP socket). Dual-stack when the tunnel provided a global IPv6 address (the stack is built dual-stack and
+    /// <see cref="IsSupportIpv6"/> is set; otherwise IPv4-only). BIND is not offered: the stack is active-open only, and
+    /// the private tunnel address is not routable from the internet, so an external peer could never dial in.
     /// </para>
     /// </summary>
     public sealed partial class VpnProxySource : IProxySource
     {
         readonly TcpIpStack _stack;
         readonly ILoggerFactory? _loggerFactory;
+        readonly bool _supportIpv6;
 
         /// <summary>Creates the source over a userspace TCP/IP stack already bound to a connected tunnel.</summary>
         /// <param name="loggerFactory">Optional — sinh logger cho mỗi connect/UDP-associate source (null = không log).</param>
-        public VpnProxySource(TcpIpStack stack, ILoggerFactory? loggerFactory = null)
+        /// <param name="supportIpv6">True khi tunnel có IPv6 global (stack dual-stack) — bật egress IPv6 cho proxy (P1.1).</param>
+        public VpnProxySource(TcpIpStack stack, ILoggerFactory? loggerFactory = null, bool supportIpv6 = false)
         {
             _stack = stack ?? throw new ArgumentNullException(nameof(stack));
             _loggerFactory = loggerFactory;
+            _supportIpv6 = supportIpv6;
         }
 
         /// <inheritdoc/>
         public bool IsSupportUdp => true;
 
         /// <inheritdoc/>
-        public bool IsSupportIpv6 => false;
+        public bool IsSupportIpv6 => _supportIpv6;
 
         /// <inheritdoc/>
         public bool IsSupportBind => false;

@@ -50,11 +50,16 @@ namespace TqkLibrary.VpnClient.Drivers.Sstp
 
         static byte[] DeriveCmk(byte[] hlak)
         {
-            // CMK = HMAC-SHA256(HLAK, "SSTP inner method derived CMK" || LEN-in-bits(2, BE) || 0x01)
+            // CMK = HMAC-SHA256(HLAK, "SSTP inner method derived CMK" || LEN || 0x00 || 0x01)
+            // LEN = 0x20 — the CMK length in BYTES (32 for SHA-256), per [MS-SSTP] §3.2.5.2.2 and the
+            // accel-ppp / Windows RRAS wire (they append len(32)=0x20, then 0x00, then the 0x01 counter).
+            // The earlier 0x01 (mis-reading LEN as the high byte of "256 bits") yields a CMK no strict
+            // server accepts; it stayed hidden because SoftEther/VPN Gate does not verify the Compound MAC,
+            // whereas accel-ppp does and rejected it ("invalid Compound MAC"). Verified live against accel-ppp.
             byte[] data = new byte[CmkSeed.Length + 3];
             Buffer.BlockCopy(CmkSeed, 0, data, 0, CmkSeed.Length);
-            data[CmkSeed.Length] = 0x01;     // 256 bits, high byte
-            data[CmkSeed.Length + 1] = 0x00; // low byte
+            data[CmkSeed.Length] = 0x20;     // CMK length = 32 bytes (SHA-256 digest length)
+            data[CmkSeed.Length + 1] = 0x00;
             data[CmkSeed.Length + 2] = 0x01; // counter
             using var hmac = new HMACSHA256(hlak);
             return hmac.ComputeHash(data);

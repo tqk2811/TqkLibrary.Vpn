@@ -25,17 +25,20 @@ services:
       context: ./accel-ppp
     image: lab-accel-ppp:24.04
     container_name: lab-accel-ppp
-    network_mode: host
-    restart: unless-stopped
+    # BRIDGED — KHÔNG host networking. SSTP là TLS/TCP 443 thuần; PPP + IPv6 Router Advertisement
+    # chạy BÊN TRONG tunnel (interface ppp nội bộ netns container) nên không cần host-net. An toàn:
+    # NET_ADMIN chỉ tác động netns container, KHÔNG đụng ens33 của VM. (host-net + privileged của
+    # strongSwan từng làm sập mạng VM — xem README §8.) Đủ validate P1.1 SLAAC-over-PPP qua SSTP.
+    restart: "no"
     cap_add:
-      - NET_ADMIN      # tạo ppp interface, gán địa chỉ, route
-      - NET_RAW        # gửi Router Advertisement / ICMPv6
-    # ppp cần /dev/ppp. Trên host Ubuntu nạp module: sudo modprobe ppp_generic
+      - NET_ADMIN      # tạo ppp interface trong netns container
+      - NET_RAW        # gửi Router Advertisement / ICMPv6 trên ppp
     devices:
       - /dev/ppp:/dev/ppp
-    sysctls:
-      net.ipv4.ip_forward: "1"
-      net.ipv6.conf.all.forwarding: "1"
+    ports:
+      - "443:443"        # SSTP (TLS)
+      - "1723:1723"      # PPTP control
+      - "1701:1701/udp"  # L2TP (chỉ hữu dụng khi strongSwan bọc IPsec; SSTP không cần)
     volumes:
       # Cert SSTP self-signed sinh bởi entrypoint, persist để client pin lại nếu muốn.
       - accel-certs:/etc/accel-ppp/certs
@@ -54,9 +57,7 @@ services:
     cap_add:
       - NET_ADMIN
     privileged: true   # nhiều build strongSwan cần để cài SA vào kernel XFRM; thu hẹp sau khi chạy được
-    sysctls:
-      net.ipv4.ip_forward: "1"
-      net.ipv6.conf.all.forwarding: "1"
+    # sysctls forwarding KHÔNG đặt được trong network_mode: host — đặt ở HOST VM (xem README §3.3).
 
 volumes:
   accel-certs:

@@ -242,6 +242,52 @@ sudo tcpdump -ni any 'ip6'                    # outer IPv6 (P1.2)
 journalctl -u docker -f
 ```
 
+### 7.5 ⚠️ SỰ CỐ ĐÃ GẶP THẬT: bring-up làm SẬP MẠNG VM (mất cả SSH lẫn ping)
+
+**Triệu chứng (đã xảy ra):** chạy `docker compose up -d --build` với **CẢ HAI** service ở
+`network_mode: host` (strongSwan thêm `privileged: true`) → ngay sau khi 2 container start,
+**VM mất hoàn toàn kết nối mạng**: SSH chết, `ping <VM_IP>` 100% loss. Không vào lại được bằng SSH.
+
+**Nguyên nhân:** container `network_mode: host` **dùng chung network namespace của VM**. Service
+chạy đặc quyền trong đó (strongSwan đụng **XFRM/netlink/policy**, hoặc forwarding/rp_filter) **phá
+luôn stack mạng của chính VM**. (Triệu chứng "đen" toàn bộ traffic rất khớp với **policy XFRM bẫy
+gói chờ SA → drop hết**.) Ngoài ra Docker **từ chối `sysctls` trong `network_mode: host`**
+("not allowed in host network namespace") nên container còn không start được nếu để khối `sysctls`.
+
+**Khôi phục — KHÔNG cần reboot** (làm trong **console VMware**, vì SSH đã chết; các lệnh đều local):
+```bash
+cd ~/lab && docker compose down            # gỡ container (thủ phạm) — ~90% là đủ, mạng về ngay
+# nếu vẫn chưa về (do strongSwan để lại policy IPsec):
+sudo ip xfrm policy flush && sudo ip xfrm state flush
+# nếu route/interface bị mất:
+ip -br a ; ip route ; sudo netplan apply    # (hoặc: sudo systemctl restart systemd-networkd)
+ping -c2 8.8.8.8                            # ok là xong
+```
+`docker compose down` xoá hẳn container nên cũng triệt `restart: unless-stopped` tự bật lại.
+
+**PHÒNG TRÁNH (đã áp dụng cho service accel-ppp):**
+- **SSTP KHÔNG cần host-networking.** SSTP là **TLS/TCP 443 thuần**; PPP + IPv6 Router Advertisement
+  chạy **bên trong** tunnel (interface ppp nội bộ netns container). → Chạy accel-ppp **bridged +
+  `ports: "443:443"`** (giữ `/dev/ppp` + `cap_add: NET_ADMIN`, **bỏ** `network_mode: host` và
+  `privileged`). `NET_ADMIN` lúc này chỉ tác động netns container, **không đụng `ens33` của VM**.
+  Đủ validate **P1.1** (SLAAC-over-PPP) mà KHÔNG có rủi ro sập mạng. (compose hiện đã để vậy.)
+- **Chỉ strongSwan** (L2TP/IPsec, ESP proto-50, GRE) mới **thật sự cần** `network_mode: host` +
+  `privileged` — đây là phần rủi ro. **Bật RIÊNG, sau cùng**, từng bước, và **kiểm SSH còn sống
+  sau mỗi bước**: `docker compose up -d strongswan` rồi ngay lập tức từ một phiên khác
+  `ssh <VM> 'echo alive'`. Nếu mất mạng → `docker compose down` từ console như trên.
+- **Quy tắc vàng:** bao giờ cũng **bật từng service một**, verify SSH sau mỗi service; đừng `up` cả
+  cụm host-net một lượt.
+
+### 7.6 Ghi chú as-built khác đã phát hiện khi chạy thật (đã sửa trong file lab)
+- `accel-ppp` **KHÔNG có gói apt** trên Ubuntu 24.04 → Dockerfile **build từ source** (cần
+  `libssl-dev` + `libpcre2-dev`; binary `/usr/sbin/accel-pppd`, module `/usr/lib64/accel-ppp`).
+- `accel-pppd -d` là **daemon mode** (fork nền) → container thoát ngay; phải chạy **foreground**
+  (bỏ `-d`).
+- accel-ppp **KHÔNG có section `[ipv6-nd]`** — load module `ipv6_nd` là tự gửi RA; `ipv6-intf-id`
+  dạng `0:0:0:1` (không phải `random`); IPv6 pool gán per-listener bằng `ipv6-pool=<tên>`.
+- Thiếu `[client-ip-range]` ⇒ accel-ppp **từ chối mọi kết nối** ("incoming ... will be rejected");
+  thêm `[client-ip-range]\ndisable` cho lab.
+
 ---
 
 ## 8. Điểm KHÔNG CHẮC — cần tinh chỉnh live

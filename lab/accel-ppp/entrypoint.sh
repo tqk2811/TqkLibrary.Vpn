@@ -27,16 +27,17 @@ if [ ! -f "$PEM" ]; then
     chmod 600 "$PEM" "$CERT_DIR/sstp.key"
 fi
 
-# ---- Tìm binary accel-ppp ----
+# ---- Tìm binary accel-ppp (build-from-source đặt ở /usr/sbin/accel-pppd) ----
 ACCEL_BIN=""
-for c in accel-pppd /usr/sbin/accel-pppd accel-ppp /usr/sbin/accel-ppp; do
+for c in accel-pppd /usr/sbin/accel-pppd; do
     if command -v "$c" >/dev/null 2>&1; then ACCEL_BIN="$c"; break; fi
 done
 if [ -z "$ACCEL_BIN" ]; then
-    echo "[entrypoint] !! Không tìm thấy binary accel-pppd. Kiểm tra gói apt hoặc build từ source (xem Dockerfile)." >&2
+    echo "[entrypoint] !! Không tìm thấy binary accel-pppd. Kiểm tra build trong Dockerfile." >&2
     exit 1
 fi
 
-echo "[entrypoint] Chạy $ACCEL_BIN với /etc/accel-ppp.conf"
-# -d = foreground (không daemon hoá) để Docker giữ container + log ra stdout/file.
-exec "$ACCEL_BIN" -d -c /etc/accel-ppp.conf
+echo "[entrypoint] Chạy $ACCEL_BIN với /etc/accel-ppp.conf (foreground)"
+# KHÔNG dùng -d: '-d' = daemon mode (fork nền) ⇒ container thoát ngay. Chạy foreground để
+# Docker giữ container sống + log ra file (xem [log] trong accel-ppp.conf).
+exec "$ACCEL_BIN" -c /etc/accel-ppp.conf

@@ -19,6 +19,14 @@ namespace TqkLibrary.VpnClient.Ethernet
         /// <summary>How to derive the 64-bit interface identifier of a SLAAC address (RFC 4862 §5.5.3).</summary>
         public SlaacInterfaceIdentifierMode InterfaceIdentifierMode { get; }
 
+        /// <summary>
+        /// An explicit 8-byte interface identifier to use for the SLAAC address instead of deriving one from the MAC
+        /// (<see cref="InterfaceIdentifierMode"/> is ignored when this is set). Used on a PPP link (P1.1), where the
+        /// interface identifier is the one IPV6CP negotiated (the low 64 bits of the link-local address), not a MAC's
+        /// EUI-64 — so the global address shares the link's identifier. Null on the Ethernet path (MAC-derived).
+        /// </summary>
+        public byte[]? InterfaceIdentifierOverride { get; }
+
         /// <summary>How long to wait for a Router Advertisement after each Router Solicitation before retrying.</summary>
         public TimeSpan RouterAdvertisementTimeout { get; }
 
@@ -48,8 +56,11 @@ namespace TqkLibrary.VpnClient.Ethernet
             TimeSpan? dhcpReplyTimeout = null,
             int dhcpMaxAttempts = 4,
             bool forceDhcp = false,
-            int mtu = 1500)
+            int mtu = 1500,
+            byte[]? interfaceIdentifierOverride = null)
         {
+            if (interfaceIdentifierOverride != null && interfaceIdentifierOverride.Length != 8)
+                throw new ArgumentException("The interface identifier override must be exactly 8 bytes.", nameof(interfaceIdentifierOverride));
             InterfaceIdentifierMode = interfaceIdentifierMode;
             RouterAdvertisementTimeout = routerAdvertisementTimeout ?? TimeSpan.FromSeconds(2);
             RouterSolicitationAttempts = routerSolicitationAttempts < 1 ? 1 : routerSolicitationAttempts;
@@ -57,6 +68,7 @@ namespace TqkLibrary.VpnClient.Ethernet
             DhcpMaxAttempts = dhcpMaxAttempts < 1 ? 1 : dhcpMaxAttempts;
             ForceDhcp = forceDhcp;
             Mtu = mtu < 1280 ? 1280 : mtu;   // IPv6 minimum link MTU (RFC 8200 §5)
+            InterfaceIdentifierOverride = interfaceIdentifierOverride == null ? null : (byte[])interfaceIdentifierOverride.Clone();
         }
 
         /// <summary>Defaults (EUI-64, 2s RA timeout / 3 RS, 2s DHCP timeout / 4 attempts, no force-DHCP, MTU 1500).</summary>

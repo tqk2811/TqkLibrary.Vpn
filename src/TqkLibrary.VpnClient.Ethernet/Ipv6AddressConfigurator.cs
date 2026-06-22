@@ -154,9 +154,10 @@ namespace TqkLibrary.VpnClient.Ethernet
             if (ra.Prefix == null || !ra.PrefixAutonomous || ra.PrefixLength != 64 || ra.PrefixValidLifetime == 0)
                 return null;   // no autonomous /64 prefix with a non-zero lifetime → SLAAC forms nothing
 
-            byte[] iid = _options.InterfaceIdentifierMode == SlaacInterfaceIdentifierMode.StableOpaque
-                ? SlaacAddress.StableInterfaceIdentifier(ra.Prefix, _mac)
-                : SlaacAddress.ModifiedEui64(_mac);
+            byte[] iid = _options.InterfaceIdentifierOverride
+                ?? (_options.InterfaceIdentifierMode == SlaacInterfaceIdentifierMode.StableOpaque
+                    ? SlaacAddress.StableInterfaceIdentifier(ra.Prefix, _mac)
+                    : SlaacAddress.ModifiedEui64(_mac));
             return SlaacAddress.Combine(ra.Prefix, ra.PrefixLength, iid);
         }
 

@@ -9,6 +9,7 @@ using TqkLibrary.VpnClient.Abstractions.Channels;
 using TqkLibrary.VpnClient.Abstractions.Channels.Interfaces;
 using TqkLibrary.VpnClient.Abstractions.Diagnostics.Extensions;
 using TqkLibrary.VpnClient.Abstractions.Drivers;
+using TqkLibrary.VpnClient.Abstractions.Drivers.Models;
 using TqkLibrary.VpnClient.Abstractions.Net;
 using TqkLibrary.VpnClient.Drivers.Core;
 using TqkLibrary.VpnClient.Drivers.Sstp.Enums;
@@ -16,6 +17,7 @@ using TqkLibrary.VpnClient.Drivers.Sstp.Models;
 using TqkLibrary.VpnClient.Drivers.Sstp.Transport;
 using TqkLibrary.VpnClient.Ppp;
 using TqkLibrary.VpnClient.Ppp.Auth;
+using TqkLibrary.VpnClient.Ppp.Ipv6;
 
 namespace TqkLibrary.VpnClient.Drivers.Sstp
 {
@@ -40,9 +42,12 @@ namespace TqkLibrary.VpnClient.Drivers.Sstp
         readonly SstpReconnectOptions _opts;
         readonly Func<ITlsByteStream> _transportFactory;
 
+        readonly IPppIpv6Autoconfigurator _ipv6Autoconfig = new PppIpv6Autoconfigurator();
+
         string? _userName;
         string? _password;
         IPAddress? _lastAssignedAddress;
+        TunnelConfig? _ipv6Config;
 
         SstpTransport? _transport;
         SstpPppChannel? _channel;
@@ -84,8 +89,17 @@ namespace TqkLibrary.VpnClient.Drivers.Sstp
         /// <summary>The DNS server pushed by the server, if any (tracks the latest attempt).</summary>
         public IPAddress? AssignedDns => _engine!.AssignedDns;
 
-        /// <summary>The link-local IPv6 address negotiated via IPV6CP, or null (IPv6 disabled / server has no IPV6CP).</summary>
-        public IPAddress? AssignedAddressV6 => _engine?.AssignedAddressV6;
+        /// <summary>
+        /// The IPv6 address for the tunnel: the global address obtained over the link (SLAAC/DHCPv6) when one was acquired,
+        /// otherwise the IPV6CP link-local — or null (IPv6 disabled / server has no IPV6CP).
+        /// </summary>
+        public IPAddress? AssignedAddressV6 => _ipv6Config?.AssignedAddressV6 ?? _engine?.AssignedAddressV6;
+
+        /// <summary>
+        /// The global IPv6 configuration obtained over the PPP link (prefix length, IPv6 DNS, <c>::/0</c> default route),
+        /// or null when only the IPV6CP link-local is available. The driver merges this into the <see cref="TunnelConfig"/>.
+        /// </summary>
+        public TunnelConfig? Ipv6Config => _ipv6Config;
 
         /// <summary>Raised after a successful auto-reconnect, carrying the new address and whether it changed.</summary>
         public event Action<SstpReconnectInfo>? Reconnected;
@@ -193,6 +207,7 @@ namespace TqkLibrary.VpnClient.Drivers.Sstp
             var authenticator = new MsChapV2Authenticator(_userName ?? string.Empty, _password ?? string.Empty);
             var engine = new PppEngine(channel, _magic, IPAddress.Any, authenticator: authenticator, enableIpv6: _enableIpv6);
             _engine = engine;
+            _ipv6Config = null;   // fresh per attempt; the previous attempt's global address must not leak
             var ipv6Up = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             engine.Ipv6Up += () => ipv6Up.TrySetResult(true);
 
@@ -233,6 +248,7 @@ namespace TqkLibrary.VpnClient.Drivers.Sstp
 
             await WaitForLinkUpAsync(linkUp.Task, loopTask, channel, cancellationToken).ConfigureAwait(false);
             await AwaitIpv6GraceAsync(engine, ipv6Up.Task, cancellationToken).ConfigureAwait(false);
+            await TryConfigureGlobalIpv6Async(engine, cancellationToken).ConfigureAwait(false);
 
             Facade.SetInner(engine.PacketChannel);
             StartKeepalive();
@@ -264,6 +280,27 @@ namespace TqkLibrary.VpnClient.Drivers.Sstp
             grace.CancelAfter(TimeSpan.FromSeconds(2));
             try { await Task.WhenAny(ipv6Up, Task.Delay(Timeout.Infinite, grace.Token)).ConfigureAwait(false); }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { } // grace elapsed, no IPv6
+        }
+
+        // After IPV6CP brings up the link-local, solicit a Router Advertisement (or DHCPv6) over the PPP link to obtain a
+        // routable global IPv6 address (P1.1). Best-effort and only when IPV6CP actually opened: the interface identifier
+        // is the low 64 bits of the link-local (what IPV6CP negotiated). A server with no on-link IPv6 routing leaves the
+        // link-local in place; any failure here must never fail an otherwise-good IPv4 + link-local tunnel.
+        async Task TryConfigureGlobalIpv6Async(PppEngine engine, CancellationToken cancellationToken)
+        {
+            if (!_enableIpv6 || !engine.IsIpv6Up) return;
+            IPAddress? linkLocal = engine.AssignedAddressV6;
+            if (linkLocal is null || linkLocal.AddressFamily != AddressFamily.InterNetworkV6) return;
+            byte[] interfaceId = new byte[8];
+            Array.Copy(linkLocal.GetAddressBytes(), 8, interfaceId, 0, 8);
+            try
+            {
+                _ipv6Config = await _ipv6Autoconfig.TryConfigureAsync(engine.PacketChannel, linkLocal, interfaceId, cancellationToken).ConfigureAwait(false);
+                if (_ipv6Config?.AssignedAddressV6 != null)
+                    Logger.LogHandshake(DriverName, $"obtained global IPv6 {_ipv6Config.AssignedAddressV6}/{_ipv6Config.PrefixLengthV6} over the PPP link");
+            }
+            catch (OperationCanceledException) { throw; }                              // teardown — abort the attempt
+            catch (Exception ex) { Logger.LogHandshake(DriverName, $"global IPv6 over PPP unavailable ({ex.GetType().Name}); keeping link-local"); }
         }
 
         // Tears down the resources of the previous attempt before a fresh one (no-op on the very first attempt).

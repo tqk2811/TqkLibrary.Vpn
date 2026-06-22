@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using TqkLibrary.VpnClient.Abstractions.Drivers.Enums;
 using TqkLibrary.VpnClient.Abstractions.Drivers.Interfaces;
 using TqkLibrary.VpnClient.Abstractions.Drivers.Models;
+using TqkLibrary.VpnClient.Drivers.Core;
 
 namespace TqkLibrary.VpnClient.Drivers.Sstp
 {
@@ -58,6 +59,7 @@ namespace TqkLibrary.VpnClient.Drivers.Sstp
 
                 var config = new TunnelConfig { AssignedAddress = connection.AssignedAddress, AssignedAddressV6 = connection.AssignedAddressV6 };
                 if (connection.AssignedDns != null) config.DnsServers.Add(connection.AssignedDns);
+                TunnelConfigIpv6.ApplyGlobalIpv6(config, connection.Ipv6Config);
 
                 var session = new SstpVpnSession(connection.PacketChannel, config);
                 connection.Reconnected += info => session.ApplyReconnect(info, connection.AssignedDns);

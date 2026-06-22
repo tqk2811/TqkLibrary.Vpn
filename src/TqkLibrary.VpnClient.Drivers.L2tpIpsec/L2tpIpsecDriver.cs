@@ -3,6 +3,7 @@ using TqkLibrary.VpnClient.Abstractions.Drivers.Enums;
 using TqkLibrary.VpnClient.Abstractions.Drivers.Interfaces;
 using TqkLibrary.VpnClient.Abstractions.Drivers.Models;
 using TqkLibrary.VpnClient.Abstractions.Transport.Interfaces;
+using TqkLibrary.VpnClient.Drivers.Core;
 using TqkLibrary.VpnClient.Drivers.L2tpIpsec.Enums;
 
 namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
@@ -73,6 +74,7 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
 
                 var config = new TunnelConfig { AssignedAddress = connection.AssignedAddress, AssignedAddressV6 = connection.AssignedAddressV6 };
                 if (connection.AssignedDns != null) config.DnsServers.Add(connection.AssignedDns);
+                TunnelConfigIpv6.ApplyGlobalIpv6(config, connection.Ipv6Config);
 
                 var session = new L2tpIpsecVpnSession(connection.PacketChannel, config);
                 connection.Reconnected += info => session.ApplyReconnect(info, connection.AssignedDns);

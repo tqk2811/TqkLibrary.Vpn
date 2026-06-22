@@ -7,6 +7,9 @@
   <ItemGroup>
     <ProjectReference Include="..\TqkLibrary.VpnClient.Abstractions\TqkLibrary.VpnClient.Abstractions.csproj" />
     <ProjectReference Include="..\TqkLibrary.VpnClient.Crypto\TqkLibrary.VpnClient.Crypto.csproj" />
+    <!-- Ethernet hosts the L3 NDISC/SLAAC/DHCPv6 codecs reused for global IPv6 over a PPP link (P1.1). It depends
+         only on Abstractions, so this reference is acyclic. -->
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Ethernet\TqkLibrary.VpnClient.Ethernet.csproj" />
   </ItemGroup>
 
 </Project>

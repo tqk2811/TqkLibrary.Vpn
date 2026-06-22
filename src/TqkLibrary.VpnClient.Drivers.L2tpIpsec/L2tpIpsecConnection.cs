@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using TqkLibrary.VpnClient.Abstractions.Channels;
 using TqkLibrary.VpnClient.Abstractions.Diagnostics.Extensions;
 using TqkLibrary.VpnClient.Abstractions.Drivers;
+using TqkLibrary.VpnClient.Abstractions.Drivers.Models;
 using TqkLibrary.VpnClient.Abstractions.Net;
 using TqkLibrary.VpnClient.Abstractions.Transport.Interfaces;
 using TqkLibrary.VpnClient.Drivers.Core;
@@ -17,6 +18,7 @@ using TqkLibrary.VpnClient.Ipsec.Nat.Enums;
 using TqkLibrary.VpnClient.L2tp;
 using TqkLibrary.VpnClient.Ppp;
 using TqkLibrary.VpnClient.Ppp.Auth;
+using TqkLibrary.VpnClient.Ppp.Ipv6;
 
 namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
 {
@@ -63,10 +65,12 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
         readonly object _extraSessionsLock = new();
         readonly List<L2tpSession> _extraSessions = new(); // additional L2TP sessions opened on the live tunnel (best-effort)
         readonly Random _retransmitRandom = new(); // RNG for the IKE retransmit jitter (distinct from the base reconnect-backoff jitter)
+        readonly IPppIpv6Autoconfigurator _ipv6Autoconfig = new PppIpv6Autoconfigurator();
 
         string? _userName;
         string? _password;
         IPAddress? _lastAssignedAddress;
+        TunnelConfig? _ipv6Config;
         IPAddress? _serverIp; // the resolved gateway address (kept so a Phase 1 rekey can rebuild its NAT-D)
 
         NatTraversalChannel? _natt;
@@ -120,8 +124,17 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
         /// <summary>The DNS server pushed by IPCP, if any (tracks the latest attempt).</summary>
         public IPAddress? AssignedDns => _ppp!.AssignedDns;
 
-        /// <summary>The link-local IPv6 address negotiated via IPV6CP, or null (IPv6 disabled / server has no IPV6CP).</summary>
-        public IPAddress? AssignedAddressV6 => _ppp?.AssignedAddressV6;
+        /// <summary>
+        /// The IPv6 address for the tunnel: the global address obtained over the link (SLAAC/DHCPv6) when one was acquired,
+        /// otherwise the IPV6CP link-local — or null (IPv6 disabled / server has no IPV6CP).
+        /// </summary>
+        public IPAddress? AssignedAddressV6 => _ipv6Config?.AssignedAddressV6 ?? _ppp?.AssignedAddressV6;
+
+        /// <summary>
+        /// The global IPv6 configuration obtained over the PPP link (prefix length, IPv6 DNS, <c>::/0</c> default route),
+        /// or null when only the IPV6CP link-local is available. The driver merges this into the <see cref="TunnelConfig"/>.
+        /// </summary>
+        public TunnelConfig? Ipv6Config => _ipv6Config;
 
         /// <summary>Raised after a successful auto-reconnect, carrying the new address and whether it changed.</summary>
         public event Action<L2tpIpsecReconnectInfo>? Reconnected;
@@ -242,6 +255,7 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
             var authenticator = new MsChapV2Authenticator(_userName ?? string.Empty, _password ?? string.Empty);
             var ppp = new PppEngine(pppChannel, _magic, IPAddress.Any, authenticator: authenticator, enableIpv6: _enableIpv6);
             _ppp = ppp;
+            _ipv6Config = null;   // fresh per attempt; the previous attempt's global address must not leak
 
             var linkUp = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             var ipv6Up = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -257,6 +271,7 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
 
             await WaitAsync(linkUp.Task, cancellationToken).ConfigureAwait(false);
             await AwaitIpv6GraceAsync(ppp, ipv6Up.Task, cancellationToken).ConfigureAwait(false);
+            await TryConfigureGlobalIpv6Async(ppp, cancellationToken).ConfigureAwait(false);
 
             // Handshake done: stop steering IKE to the handshake waiter, publish the new plane, start keepalive.
             _ikeWaiter = null;
@@ -274,6 +289,26 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
             grace.CancelAfter(TimeSpan.FromSeconds(2));
             try { await Task.WhenAny(ipv6Up, Task.Delay(Timeout.Infinite, grace.Token)).ConfigureAwait(false); }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { } // grace elapsed, no IPv6
+        }
+
+        // After IPV6CP brings up the link-local, solicit a Router Advertisement (or DHCPv6) over the PPP link — which here
+        // tunnels inside L2TP/ESP — to obtain a routable global IPv6 address (P1.1). Best-effort and only when IPV6CP
+        // actually opened; the interface identifier is the low 64 bits of the link-local. Any failure keeps the link-local.
+        async Task TryConfigureGlobalIpv6Async(PppEngine ppp, CancellationToken cancellationToken)
+        {
+            if (!_enableIpv6 || !ppp.IsIpv6Up) return;
+            IPAddress? linkLocal = ppp.AssignedAddressV6;
+            if (linkLocal is null || linkLocal.AddressFamily != System.Net.Sockets.AddressFamily.InterNetworkV6) return;
+            byte[] interfaceId = new byte[8];
+            Array.Copy(linkLocal.GetAddressBytes(), 8, interfaceId, 0, 8);
+            try
+            {
+                _ipv6Config = await _ipv6Autoconfig.TryConfigureAsync(ppp.PacketChannel, linkLocal, interfaceId, cancellationToken).ConfigureAwait(false);
+                if (_ipv6Config?.AssignedAddressV6 != null)
+                    Logger.LogHandshake(DriverName, $"obtained global IPv6 {_ipv6Config.AssignedAddressV6}/{_ipv6Config.PrefixLengthV6} over the PPP link");
+            }
+            catch (OperationCanceledException) { throw; }                              // teardown — abort the attempt
+            catch (Exception ex) { Logger.LogHandshake(DriverName, $"global IPv6 over PPP unavailable ({ex.GetType().Name}); keeping link-local"); }
         }
 
         // ---- Phase 1 bring-up: pick the NAT-T strategy, run Main Mode 1-4, and settle on the data-plane port ----

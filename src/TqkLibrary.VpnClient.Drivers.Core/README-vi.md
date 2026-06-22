@@ -2,8 +2,8 @@
 
 **Scaffolding dùng chung cho driver** (roadmap **F.6**) — gom phần lặp lại giữa các protocol driver thành **một base class + một model policy**, để driver mới không chép lần thứ N cùng một bộ supervisor/reconnect/keepalive. Trước F.6 mỗi driver (WireGuard, OpenConnect, OpenVPN, IKEv2, SoftEther, SSTP, L2TP/IPsec) tự bê nguyên `EstablishAsync`/`ReconnectLoopAsync`/backoff-jitter/`StateChanged`/`OnLinkLost`/guard `_running`-`_userTeardown`-`_supervisorActive`/clock đơn điệu + một `XxxReconnectOptions` gần như giống hệt. Project này rút phần đó ra:
 
-- [`ReconnectingVpnConnection<TState>`](ReconnectingVpnConnection.cs#L25) — base **abstract** mang toàn bộ máy supervisor; driver kế thừa và chỉ viết phần protocol riêng.
-- [`VpnReconnectOptions`](Models/VpnReconnectOptions.cs#L17) — model policy reconnect/backoff/jitter chung; mỗi driver giữ type tên riêng (`WireGuardReconnectOptions`, …) **kế thừa** base này để không vỡ public API.
+- [`ReconnectingVpnConnection<TState>`](ReconnectingVpnConnection.cs#L24) — base **abstract** mang toàn bộ máy supervisor; driver kế thừa và chỉ viết phần protocol riêng.
+- [`VpnReconnectOptions`](Models/VpnReconnectOptions.cs#L14) — model policy reconnect/backoff/jitter chung; mỗi driver giữ type tên riêng (`WireGuardReconnectOptions`, …) **kế thừa** base này để không vỡ public API.
 
 > **Tái sử dụng tối đa, không viết lại**: base **không** phát minh hành vi mới — chính là vòng lặp các driver đang chạy live, factor lại một lần. Refactor **không đổi hành vi** (toàn bộ test driver hiện có vẫn xanh).
 
@@ -39,8 +39,8 @@ TqkLibrary.VpnClient.Drivers.Core/
 
 | Type | Vai trò | Vị trí |
 |------|---------|--------|
-| `ReconnectingVpnConnection<TState>` | Base abstract (generic theo enum state của driver). Sở hữu: `SwappablePacketChannel Facade`, `LifetimeToken`, lock + cờ `IsRunning`/`IsUserTeardown` + `_supervisorActive`, máy **link-loss → supervisor → reconnect-loop** (backoff mũ + ±jitter), `SetState`/`StateChanged` + log có cấu trúc, clock đơn điệu (`Now()`), teardown (`DisconnectCoreAsync`/`DisposeCoreAsync`). Hook protocol: abstract `EstablishAsync`/`CleanupAttemptResourcesAsync`/`StopAttemptLoop` + 4 thuộc tính state-value + virtual `OnReconnected`. Lifecycle cho subclass gọi: `ConnectCoreAsync`/`MarkRunning`/`MarkConnected`/`OnLinkLost`. | [ReconnectingVpnConnection.cs:25](ReconnectingVpnConnection.cs#L25) |
-| `VpnReconnectOptions` | Policy reconnect/backoff/jitter chung (class **không** sealed — driver kế thừa). `NextBackoff(current)` = `min(MaxBackoff, current × BackoffMultiplier)`. | [Models/VpnReconnectOptions.cs:17](Models/VpnReconnectOptions.cs#L17) |
+| `ReconnectingVpnConnection<TState>` | Base abstract (generic theo enum state của driver). Sở hữu: `SwappablePacketChannel Facade`, `LifetimeToken`, lock + cờ `IsRunning`/`IsUserTeardown` + `_supervisorActive`, máy **link-loss → supervisor → reconnect-loop** (backoff mũ + ±jitter), `SetState`/`StateChanged` + log có cấu trúc, clock đơn điệu (`Now()`), teardown (`DisconnectCoreAsync`/`DisposeCoreAsync`). Hook protocol: abstract `EstablishAsync`/`CleanupAttemptResourcesAsync`/`StopAttemptLoop` + 4 thuộc tính state-value + virtual `OnReconnected`. Lifecycle cho subclass gọi: `ConnectCoreAsync`/`MarkRunning`/`MarkConnected`/`OnLinkLost`. Helper khác: `WithJitter`/`NextRandomBytes`. | [ReconnectingVpnConnection.cs:24](ReconnectingVpnConnection.cs#L24) |
+| `VpnReconnectOptions` | Policy reconnect/backoff/jitter chung (class **không** sealed — driver kế thừa). `NextBackoff(current)` = `min(MaxBackoff, current × BackoffMultiplier)`. | [Models/VpnReconnectOptions.cs:14](Models/VpnReconnectOptions.cs#L14) |
 
 ## Hợp đồng base ↔ subclass
 

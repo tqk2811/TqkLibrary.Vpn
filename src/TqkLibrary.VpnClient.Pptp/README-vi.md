@@ -90,10 +90,10 @@ Length(2 BE) | PPTP-Message-Type(2 BE) | Magic-Cookie(4 = 0x1A2B3C4D) | Control-
 
 ## Luồng nội bộ (control plane, client)
 
-1. **Control connection.** `EstablishControlConnectionAsync` gửi `StartControlConnectionRequest` → đọc `StartControlConnectionReply`; `ResultCode != Successful` ⇒ `InvalidOperationException` (server từ chối) — [PptpControlConnection.cs:66](PptpControlConnection.cs#L68).
-2. **Place call.** `PlaceOutgoingCallAsync(callId)` gửi `OutgoingCallRequest` (CallID = GRE Call-ID ta nhận) → đọc `OutgoingCallReply`; thành công ghi `PeerCallId` = `reply.CallId` (Call-ID ta gắn lên gói GRE gửi đi) — [PptpControlConnection.cs:101](PptpControlConnection.cs#L99).
-3. **Keep-alive & link-info.** `SendEchoRequestAsync` (peer phải Echo-Reply cùng Identifier) + `SendSetLinkInfoAsync` (ACCM) — [PptpControlConnection.cs:135](PptpControlConnection.cs#L131). `ReadMessageAsync` **auto-reply** mọi `Echo-Request` nhận được — [PptpControlConnection.cs:190](PptpControlConnection.cs#L181).
-4. **Teardown.** `ClearCallAsync` (Call-Clear-Request → Call-Disconnect-Notify, về `ControlConnectionEstablished`) rồi `StopControlConnectionAsync` (Stop-Request → Stop-Reply, về `Closed`) — [PptpControlConnection.cs:153](PptpControlConnection.cs#L147).
+1. **Control connection.** `EstablishControlConnectionAsync` gửi `StartControlConnectionRequest` → đọc `StartControlConnectionReply`; `ResultCode != Successful` ⇒ `InvalidOperationException` (server từ chối) — [PptpControlConnection.cs:68](PptpControlConnection.cs#L68).
+2. **Place call.** `PlaceOutgoingCallAsync(callId)` gửi `OutgoingCallRequest` (CallID = GRE Call-ID ta nhận) → đọc `OutgoingCallReply`; thành công ghi `PeerCallId` = `reply.CallId` (Call-ID ta gắn lên gói GRE gửi đi) — [PptpControlConnection.cs:99](PptpControlConnection.cs#L99).
+3. **Keep-alive & link-info.** `SendEchoRequestAsync` (peer phải Echo-Reply cùng Identifier) + `SendSetLinkInfoAsync` (ACCM) — [PptpControlConnection.cs:131](PptpControlConnection.cs#L131). `ReadMessageAsync` **auto-reply** mọi `Echo-Request` nhận được — [PptpControlConnection.cs:181](PptpControlConnection.cs#L181).
+4. **Teardown.** `ClearCallAsync` (Call-Clear-Request → Call-Disconnect-Notify, về `ControlConnectionEstablished`) rồi `StopControlConnectionAsync` (Stop-Request → Stop-Reply, về `Closed`) — [PptpControlConnection.cs:147](PptpControlConnection.cs#L147).
 5. *(Sau, V.6 + F.9)* PPP (`PppEngine`: LCP/MS-CHAPv2/IPCP) + `CcpNegotiator` chạy **trên kênh GRE** dựng từ `LocalCallId`/`PeerCallId`; `MppeSession` từ `MppeSessionFactory` mã hóa payload PPP. **Chưa làm — cần raw-IP F.9.**
 
 ## Bảng chuẩn / nguồn

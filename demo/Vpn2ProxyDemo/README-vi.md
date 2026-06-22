@@ -25,7 +25,7 @@ Luồng: **vpn → TcpIpStack → panel "VPN hỗ trợ gì" → (dns | proxy-se
 ```
 Vpn2ProxyDemo/
 ├── Program.cs                        RootCommand { dns, proxy-server, http-request } -> Parse(args).InvokeAsync()
-├── Properties/launchSettings.json    profile chạy nhanh từng case (proxy/dns × sstp/l2tp / help)
+├── Properties/launchSettings.json    profile chạy nhanh từng case (proxy-server/http-request/dns × sstp/l2tp/openvpn/softether + help)
 ├── VpnProxySource.cs                 IProxySource (partial) bọc TcpIpStack; IsSupportUdp=true, Bind/Ipv6=false; ctor nhận ILoggerFactory? -> sinh ILogger cho mỗi nested source
 ├── VpnProxySource.VpnConnectSource.cs        IConnectSource (nested): mở VpnTcpClient qua tunnel, trả Stream cho ProxyServer; log resolve/connect/lỗi (ILogger?)
 ├── VpnProxySource.VpnUdpAssociateSource.cs   IUdpAssociateSource (nested): egress UDP đa đích qua UdpConnection (SOCKS5 UDP-ASSOCIATE); log associate/send/receive/unbind (ILogger?)
@@ -75,7 +75,7 @@ Với `proxy-server`, proxy được **giữ chạy tới khi nhấn Enter** (ho
 curl -x http://127.0.0.1:18080 https://checkip.amazonaws.com/
 ```
 
-Hoặc dùng **launch profile** ([Properties/launchSettings.json](Properties/launchSettings.json)) — chọn nhanh trong VS/Rider hoặc CLI (`--launch-profile "<tên>"`). Profile có sẵn: `proxy-server sstp/l2tp`, `proxy-server l2tp as LAN proxy`, `http-request sstp/l2tp checkip`, `dns sstp/l2tp`, `help`.
+Hoặc dùng **launch profile** ([Properties/launchSettings.json](Properties/launchSettings.json)) — chọn nhanh trong VS/Rider hoặc CLI (`--launch-profile "<tên>"`). Profile có sẵn: `proxy-server` cho sstp/l2tp/openvpn/softether (đều bind `0.0.0.0:18080`), `http-request` cho sstp/l2tp/openvpn/softether (GET checkip), `dns` cho sstp (resolve example.com qua DNS VPN cấp) và l2tp (github.com qua 8.8.8.8), và `help`. Profile softether kèm sẵn `--watermark watermark.bin` (cần blob THẬT), openvpn trỏ file `.ovpn` mẫu trong `OvpnConfigureFiles/`.
 
 CLI gồm 3 subcommand; target VPN gói trong `--vpn` (URI hoặc đường dẫn `.ovpn`). Option:
 
@@ -107,5 +107,5 @@ CLI gồm 3 subcommand; target VPN gói trong `--vpn` (URI hoặc đường dẫ
 - **SOCKS5 UDP-ASSOCIATE:** proxy hỗ trợ UDP cho client SOCKS5 (`IsSupportUdp=true`). Client gửi datagram qua proxy, `VpnUdpAssociateSource` relay ra ngoài bằng UDP của tunnel rồi trả về (vd `curl --socks5 127.0.0.1:port --resolve ... ` hoặc một DNS client trỏ qua SOCKS5 UDP). Chỉ IPv4; **BIND không hỗ trợ** (stack active-open-only + địa chỉ tunnel private không routable từ internet).
 - **Giữ kết nối (`proxy-server`):** sau khi proxy lên, demo dừng tại bước `ProxyServer` và chờ Enter — tunnel vẫn chạy keepalive + auto-reconnect (xem driver), nên đây là chỗ test "duy trì kết nối": cứ gửi traffic qua proxy liên tục/định kỳ rồi quan sát log reconnect.
 - `--proxy-host 0.0.0.0` mở proxy cho cả máy khác trong LAN — chỉ dùng trên mạng tin cậy (proxy không có auth).
-- Demo tham chiếu project tới 4 driver (`Drivers.Sstp`/`Drivers.L2tpIpsec`/`Drivers.SoftEther`/`Drivers.OpenVpn`) + [`OpenVpn`](../../src/TqkLibrary.VpnClient.OpenVpn) (parse `.ovpn` qua `OpenVpnConfigParser`) và [`src/TqkLibrary.VpnClient.Sockets`](../../src/TqkLibrary.VpnClient.Sockets) (`VpnTcpClient`/`VpnUdpClient`/`TcpIpStack`), cùng NuGet `TqkLibrary.Proxy` 1.0.35 + `Microsoft.Extensions.Logging`/`.Console` 10.0.x. **SoftEther/OpenVPN** dựng một `ILoggerFactory` console riêng cho driver (trace handshake/state/reconnect khi chạy live).
+- Demo `ProjectReference` thẳng tới **4 driver** (`Drivers.Sstp`/`Drivers.L2tpIpsec`/`Drivers.SoftEther`/`Drivers.OpenVpn`) + [`src/TqkLibrary.VpnClient.Sockets`](../../src/TqkLibrary.VpnClient.Sockets) (`VpnTcpClient`/`VpnUdpClient`/`TcpIpStack`); [`OpenVpn`](../../src/TqkLibrary.VpnClient.OpenVpn) (parse `.ovpn` qua `OpenVpnConfigParser`) đến **transitive** qua `Drivers.OpenVpn` và được dùng trực tiếp trong `VpnTunnel.ConnectOpenVpnAsync`. NuGet: `System.CommandLine` 2.0.7 + `TqkLibrary.Proxy` 1.0.35 + `Microsoft.Extensions.Logging` 10.0.8 / `.Console` 10.0.7. **SoftEther/OpenVPN** dựng một `ILoggerFactory` console riêng cho driver (trace handshake/state/reconnect khi chạy live).
 - **Log:** `proxy-server`/`http-request` tạo một `ILoggerFactory` console (mức Information; riêng category `Vpn2ProxyDemo` ở Debug) rồi truyền cho cả `ProxyServer` (log của thư viện proxy) và `VpnProxySource` (log connect/UDP của adapter). `dns` không bật log.

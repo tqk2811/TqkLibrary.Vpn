@@ -38,7 +38,7 @@ namespace TqkLibrary.VpnClient.SoftEther.Tests
             Pack pack = NewHandshake().BuildAdditionalConnectPack(key);
 
             Assert.Equal("additional_connect", pack.GetStr("method"));
-            Assert.Equal(key, pack.GetData("session_name"));
+            Assert.Equal(key, pack.GetData("session_key"));
         }
 
         [Fact]
@@ -65,7 +65,7 @@ namespace TqkLibrary.VpnClient.SoftEther.Tests
             byte[] key = SessionKey();
             var pack = new Pack()
                 .SetInt("error", 0u)
-                .SetData("session_name", key)
+                .SetData("session_key", key)
                 .SetInt("max_connection", 8u)
                 .SetBool("half_connection", true);
 
@@ -79,12 +79,12 @@ namespace TqkLibrary.VpnClient.SoftEther.Tests
         public void ParseWelcome_DefaultsMaxConnectionToOne_WhenAbsentOrZero()
         {
             SoftEtherWelcomeInfo a = NewHandshake().ParseWelcome(
-                new Pack().SetInt("error", 0u).SetData("session_name", SessionKey()));
+                new Pack().SetInt("error", 0u).SetData("session_key", SessionKey()));
             Assert.Equal(1u, a.MaxConnection);
             Assert.False(a.HalfConnection);
 
             SoftEtherWelcomeInfo b = NewHandshake().ParseWelcome(
-                new Pack().SetInt("error", 0u).SetData("session_name", SessionKey()).SetInt("max_connection", 0u));
+                new Pack().SetInt("error", 0u).SetData("session_key", SessionKey()).SetInt("max_connection", 0u));
             Assert.Equal(1u, b.MaxConnection);
         }
 

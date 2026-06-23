@@ -115,7 +115,7 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther.Tests
 
         async Task SendWelcomeAsync(DuplexPipe pipe)
         {
-            var welcome = new Pack().SetInt("error", 0u).SetData("session_name", _sessionKey)
+            var welcome = new Pack().SetInt("error", 0u).SetData("session_key", _sessionKey)
                 .SetInt("max_connection", _grantedMaxConnection)
                 .SetBool("half_connection", _halfConnection);
             await pipe.WriteAsync(SoftEtherHttpPackCodec.BuildOkResponse(welcome)).ConfigureAwait(false);
@@ -128,7 +128,7 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther.Tests
             Pack pack = SoftEtherHttpPackCodec.ParseBody(body);
             if (pack.GetStr("method") != "additional_connect")
                 throw new SoftEtherProtocolException("server: expected additional_connect.");
-            byte[]? key = pack.GetData("session_name");
+            byte[]? key = pack.GetData("session_key");
             if (key is null || !key.SequenceEqual(_sessionKey))
                 throw new SoftEtherProtocolException("server: rejected additional_connect (unknown session key).");
         }

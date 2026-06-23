@@ -1,4 +1,3 @@
-using System.Buffers.Binary;
 using System.Text;
 using System.Threading.Channels;
 using TqkLibrary.VpnClient.Abstractions.Transport.Interfaces;
@@ -204,7 +203,7 @@ namespace TqkLibrary.VpnClient.SoftEther.Tests
         public void ParseWelcome_Success_ReturnsSessionKey()
         {
             byte[] key = Enumerable.Range(0, 20).Select(i => (byte)i).ToArray();
-            var pack = new Pack().SetInt("error", 0u).SetData("session_name", key);
+            var pack = new Pack().SetInt("error", 0u).SetData("session_key", key);
             SoftEtherWelcomeInfo welcome = NewHandshake().ParseWelcome(pack);
             Assert.Equal(key, welcome.SessionKey);
         }
@@ -224,22 +223,19 @@ namespace TqkLibrary.VpnClient.SoftEther.Tests
         {
             var pack = new Pack().SetStr("hello", "softether").SetInt("version", 5u);
             byte[] body = SoftEtherHttpPackCodec.FrameBody(pack);
-            // First 4 bytes = big-endian length of the PACK bytes.
-            uint declared = BinaryPrimitives.ReadUInt32BigEndian(body);
-            Assert.Equal((uint)(body.Length - 4), declared);
+            // The body is the serialized PACK bytes verbatim — no length prefix (the genuine server delimits the PACK
+            // by Content-Length only; HttpClientSend/HttpServerSend POST PackToBuf(p) directly — Mayaqua Network.c).
+            Assert.Equal(pack.ToBytes(), body);
             Pack parsed = SoftEtherHttpPackCodec.ParseBody(body);
             Assert.Equal("softether", parsed.GetStr("hello"));
             Assert.Equal(5u, parsed.GetInt("version"));
         }
 
         [Fact]
-        public void HttpPackCodec_ParseBody_RejectsTooShortOrInconsistent()
+        public void HttpPackCodec_ParseBody_RejectsTooShort()
         {
+            // A 2-byte body cannot even hold the uint32 element count → malformed.
             Assert.Throws<FormatException>(() => SoftEtherHttpPackCodec.ParseBody(new byte[] { 0, 0 }));
-            // length prefix claims more bytes than present
-            byte[] bad = new byte[6];
-            BinaryPrimitives.WriteUInt32BigEndian(bad, 100u);
-            Assert.Throws<FormatException>(() => SoftEtherHttpPackCodec.ParseBody(bad));
         }
 
         // ---- End-to-end over an in-memory stub server -----------------------------------------------
@@ -254,7 +250,7 @@ namespace TqkLibrary.VpnClient.SoftEther.Tests
             var serverTask = server.RunSuccessfulLoginAsync(serverRandom, sessionKey, "DEFAULT", "alice", "P@ssw0rd");
 
             var request = new SoftEtherLoginRequest { HubName = "DEFAULT", UserName = "alice", Password = "P@ssw0rd" };
-            SoftEtherWelcomeInfo welcome = await NewHandshake()
+            (SoftEtherWelcomeInfo welcome, _) = await NewHandshake()
                 .RunAsync(clientSide, "vpn.example.com", request);
 
             Assert.Equal(sessionKey, welcome.SessionKey);
@@ -337,7 +333,7 @@ namespace TqkLibrary.VpnClient.SoftEther.Tests
                 Assert.Equal(expectedSecure, login.GetData("secure_password"));
 
                 // 4) Reply with the welcome PACK.
-                var welcome = new Pack().SetInt("error", 0u).SetData("session_name", sessionKey);
+                var welcome = new Pack().SetInt("error", 0u).SetData("session_key", sessionKey);
                 await _serverEnd.WriteAsync(SoftEtherHttpPackCodec.BuildOkResponse(welcome));
             }
 

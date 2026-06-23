@@ -189,13 +189,12 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther.Tests
             byte[] sessionKey = NewSessionKey();
             Pack reply = _rejectLogin
                 ? new Pack().SetInt("error", _rejectErrorCode)
-                : new Pack().SetInt("error", 0u).SetData("session_name", sessionKey);
+                : new Pack().SetInt("error", 0u).SetData("session_key", sessionKey);
             await _pipe.WriteAsync(SoftEtherHttpPackCodec.BuildOkResponse(reply)).ConfigureAwait(false);
 
-            // use_encrypt: from here the data session is RC4-encrypted below the framing (the server is the mirror of
-            // the client's CreateClient). The handshake above ran in plaintext on the raw pipe.
-            if (!_rejectLogin && _useEncrypt)
-                _dataTransport = SoftEtherEncryptedTransport.CreateServer(_pipe, sessionKey);
+            // use_encrypt only selects whether the genuine server keeps the data plane inside SSL (it does, when
+            // fast-RC4 is off — which the driver never requests). On this in-memory pipe the "SSL" layer is the pipe
+            // itself, so the data session rides it directly — no extra RC4 below the block framing.
         }
 
         static byte[] NewSessionKey()

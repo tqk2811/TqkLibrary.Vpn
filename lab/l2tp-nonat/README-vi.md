@@ -5,7 +5,7 @@ Lab RIÊNG để validate **P0.8c** của driver L2TP/IPsec repo TqkLibrary: cli
 dưới NAT-T mode **HonestFirst**.
 
 Server = **strongSwan** (IKEv1 PSK + ESP transport, `forceencaps=no`) + **xl2tpd** + **pppd CHUẨN**
-(KHÔNG accel-ppp — accel-ppp hỏng FSM IPCP, xem [`../README-vi.md`](../README-vi.md) §7.6).
+(KHÔNG accel-ppp — accel-ppp hỏng FSM IPCP, xem [`../README-vi.md`](../README-vi.md) §7.6; **và** module L2TP của accel-ppp cũng IPv4-only như xl2tpd — kiểm source `l2tp.c` = `socket(PF_INET)`/`sockaddr_in`).
 Client = binary demo `.NET` self-contained publish, chạy trong container cùng bridge.
 
 ---
@@ -59,11 +59,15 @@ docker exec lab-l2tp-server ipsec statusall | grep -E 'ESTABLISHED|INSTALLED|byt
 `ESTABLISHED fd10::2…fd10::3` + CHILD SA `INSTALLED, TRANSPORT, ESP in UDP` + **giải mã `bytes_i>0`** gói
 ESP-in-UDP/IPv6 của client (checksum UDP-v6 pseudo-header đúng) ⇒ đường IKE-NAT-D + ESP-encap-trên-IPv6 chuẩn.
 
-> ⚠️ **Giới hạn server-side (KHÔNG phải client):** full L2TP/PPP-over-IPv6 **chưa lên** vì **xl2tpd 1.3.16
-> bind `0.0.0.0:1701` (v4-only)** — `set_ip` từ chối địa chỉ IPv6 (`listen-addr = ::` → *"host 'host '::' not found"*
-> → xl2tpd không start). Vì vậy gói L2TP/1701-trên-IPv6 (inner của ESP transport, dst `fd10::2`) không tới được
-> xl2tpd ⇒ `bytes_o = 0`, client báo *"L2TP no ack after 8 retransmits"*. Cần **LNS hỗ trợ IPv6** (vd accel-ppp)
-> để PPP/IPCP-over-v6 chạy nốt. SSTP-over-IPv6 full tunnel đã validate ở [`../sstp-pppd`](../sstp-pppd/README-vi.md).
+> ⚠️ **Residual external-infeasible — đã CHỨNG MINH (KHÔNG phải client):** full L2TP/PPP-over-IPv6 **không lên được**
+> vì **mọi L2TPv2 LNS có sẵn bind L2TP IPv4-only.** xl2tpd 1.3.16 bind `0.0.0.0:1701` — `set_ip` từ chối IPv6
+> (`listen-addr = ::` → *"host '::' not found"* → không start). **accel-ppp 9ddf513 cũng v4-only** (kiểm source:
+> L2TP control listener = `socket(PF_INET)`/`sockaddr_in`, **0** `sockaddr_in6` trong `accel-pppd/ctrl/l2tp/l2tp.c`
+> — dù module SSTP/ipv6/radius của chính accel-ppp CÓ `sockaddr_in6` ⇒ L2TP cố ý v4-only). Vì vậy gói L2TP/1701-trên-IPv6
+> (inner của ESP transport, dst `fd10::2`) không tới được LNS ⇒ `bytes_o = 0`, client báo *"L2TP no ack after 8 retransmits"*.
+> Hơn nữa **carrier-độc-lập**: gói L2TP/UDP inner mang outer-addr IPv6 bất kể carrier (native-ESP/ESP-in-UDP) ⇒
+> **không thay đổi phía client nào mở khóa được** — chặn ở tầng LNS. SSTP-over-IPv6 full tunnel đã validate ở
+> [`../sstp-pppd`](../sstp-pppd/README-vi.md) (sstpd hỗ trợ IPv6, khác L2TP).
 >
 > ⚠️ **Docker DNS quirk:** trên bridge này, embedded DNS resolve được **container name** (`lab-l2tp-server`)
 > nhưng **SERVFAIL service alias** (`l2tp-server`) ⇒ dùng container name khi test v6. (Không liên quan client —

@@ -1,0 +1,58 @@
+# =====================================================================
+# lab/openconnect — compose RIÊNG cho VALIDATE LIVE driver V.5 OpenConnect.
+#
+# 2 container trên CÙNG một Docker bridge tùy biến 'labnet':
+#   - ocserv-server : ocserv (OpenConnect server) tự host (log quan sát + occtl)
+#   - dotnet-client : binary demo .NET self-contained
+#                     (--vpn openconnect://testuser:testpass@ocserv-server)
+#
+# Vì sao AN TOÀN (giống lab ikev2-native/wireguard/openvpn):
+#   - KHÔNG network_mode: host  -> ocserv tạo TUN CHỈ trong netns container.
+#   - KHÔNG privileged-trên-host -> server chỉ NET_ADMIN + /dev/net/tun.
+#   - 2 container cùng bridge -> client gửi gói (TCP/443 CSTP + UDP/443 DTLS) tới
+#     server qua tên service. KHÔNG publish cổng ra ngoài: test nội bộ bridge.
+#
+# Đổi DTLS=0 (TLS-only) / REKEY=<giây> (rekey ngắn) bằng biến môi trường.
+# =====================================================================
+services:
+  ocserv-server:
+    build:
+      context: .
+    image: lab-openconnect:24.04
+    container_name: lab-oc-server
+    restart: "no"
+    cap_add:
+      - NET_ADMIN          # tạo TUN + route trong netns container (KHÔNG đụng VM)
+    devices:
+      - /dev/net/tun       # ocserv cần /dev/net/tun để tạo tun
+    sysctls:
+      - net.ipv4.ip_forward=1
+    environment:
+      OC_USER: "${OC_USER:-testuser}"
+      OC_PASS: "${OC_PASS:-testpass}"
+      DTLS: "${DTLS:-1}"             # 1 = bật DTLS data path (udp-port=443); 0 = TLS-only
+      REKEY: "${REKEY:-}"           # rỗng = rekey-time mặc định; đặt số (giây) để test rekey ngắn
+    networks:
+      - labnet
+
+  dotnet-client:
+    # runtime-deps đủ chạy binary self-contained publish (linux-x64). KHÔNG cần SDK.
+    image: mcr.microsoft.com/dotnet/runtime-deps:8.0
+    container_name: lab-oc-client
+    restart: "no"
+    # OpenConnect chở data trên TCP/UDP socket thường ⇒ KHÔNG cần CAP_NET_RAW.
+    networks:
+      - labnet
+    volumes:
+      # Binary publish demo (đặt vào ./client-bin trên VM trước).
+      - ./client-bin:/opt/client:ro
+    working_dir: /opt/client
+    # Container đứng yên: runbook 'docker exec' chạy demo với --vpn openconnect://...
+    entrypoint: ["sleep", "infinity"]
+    depends_on:
+      - ocserv-server
+
+networks:
+  # bridge tùy biến: client gửi gói tới server qua tên service 'ocserv-server'.
+  labnet:
+    driver: bridge

@@ -359,10 +359,14 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
             try { natt = StartAttemptChannel(serverIp, localPort: NatTraversal.IkePort, cancellationToken); }
             catch (System.Net.Sockets.SocketException) { return null; }
 
-            var ike = new IkeV1Client(_preSharedKey, IPAddress.Any, serverIp);
-            _ike = ike;
             IPAddress localIp = natt.GetLocalAddress();
             ushort localPort = (ushort)natt.LocalPort;
+            // Honest identity: send the real bound source address as the Phase 1 / Quick Mode ID (ID_ci), unlike the
+            // forced path which deliberately claims IPAddress.Any. A gateway that sees ID_ci = 0.0.0.0 while the packet
+            // arrives from the real address concludes there is a NAT and installs UDP-encapsulated ESP (espinudp) — which
+            // then drops our native proto-50 carrier as an XfrmInStateMismatch. The real ID keeps the SA plain ESP.
+            var ike = new IkeV1Client(_preSharedKey, localIp, serverIp);
+            _ike = ike;
 
             ike.ProcessMainMode2(await ExchangeIkeAsync(natt, ike.BuildMainMode1(), cancellationToken).ConfigureAwait(false));
             ike.ProcessMainMode4(await ExchangeIkeAsync(natt,

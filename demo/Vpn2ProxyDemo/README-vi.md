@@ -88,6 +88,7 @@ CLI gồm 3 subcommand; target VPN gói trong `--vpn` (URI hoặc đường dẫ
 | `--watermark` | *(rỗng)* | **(Chỉ SoftEther)** đường dẫn file chứa **watermark blob THẬT** của SoftEther — server thật từ chối placeholder (HTTP 403). Rỗng ⇒ placeholder (chỉ chạy với server giả lập offline). Blob là dữ liệu GPL, không có sẵn trong repo |
 | `--ipv6` | `false` | **(Chỉ SSTP/L2TP)** bật IPv6 trong tunnel: IPV6CP + lấy địa chỉ **global** qua SLAAC/DHCPv6 trên link PPP (P1.1). Best-effort — server không cấp IPv6 ⇒ vẫn IPv4 (chỉ thêm ~2s chờ). Khi có v6 global, `TcpIpStack` chạy dual-stack + proxy bật `IsSupportIpv6` (CONNECT/UDP nhận đích IPv6) |
 | `--native-esp` | `false` | **(Chỉ L2TP/IPsec)** chở **ESP gốc trên IP proto-50** (native ESP) cho gateway **no-NAT**, dưới chế độ NAT-T `HonestFirst` (P0.8c) thay vì float UDP/4500 — **cần quyền raw socket/CAP_NET_RAW** (Administrator/root). Scheme khác L2TP ⇒ cờ bị **bỏ qua** (in cảnh báo, không crash) |
+| `--l2tp-extra-sessions` | `0` | **(Chỉ L2TP/IPsec)** sau khi tunnel lên, mở thêm **N phiên L2TP** trên **cùng tunnel/IKE-SA** (RFC 2661 multi-session — P1.7); in địa chỉ độc lập từng phiên (mỗi phiên PPP/IPCP riêng). **Best-effort**: đa số remote-access server chỉ cho 1 phiên ⇒ đáp **CDN** ⇒ ném `VpnServerRejectedException`. Scheme khác L2TP ⇒ bỏ qua |
 
 **`dns`** thêm `--dns-server` (DNS IPv4 cho probe UDP; rỗng = DNS VPN cấp, fallback `8.8.8.8`) và `--resolve` (`google.com`; tên miền phân giải DNS-over-UDP qua tunnel).
 

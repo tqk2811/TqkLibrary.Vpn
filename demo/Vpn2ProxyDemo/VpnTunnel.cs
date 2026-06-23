@@ -104,7 +104,7 @@ namespace Vpn2ProxyDemo
         /// <paramref name="enableIpv6"/>: bật IPV6CP + lấy IPv6 global qua SLAAC/DHCPv6 trên link PPP-trong-L2TP (P1.1, best-effort).
         /// <paramref name="useNativeEsp"/>: bật carrier ESP gốc (proto-50) qua raw-IP cho gateway no-NAT dưới chế độ
         /// <see cref="L2tpIpsecNatTraversalMode.HonestFirst"/> (P0.8c) thay vì float UDP/4500 — cần quyền raw socket (CAP_NET_RAW/Administrator).</summary>
-        public static async Task<VpnTunnel> ConnectL2tpAsync(string host, string user, string pass, string preSharedKey, CancellationToken ct, bool enableIpv6 = false, bool useNativeEsp = false)
+        public static async Task<VpnTunnel> ConnectL2tpAsync(string host, string user, string pass, string preSharedKey, CancellationToken ct, bool enableIpv6 = false, bool useNativeEsp = false, int extraSessions = 0)
         {
             Console.WriteLine("=== [L2TP/IPsec] ===");
             // P0.8c: khi bật native-ESP, cấp raw-IP factory (ESP proto-50) + đặt NAT-T mode HonestFirst để chở ESP gốc khi
@@ -132,9 +132,21 @@ namespace Vpn2ProxyDemo
                 IPAddress? v6 = GlobalV6(vpn.AssignedAddressV6);
                 Console.WriteLine($"[l2tp] tunnel up. assigned IP = {vpn.AssignedAddress}, ipv6 = {v6?.ToString() ?? "(none)"}, dns = {vpn.AssignedDns}");
 
+                // P1.7: mở thêm phiên L2TP trên CÙNG tunnel/IKE-SA — mỗi phiên chạy PPP/IPCP riêng ⇒ địa chỉ độc lập.
+                // Giữ tham chiếu (qua closure dispose) để phiên phụ sống cùng tunnel. Server chỉ-1-phiên ⇒ ném (CDN).
+                var extras = new List<TqkLibrary.VpnClient.Drivers.L2tpIpsec.Models.L2tpIpsecAdditionalSession>();
+                for (int i = 1; i <= extraSessions; i++)
+                {
+                    using var extraCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    extraCts.CancelAfter(TimeSpan.FromSeconds(30));
+                    var extra = await vpn.OpenAdditionalSessionAsync(extraCts.Token);
+                    extras.Add(extra);
+                    Console.WriteLine($"[l2tp] phiên phụ #{i} lên. assigned IP = {extra.AssignedAddress}, dns = {extra.AssignedDns} (cùng IKE/IPsec SA, PPP/IPCP riêng — P1.7)");
+                }
+
                 var stack = new TcpIpStack(vpn.PacketChannel, vpn.AssignedAddress, v6);
                 var driver = new L2tpIpsecDriver();
-                return new VpnTunnel(stack, async () => { await vpn.DisposeAsync(); loggerFactory.Dispose(); },
+                return new VpnTunnel(stack, async () => { GC.KeepAlive(extras); await vpn.DisposeAsync(); loggerFactory.Dispose(); },
                     vpn.AssignedAddress, vpn.PacketChannel.Mtu, driver.Capabilities, driver.Name, vpn.AssignedDns, v6);
             }
             catch

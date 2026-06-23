@@ -19,8 +19,13 @@ namespace TqkLibrary.VpnClient.Crypto.Noise
     /// </summary>
     public sealed class NoiseSymmetricState
     {
-        /// <summary>WireGuard handshake construction string — hashed to seed the chaining key (and the transcript hash).</summary>
-        public const string Construction = "Noise_IKpsk2_25519_ChaCha20Poly1305_BLAKE2s";
+        /// <summary>WireGuard handshake construction string — hashed to seed the chaining key (and the transcript hash).
+        /// This is the <b>exact</b> string the reference WireGuard implementations hash (wireguard-go
+        /// <c>NoiseConstruction</c> / the kernel module): the cipher is abbreviated <c>ChaChaPoly</c>, <b>not</b> the
+        /// fully-spelt Noise protocol name <c>ChaCha20Poly1305</c>. Getting this wrong still self-interops (both ends
+        /// seed the same wrong <c>ck0</c>/<c>h0</c>) but a real <c>wg</c> peer rejects the initiation
+        /// ("invalid initiation message") because its transcript hash diverges — only verified live (lab Q.1, V.3).</summary>
+        public const string Construction = "Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s";
 
         /// <summary>WireGuard identifier string — mixed into the transcript hash right after initialisation.</summary>
         public const string Identifier = "WireGuard v1 zx2c4 Jason@zx2c4.com";

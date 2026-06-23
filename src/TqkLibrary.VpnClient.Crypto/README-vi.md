@@ -106,7 +106,7 @@ TqkLibrary.VpnClient.Crypto/
 | `Blake2sKeyedMac` | Keyed BLAKE2s output 1..32B (WG mac1/mac2 16B), `static ComputeMac(key, input, output)` | [Noise/Blake2sKeyedMac.cs:11](Noise/Blake2sKeyedMac.cs#L11) |
 | `HmacBlake2sPrf` | HMAC-BLAKE2s (RFC 2104, block 64, **không** phải keyed-BLAKE2s), output 32B (`IPrf`) | [Noise/HmacBlake2sPrf.cs:14](Noise/HmacBlake2sPrf.cs#L14) |
 | `NoiseKdf` | KDF Noise/WireGuard (HKDF RFC 5869 trên HMAC-BLAKE2s); `static Derive/Kdf1/Kdf2/Kdf3` | [Noise/NoiseKdf.cs:11](Noise/NoiseKdf.cs#L11) |
-| `NoiseSymmetricState` | Noise SymmetricState (spec §5.2) cho WireGuard `Noise_IKpsk2_25519_ChaCha20Poly1305_BLAKE2s`: `InitializeWireGuard`/`InitializeSymmetric`/`MixHash`/`MixKey` (Kdf2)/`MixKeyAndHash` (Kdf3, PSK)/`EncryptAndHash`+`DecryptAndHash` (ChaCha20-Poly1305 nonce `0^4‖counter` LE, AAD = `h`)/`Split` (Kdf2 → cặp transport key 32B); DI `IPrf`/`IHashAlgo`/`IAeadCipher` (tái dùng nguyên primitive Noise/) | [Noise/NoiseSymmetricState.cs:20](Noise/NoiseSymmetricState.cs#L20) |
+| `NoiseSymmetricState` | Noise SymmetricState (spec §5.2) cho WireGuard `Noise_IKpsk2_25519_ChaCha20Poly1305_BLAKE2s` (**seed string** = `Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s` — cipher viết tắt, đúng `wg` thật; **đã sửa bug + validate live V.3**): `InitializeWireGuard`/`InitializeSymmetric`/`MixHash`/`MixKey` (Kdf2)/`MixKeyAndHash` (Kdf3, PSK)/`EncryptAndHash`+`DecryptAndHash` (ChaCha20-Poly1305 nonce `0^4‖counter` LE, AAD = `h`)/`Split` (Kdf2 → cặp transport key 32B); DI `IPrf`/`IHashAlgo`/`IAeadCipher` (tái dùng nguyên primitive Noise/) | [Noise/NoiseSymmetricState.cs:23](Noise/NoiseSymmetricState.cs#L23) |
 
 ## Chuẩn / RFC tuân thủ
 

@@ -16,10 +16,10 @@ namespace TqkLibrary.VpnClient.WireGuard
     /// </summary>
     public static class WireGuardConstants
     {
-        /// <summary>Handshake construction string: <c>"Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s"</c> as named in the WireGuard
-        /// whitepaper. The concrete Noise implementation uses the fully-spelt cipher name
-        /// (<see cref="NoiseSymmetricState.Construction"/>, <c>ChaCha20Poly1305</c>) which is what actually seeds the
-        /// chaining key — that constant is the authoritative one and what every interop test hashes.</summary>
+        /// <summary>Handshake construction string: <c>"Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s"</c> — the <b>exact</b>
+        /// string the reference WireGuard hashes (the cipher is abbreviated <c>ChaChaPoly</c>, not the fully-spelt
+        /// <c>ChaCha20Poly1305</c>). Re-exported from <see cref="NoiseSymmetricState.Construction"/> (the single source
+        /// of truth that seeds the chaining key) so the two can never drift.</summary>
         public const string Construction = NoiseSymmetricState.Construction;
 
         /// <summary>Identifier string mixed into the transcript hash right after construction:

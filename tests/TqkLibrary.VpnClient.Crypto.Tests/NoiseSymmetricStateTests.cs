@@ -22,9 +22,10 @@ namespace TqkLibrary.VpnClient.Crypto.Tests
         }
 
         // Intermediate WireGuard handshake vectors: ck0 = BLAKE2s(CONSTRUCTION), h0 = BLAKE2s(ck0 || IDENTIFIER).
-        // Computed via the (separately KAT-verified) Blake2s primitive; these are the documented WireGuard seeds.
-        const string ExpectedCk0 = "d6c6e8af44c832ea3aa672c153b680082060689c14153e519bd2eae69622d345";
-        const string ExpectedH0 = "280a69faf5ad7a406832fbb17637096b89e61507b1704ec8aa5ae2bcfd4b2e25";
+        // These are the canonical reference WireGuard seeds (InitialChainKey / InitialHash) — verified live against a
+        // real wg peer (V.3): the construction string is "Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s" (abbreviated cipher).
+        const string ExpectedCk0 = "60e26daef327efc02ec335e2a025d2d016eb4206f87277f52d38d1988b78cd36";
+        const string ExpectedH0 = "2211b361081ac566691243db458ad5322d9c6c662293e8b70ee19c65ba079ef3";
 
         [Fact]
         public void InitializeWireGuard_MatchesDocumentedConstructionAndIdentifierHashes()

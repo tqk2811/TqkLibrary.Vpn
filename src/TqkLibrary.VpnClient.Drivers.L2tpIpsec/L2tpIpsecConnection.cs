@@ -751,11 +751,12 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
         // ---- rekey: refresh the IKE SA (Phase 1) in place — re-Main-Mode, move the ESP CHILD SA onto the new SA ----
 
         // The ISAKMP SA is nearing its 8h expiry. Instead of dropping the tunnel and reconnecting, negotiate a brand-new
-        // ISAKMP SA (fresh cookies, DH, SKEYID*) with a full Main Mode on the same already-floated UDP/4500 channel, run
-        // a Quick Mode under it for a fresh ESP CHILD SA, swap the data plane onto it (make-before-break — keep the old
-        // inbound for a grace period), then swing every steady-state exchange (DPD / Phase 2 rekey / teardown) to the new
-        // SA. The data plane never drops. Mirrors the Phase 2 rekey above; both share _rekeyInProgress so the two never
-        // run a Quick Mode (or a SwapSession) at the same time.
+        // ISAKMP SA (fresh cookies, DH, SKEYID*) with a full Main Mode on the same channel the handshake settled on
+        // (forced NAT-T → UDP/4500; native ESP → UDP/500), run a Quick Mode under it for a fresh ESP CHILD SA, swap the
+        // data plane onto it (make-before-break — keep the old inbound for a grace period), then swing every steady-state
+        // exchange (DPD / Phase 2 rekey / teardown) to the new SA. The data plane never drops (the ESP carrier — raw
+        // proto-50 or ESP-in-UDP — is preserved; only the SA keys/SPI change). Mirrors the Phase 2 rekey above; both
+        // share _rekeyInProgress so the two never run a Quick Mode (or a SwapSession) at the same time.
         async Task RekeyPhase1Async()
         {
             if (!IsRunning) return;
@@ -774,13 +775,32 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
                 IPAddress? serverIp = _serverIp;
                 if (natt == null || oldIke == null || transport == null || serverIp == null) return;
 
-                // A new ISAKMP SA via a full Main Mode on the floated channel. NAT-D mirrors forced mode (claim source
-                // port 500) so the gateway stays floated on 4500 just as it was for the original handshake.
-                var newIke = new IkeV1Client(_preSharedKey, IPAddress.Any, serverIp);
-                _rekeyIke = newIke;
-
-                newIke.ProcessMainMode2(await ExchangePhase1RekeyAsync(newIke, newIke.BuildMainMode1()).ConfigureAwait(false));
-                newIke.ProcessMainMode4(await ExchangePhase1RekeyAsync(newIke, newIke.BuildMainMode3(IPAddress.Any, serverIp)).ConfigureAwait(false));
+                // A new ISAKMP SA via a full Main Mode on the channel the original handshake settled on. The NAT-D
+                // identity must reproduce the ORIGINAL mode's verdict so the gateway installs the new CHILD SA on the
+                // SAME carrier the data plane already uses:
+                //  - forced NAT-T (floated UDP/4500): claim source port 500 (IPAddress.Any) so the gateway stays floated.
+                //  - native ESP (IKE on UDP/500, proto-50): send the real bound address as identity + prefer plain
+                //    Transport in Quick Mode, so the gateway sees no-NAT and installs a native (non-espinudp) CHILD SA —
+                //    matching the raw proto-50 carrier (SwapSession keeps the carrier; only the SA keys/SPI change).
+                IDatagramTransport? nativeEsp = _nativeEsp;
+                IkeV1Client newIke;
+                if (nativeEsp != null)
+                {
+                    IPAddress localIp = natt.GetLocalAddress();
+                    ushort localPort = (ushort)natt.LocalPort;
+                    newIke = new IkeV1Client(_preSharedKey, localIp, serverIp) { PreferNativeTransport = true };
+                    _rekeyIke = newIke;
+                    newIke.ProcessMainMode2(await ExchangePhase1RekeyAsync(newIke, newIke.BuildMainMode1()).ConfigureAwait(false));
+                    newIke.ProcessMainMode4(await ExchangePhase1RekeyAsync(newIke,
+                        newIke.BuildMainMode3(localIp, localPort, serverIp, (ushort)NatTraversal.IkePort)).ConfigureAwait(false));
+                }
+                else
+                {
+                    newIke = new IkeV1Client(_preSharedKey, IPAddress.Any, serverIp);
+                    _rekeyIke = newIke;
+                    newIke.ProcessMainMode2(await ExchangePhase1RekeyAsync(newIke, newIke.BuildMainMode1()).ConfigureAwait(false));
+                    newIke.ProcessMainMode4(await ExchangePhase1RekeyAsync(newIke, newIke.BuildMainMode3(IPAddress.Any, serverIp)).ConfigureAwait(false));
+                }
                 if (!newIke.ProcessMainMode6(await ExchangePhase1RekeyAsync(newIke, newIke.BuildMainMode5()).ConfigureAwait(false)))
                     return; // PSK / HASH_R mismatch on the new SA — keep the current SA and retry
 

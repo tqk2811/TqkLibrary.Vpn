@@ -4,18 +4,18 @@ using System.Net.Sockets;
 using System.Security.Authentication;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
-using TqkLibrary.VpnClient.Drivers.Sstp.Transport;
+using TqkLibrary.VpnClient.Transport.Tls;
 using Xunit;
 
-namespace TqkLibrary.VpnClient.Sstp.Tests
+namespace TqkLibrary.VpnClient.Transport.Tls.Tests
 {
     /// <summary>
-    /// Offline coverage for the configurable TLS certificate-validation callback on <see cref="TlsByteStream"/> (P0.6).
-    /// Each test runs a real TLS handshake against a loopback <see cref="TcpListener"/> (no external network — so this
-    /// is NOT marked Integration), proving the callback reaches <see cref="SslStream"/> and gates the handshake while
-    /// the server certificate is still captured for the SSTP crypto binding.
+    /// Offline coverage for the shared TLS byte stream (<see cref="TlsByteStream"/>, roadmap F.1). Each test runs a real
+    /// TLS handshake against a loopback <see cref="TcpListener"/> (no external network — so this is NOT marked
+    /// Integration), proving the cert-validation callback reaches <see cref="SslStream"/> and gates the handshake (P0.6),
+    /// the server certificate is captured for the SSTP crypto binding, both constructors connect, and data round-trips.
     /// </summary>
-    public class TlsByteStreamCertCallbackTests
+    public class TlsByteStreamTests
     {
         [Fact]
         public async Task Connect_NoCallback_AcceptsSelfSignedCert_AndCapturesIt()
@@ -29,6 +29,28 @@ namespace TqkLibrary.VpnClient.Sstp.Tests
                 Task server = RunTlsServerAsync(listener, serverCert);
 
                 using var client = new TlsByteStream("127.0.0.1", port); // no callback ⇒ accept any cert
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                await client.ConnectAsync(cts.Token);
+
+                Assert.NotNull(client.RemoteCertificate);
+                Assert.Equal(serverCert.Thumbprint, client.RemoteCertificate!.Thumbprint);
+                await server;
+            }
+            finally { listener.Stop(); }
+        }
+
+        [Fact]
+        public async Task Connect_PreResolvedEndpoint_Works_AndCapturesCert()
+        {
+            using var serverCert = CreateServerCert();
+            var listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            try
+            {
+                int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+                Task server = RunTlsServerAsync(listener, serverCert);
+
+                using var client = new TlsByteStream("127.0.0.1", new IPEndPoint(IPAddress.Loopback, port));
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
                 await client.ConnectAsync(cts.Token);
 
@@ -92,6 +114,63 @@ namespace TqkLibrary.VpnClient.Sstp.Tests
             finally { listener.Stop(); }
         }
 
+        [Fact]
+        public async Task ReadWrite_RoundTripsOverTls()
+        {
+            using var serverCert = CreateServerCert();
+            var listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            try
+            {
+                int port = ((IPEndPoint)listener.LocalEndpoint).Port;
+                // Server: handshake then echo the first 5 bytes back.
+                Task server = Task.Run(async () =>
+                {
+                    try
+                    {
+                        using TcpClient s = await listener.AcceptTcpClientAsync();
+                        using var ssl = new SslStream(s.GetStream(), leaveInnerStreamOpen: false);
+                        await ssl.AuthenticateAsServerAsync(serverCert);
+                        byte[] buf = new byte[5];
+                        int read = 0;
+                        while (read < buf.Length)
+                        {
+                            int r = await ssl.ReadAsync(buf, read, buf.Length - read);
+                            if (r == 0) break;
+                            read += r;
+                        }
+                        await ssl.WriteAsync(buf, 0, read);
+                    }
+                    catch { }
+                });
+
+                using var client = new TlsByteStream("127.0.0.1", port);
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                await client.ConnectAsync(cts.Token);
+
+                await client.WriteAsync(new byte[] { 1, 2, 3, 4, 5 }, cts.Token);
+                byte[] echo = new byte[5];
+                int got = 0;
+                while (got < echo.Length)
+                {
+                    int r = await client.ReadAsync(echo.AsMemory(got), cts.Token);
+                    if (r == 0) break;
+                    got += r;
+                }
+
+                Assert.Equal(new byte[] { 1, 2, 3, 4, 5 }, echo);
+                await server;
+            }
+            finally { listener.Stop(); }
+        }
+
+        [Fact]
+        public async Task ReadAsync_BeforeConnect_Throws()
+        {
+            using var client = new TlsByteStream("127.0.0.1", 443);
+            await Assert.ThrowsAsync<InvalidOperationException>(() => client.ReadAsync(new byte[4]).AsTask());
+        }
+
         // Accepts one TLS client over loopback and completes the server handshake; swallows the failure a rejecting
         // client triggers. The handshake completing is all the client side needs, so it returns without reading data.
         static async Task RunTlsServerAsync(TcpListener listener, X509Certificate2 cert)
@@ -110,7 +189,7 @@ namespace TqkLibrary.VpnClient.Sstp.Tests
         static X509Certificate2 CreateServerCert()
         {
             using var rsa = RSA.Create(2048);
-            var request = new CertificateRequest("CN=tls-callback-test", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+            var request = new CertificateRequest("CN=tls-transport-test", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
             using var ephemeral = request.CreateSelfSigned(DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch.AddYears(10));
             return new X509Certificate2(ephemeral.Export(X509ContentType.Pfx));
         }

@@ -11,11 +11,12 @@ using TqkLibrary.VpnClient.Abstractions.Diagnostics.Extensions;
 using TqkLibrary.VpnClient.Abstractions.Drivers;
 using TqkLibrary.VpnClient.Abstractions.Drivers.Models;
 using TqkLibrary.VpnClient.Abstractions.Net;
+using TqkLibrary.VpnClient.Abstractions.Transport.Interfaces;
 using TqkLibrary.VpnClient.Drivers.Core;
 using TqkLibrary.VpnClient.Drivers.Sstp.Enums;
 using TqkLibrary.VpnClient.Drivers.Sstp.Models;
-using TqkLibrary.VpnClient.Drivers.Sstp.Transport;
 using TqkLibrary.VpnClient.Ppp;
+using TqkLibrary.VpnClient.Transport.Tls;
 using TqkLibrary.VpnClient.Ppp.Auth;
 using TqkLibrary.VpnClient.Ppp.Ipv6;
 

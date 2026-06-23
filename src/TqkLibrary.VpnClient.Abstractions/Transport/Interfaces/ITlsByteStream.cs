@@ -1,14 +1,14 @@
 using System.Security.Cryptography.X509Certificates;
-using TqkLibrary.VpnClient.Abstractions.Transport.Interfaces;
 
-namespace TqkLibrary.VpnClient.Drivers.Sstp.Transport
+namespace TqkLibrary.VpnClient.Abstractions.Transport.Interfaces
 {
     /// <summary>
     /// A TLS byte-stream transport (<see cref="IByteStreamTransport"/>) that also exposes the server's certificate.
     /// SSTP's crypto binding ([MS-SSTP] §3.2.4) hashes this certificate, so the framing layer needs access to it; the
     /// accessor is kept off the generic <see cref="IByteStreamTransport"/> (which stays Connect/Read/Write only) and
-    /// lives on this thin extension. That keeps the byte-pipe contract reusable (roadmap F.1) while letting a fake
-    /// stream supply a stub certificate so the SSTP handshake/supervisor can be exercised offline.
+    /// lives on this thin extension. That keeps the byte-pipe contract reusable while letting the shared
+    /// <c>Transport.Tls</c> implementation (roadmap F.1) serve SSTP/SoftEther/OpenConnect and a fake stream supply a
+    /// stub certificate so the SSTP handshake/supervisor can be exercised offline.
     /// </summary>
     public interface ITlsByteStream : IByteStreamTransport
     {

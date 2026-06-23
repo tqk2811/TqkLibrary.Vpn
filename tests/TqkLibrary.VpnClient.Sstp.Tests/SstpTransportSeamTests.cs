@@ -1,9 +1,9 @@
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using TqkLibrary.VpnClient.Abstractions.Transport.Interfaces;
 using TqkLibrary.VpnClient.Drivers.Sstp;
 using TqkLibrary.VpnClient.Drivers.Sstp.Enums;
 using TqkLibrary.VpnClient.Drivers.Sstp.Models;
-using TqkLibrary.VpnClient.Drivers.Sstp.Transport;
 using Xunit;
 
 namespace TqkLibrary.VpnClient.Sstp.Tests

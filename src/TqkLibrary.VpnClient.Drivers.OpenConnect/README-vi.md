@@ -10,7 +10,7 @@ Driver **OpenConnect** (Cisco AnyConnect SSL-VPN; server opensource **ocserv**) 
 
 `DRIVER`-layer, hiện thực [`IVpnProtocolDriver`](../TqkLibrary.VpnClient.Abstractions/Drivers/Interfaces/IVpnProtocolDriver.cs). Lắp ráp các khối protocol thuần từ [`OpenConnect`](../TqkLibrary.VpnClient.OpenConnect) thành 1 tunnel sống (mirror cấu trúc [`Drivers.WireGuard`](../TqkLibrary.VpnClient.Drivers.WireGuard) / [`Drivers.SoftEther`](../TqkLibrary.VpnClient.Drivers.SoftEther) — biến thể byte-stream):
 
-- **Transport TLS**: byte-stream qua seam [`IOpenConnectTransportFactory`](Transport/IOpenConnectTransportFactory.cs) — production [`OpenConnectSocketTransportFactory`](Transport/OpenConnectSocketTransportFactory.cs) (`TcpClient`+`SslStream` inline cùng shape SSTP `TlsByteStream` F.1), test inject loopback byte-stream.
+- **Transport TLS**: byte-stream qua seam [`IOpenConnectTransportFactory`](Transport/IOpenConnectTransportFactory.cs) — production [`OpenConnectSocketTransportFactory`](Transport/OpenConnectSocketTransportFactory.cs) dựng **shared** [`TlsByteStream`](../TqkLibrary.VpnClient.Transport.Tls/TlsByteStream.cs#L25) (F.1 — `Transport.Tls`, ctor IPEndPoint đã resolve), test inject loopback byte-stream.
 - **Transport DTLS (V5.c)**: UDP datagram pipe qua seam [`IOpenConnectDatagramTransportFactory`](Transport/IOpenConnectDatagramTransportFactory.cs) — production [`OpenConnectSocketDatagramTransportFactory`](Transport/OpenConnectSocketDatagramTransportFactory.cs) (socket UDP), test inject loopback datagram; bọc [`DtlsDatagramTransport`](../TqkLibrary.VpnClient.Transport.Dtls/DtlsDatagramTransport.cs) (F.3).
 - **Control plane**: [`OpenConnectHttpTransactor`](../TqkLibrary.VpnClient.OpenConnect/OpenConnectHttpTransactor.cs) chạy auth POST + CONNECT byte-exact; codec [`OpenConnectAuthCodec`](../TqkLibrary.VpnClient.OpenConnect/OpenConnectAuthCodec.cs) + [`OpenConnectConnectCodec`](../TqkLibrary.VpnClient.OpenConnect/OpenConnectConnectCodec.cs) (V5.a, parse `X-CSTP-*` + `X-DTLS-*`).
 - **Data plane**: [`CstpChannel`](../TqkLibrary.VpnClient.OpenConnect/CstpChannel.cs) (CSTP framing 8-byte, TLS) hoặc [`CstpDatagramChannel`](../TqkLibrary.VpnClient.OpenConnect/CstpDatagramChannel.cs) (framing 1-byte, DTLS — V5.c) → `IPacketChannel`.
@@ -24,9 +24,10 @@ Driver **OpenConnect** (Cisco AnyConnect SSL-VPN; server opensource **ocserv**) 
 | Dùng | [Drivers.Core](../TqkLibrary.VpnClient.Drivers.Core) | **`ReconnectingVpnConnection<TState>`** (base supervisor F.6: facade/lifetime/`OnLinkLost`/`ReconnectLoopAsync`/backoff-jitter/`SetState`/clock) + **`VpnReconnectOptions`** (`OpenConnectReconnectOptions` kế thừa) |
 | Dùng | [OpenConnect](../TqkLibrary.VpnClient.OpenConnect) | `OpenConnectAuthCodec`/`OpenConnectConnectCodec` (V5.a codec), `OpenConnectHttpTransactor`/`CstpChannel`/`CstpDpdState` (V5.b data plane TLS), `CstpDatagramChannel`/`CstpDatagramFraming` (V5.c data plane DTLS), `OpenConnectTunnelInfo`/`OpenConnectAuthForm`/`OpenConnectHttpResponse` (models) |
 | Dùng | [Transport.Dtls](../TqkLibrary.VpnClient.Transport.Dtls) | `DtlsDatagramTransport` (F.3) + `DtlsServerCertificateValidationCallback` — bọc UDP pipe thành DTLS 1.2 cho data path V5.c |
+| Dùng | [Transport.Tls](../TqkLibrary.VpnClient.Transport.Tls) | TLS-over-TCP byte-stream **dùng chung** `TlsByteStream` (F.1 — bọc `Transport.Tcp` `TcpByteStream`; ctor IPEndPoint đã resolve để correlate DTLS) |
 | Được dùng bởi | [TqkLibrary.VpnClient](../TqkLibrary.VpnClient) (façade) | `VpnClientBuilder.UseOpenConnect()` đăng ký driver |
 
-> **Không** ref [Crypto](../TqkLibrary.VpnClient.Crypto): mã hóa do TLS/DTLS lo. **Không** ref [Drivers.Sstp](../TqkLibrary.VpnClient.Drivers.Sstp): TLS byte-stream production inline (F.1 sẽ hoist 1 `Transport.Tls` dùng chung SSTP/OpenConnect sau).
+> **Không** ref [Crypto](../TqkLibrary.VpnClient.Crypto): mã hóa do TLS/DTLS lo. **Không** ref [Drivers.Sstp](../TqkLibrary.VpnClient.Drivers.Sstp): TLS byte-stream production nay là **shared** [`Transport.Tls`](../TqkLibrary.VpnClient.Transport.Tls) `TlsByteStream` (**F.1 đã hoist** — dùng chung SSTP/SoftEther/OpenConnect).
 
 ## Cấu trúc thư mục
 
@@ -40,7 +41,7 @@ TqkLibrary.VpnClient.Drivers.OpenConnect/
 ├─ Transport/
 │  ├─ IOpenConnectTransportFactory.cs              Seam dựng TLS byte-stream tới endpoint (production socket / test loopback)
 │  ├─ OpenConnectTransportHandle.cs               IByteStreamTransport (đã handshake TLS) trả về từ factory
-│  ├─ OpenConnectSocketTransportFactory.cs        Socket thật: TcpClient + SslStream (inline TlsByteStream) — live-only, cross-TFM
+│  ├─ OpenConnectSocketTransportFactory.cs        Socket thật: dựng shared TlsByteStream (Transport.Tls, F.1, ctor IPEndPoint) — live-only
 │  ├─ IOpenConnectDatagramTransportFactory.cs     Seam dựng UDP pipe (plaintext) tới X-DTLS-Port — V5.c (production socket / test loopback)
 │  └─ OpenConnectSocketDatagramTransportFactory.cs UDP socket thật (UdpClient connected) — live-only, cross-TFM
 ├─ Enums/OpenConnectConnectionState.cs      Disconnected/Connecting/Connected/Reconnecting
@@ -57,7 +58,7 @@ TqkLibrary.VpnClient.Drivers.OpenConnect/
 | `OpenConnectVpnSession` | `IVpnSession`: `PacketChannel` (facade) + `Config` in-band (X-CSTP-*) | [OpenConnectVpnSession.cs:12](OpenConnectVpnSession.cs#L12) |
 | `OpenConnectReconnectOptions` | Kế thừa [`VpnReconnectOptions`](../TqkLibrary.VpnClient.Drivers.Core/Models/VpnReconnectOptions.cs#L14) (F.6) — `Enabled`/`MaxAttempts`/backoff/jitter ở base; giữ tên riêng cho public API | [OpenConnectReconnectOptions.cs:12](OpenConnectReconnectOptions.cs#L12) |
 | `IOpenConnectTransportFactory` / `OpenConnectTransportHandle` | Seam dựng TLS byte-stream: trả `IByteStreamTransport` đã handshake TLS (HTTP auth/CONNECT + CSTP chạy chung 1 pipe — không cần receive-pump riêng) | [Transport/IOpenConnectTransportFactory.cs:12](Transport/IOpenConnectTransportFactory.cs#L12) |
-| `OpenConnectSocketTransportFactory` | Production: `TcpClient`+`SslStream` (inline `TlsByteStream`, giữ SNI/Host) + callback validate cert (null=accept any); cross-TFM (net5+ overload ct, ns2.0 cancel-by-dispose) — **live-only** | [Transport/OpenConnectSocketTransportFactory.cs:19](Transport/OpenConnectSocketTransportFactory.cs#L19) |
+| `OpenConnectSocketTransportFactory` | Production: dựng **shared** [`TlsByteStream`](../TqkLibrary.VpnClient.Transport.Tls/TlsByteStream.cs#L25) (F.1 — `Transport.Tls`, ctor IPEndPoint đã resolve, giữ SNI/Host) + callback validate cert (null=accept any) — **live-only** | [Transport/OpenConnectSocketTransportFactory.cs:16](Transport/OpenConnectSocketTransportFactory.cs#L16) |
 | `IOpenConnectDatagramTransportFactory` *(V5.c)* | Seam dựng UDP pipe (plaintext) tới `X-DTLS-Port`: trả `IDatagramTransport` UDP thô (connection bọc DTLS) | [Transport/IOpenConnectDatagramTransportFactory.cs:15](Transport/IOpenConnectDatagramTransportFactory.cs#L15) |
 | `OpenConnectSocketDatagramTransportFactory` *(V5.c)* | Production: `UdpClient` connected (1 datagram = 1 gói); cross-TFM (net5+ socket-async ct, ns2.0 cancel-by-dispose) — **live-only** | [Transport/OpenConnectSocketDatagramTransportFactory.cs:14](Transport/OpenConnectSocketDatagramTransportFactory.cs#L14) |
 | `OpenConnectConnectionState` | `Disconnected`/`Connecting`/`Connected`/`Reconnecting` | [Enums/OpenConnectConnectionState.cs:4](Enums/OpenConnectConnectionState.cs#L4) |
@@ -93,7 +94,7 @@ TqkLibrary.VpnClient.Drivers.OpenConnect/
 | HTTP CONNECT | `CONNECT /CSCOSSLC/tunnel` + `X-CSTP-*` / `X-DTLS-*` | Address/Netmask/DNS/Split-Include/MTU/DPD/Keepalive/Rekey-* + DTLS Session-ID/CipherSuite/Port/DPD/Keepalive |
 | DPD/keepalive | `X-CSTP-DPD` / `X-CSTP-Keepalive` | clock-inject `CstpDpdState`, dead-window ×2 (miss-two-DPD); chung cho TLS+DTLS |
 | Rekey (V5.d) | `X-CSTP-Rekey-Method` / `X-CSTP-Rekey-Time` | clock-inject `CstpRekeyState`; re-establish make-before-break; `ssl`=`new-tunnel`=re-establish (SslStream không renegotiate client net8/ns2.0) |
-| Transport | TLS byte-stream (F.1) + DTLS 1.2 datagram (F.3) | data plane DTLS song song, fallback TLS (V5.c) |
+| Transport | TLS byte-stream **shared** `TlsByteStream` (F.1 — `Transport.Tls`) + DTLS 1.2 datagram (F.3) | data plane DTLS song song, fallback TLS (V5.c) |
 | CSTP framing | 8-byte (TLS) / 1-byte (DTLS) | TLS có STF magic+length; DTLS chỉ type byte (1 datagram = 1 gói) |
 | Address | in-band config-push (X-CSTP-*) | không IPCP/DHCP — `OpenConnectTunnelInfo` → `TunnelConfig` |
 
@@ -110,4 +111,4 @@ TqkLibrary.VpnClient.Drivers.OpenConnect/
   - **validate live** (lab **Q.1** — ocserv Docker): interop auth/CONNECT/CSTP/DPD/DTLS thật + cert pinning.
 - **Tham chiếu**: draft-mavrogiannopoulos-openconnect + OpenConnect/ocserv — **chỉ đọc spec/behavior, không copy GPL source**; roadmap [`11`](../../.docs/11-todo-roadmap.md) §V.5 + as-built [`10`](../../.docs/10-codebase-architecture-and-flow.md) §5/§9.
 
-> Build xanh cả `netstandard2.0` + `net8.0`. TLS byte-stream production theo TFM giống [`OpenVpnSocketTransportFactory`](../TqkLibrary.VpnClient.Drivers.OpenVpn/Transport/OpenVpnSocketTransportFactory.cs) / SSTP [`TlsByteStream`](../TqkLibrary.VpnClient.Drivers.Sstp/Transport/TlsByteStream.cs) (net5+ overload ct; ns2.0 cancel-by-dispose). `CstpChannel`/`OpenConnectHttpTransactor` giữ Span ngoài await (encode đồng bộ trước write — an toàn C# 12).
+> Build xanh cả `netstandard2.0` + `net8.0`. TLS byte-stream production nay là **shared** [`TlsByteStream`](../TqkLibrary.VpnClient.Transport.Tls/TlsByteStream.cs#L25) ([`Transport.Tls`](../TqkLibrary.VpnClient.Transport.Tls), F.1 — net5+ overload ct; ns2.0 cancel-by-dispose). `CstpChannel`/`OpenConnectHttpTransactor` giữ Span ngoài await (encode đồng bộ trước write — an toàn C# 12).

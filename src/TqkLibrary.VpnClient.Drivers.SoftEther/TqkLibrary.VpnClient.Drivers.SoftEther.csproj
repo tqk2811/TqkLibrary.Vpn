@@ -10,6 +10,7 @@
     <ProjectReference Include="..\TqkLibrary.VpnClient.Crypto\TqkLibrary.VpnClient.Crypto.csproj" />
     <ProjectReference Include="..\TqkLibrary.VpnClient.SoftEther\TqkLibrary.VpnClient.SoftEther.csproj" />
     <ProjectReference Include="..\TqkLibrary.VpnClient.Ethernet\TqkLibrary.VpnClient.Ethernet.csproj" />
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Transport.Tls\TqkLibrary.VpnClient.Transport.Tls.csproj" />
   </ItemGroup>
 
 </Project>

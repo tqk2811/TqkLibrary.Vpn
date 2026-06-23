@@ -6,7 +6,7 @@ Driver **SoftEther SSL-VPN** (V4.c) — **driver L2 thật đầu tiên**: ráp 
 
 `DRIVER`-layer, hiện thực [`IVpnProtocolDriver`](../TqkLibrary.VpnClient.Abstractions/Drivers/Interfaces/IVpnProtocolDriver.cs). Lắp ráp khối protocol thuần từ [`SoftEther`](../TqkLibrary.VpnClient.SoftEther) + L2 fabric từ [`Ethernet`](../TqkLibrary.VpnClient.Ethernet) (mirror [`Drivers.OpenVpn`](../TqkLibrary.VpnClient.Drivers.OpenVpn) tap-mode + [`Drivers.WireGuard`](../TqkLibrary.VpnClient.Drivers.WireGuard)):
 
-- **Transport**: byte-stream TLS qua seam [`ISoftEtherTransportFactory`](Transport/ISoftEtherTransportFactory.cs) — production [`SoftEtherTlsTransportFactory`](Transport/SoftEtherTlsTransportFactory.cs) (TCP + `SslStream`, cùng shape SSTP `TlsByteStream`, F.1), test inject loopback in-memory.
+- **Transport**: byte-stream TLS qua seam [`ISoftEtherTransportFactory`](Transport/ISoftEtherTransportFactory.cs) — production [`SoftEtherTlsTransportFactory`](Transport/SoftEtherTlsTransportFactory.cs) dựng **shared** [`TlsByteStream`](../TqkLibrary.VpnClient.Transport.Tls/TlsByteStream.cs#L25) (F.1 — project `Transport.Tls`, TCP + `SslStream`), test inject loopback in-memory.
 - **Control plane**: [`SoftEtherHandshake.RunAsync`](../TqkLibrary.VpnClient.SoftEther/SoftEtherHandshake.cs) (watermark POST → hello → login + SHA-0 → welcome) trên cùng stream.
 - **Data plane**: [`SoftEtherDataBlockReader`](../TqkLibrary.VpnClient.SoftEther/DataChannel/SoftEtherDataBlockReader.cs) decode block vào → `SoftEtherEthernetChannel.Deliver`; [`SoftEtherEthernetChannel.WriteFrameAsync`](../TqkLibrary.VpnClient.SoftEther/DataChannel/SoftEtherEthernetChannel.cs) encode block ra.
 - **L2→L3 bridge**: (1-host) `DhcpV4Configurator` (lease IP) → `ArpResolver` + `VirtualHost` → `IPacketChannel`; (multi-host, opt-in) `EthernetAdapter.ConnectUplink` + `MultiHostSession` → N station, mỗi station DHCP lease riêng.
@@ -21,6 +21,7 @@ Driver **SoftEther SSL-VPN** (V4.c) — **driver L2 thật đầu tiên**: ráp 
 | Dùng | [SoftEther](../TqkLibrary.VpnClient.SoftEther) | `SoftEtherHandshake`/`SoftEtherAuth` (control + auth), `SoftEtherEthernetChannel`/`SoftEtherDataBlockReader`/`SoftEtherDataFrameCodec` (data plane), `SoftEtherLoginRequest`/`SoftEtherSessionParams` |
 | Dùng | [Ethernet](../TqkLibrary.VpnClient.Ethernet) | `DhcpV4Configurator` (L2.5 lease IP), `ArpResolver` (L2.3), `VirtualHost` (L2.2 bridge), `MacAddress`; **IPv6 (opt-in)**: `NdiscResolver` (L2.4), `Ipv6AddressConfigurator` (L2.6), `DualStackNeighborResolver`/`DualStackAddressConfigurator` (L2.9), `SlaacAddress` (EUI-64 link-local) |
 | Dùng | [Crypto](../TqkLibrary.VpnClient.Crypto) | `Sha0` (F.5a) cho `SoftEtherAuth.secure_password` |
+| Dùng | [Transport.Tls](../TqkLibrary.VpnClient.Transport.Tls) | TLS-over-TCP byte-stream **dùng chung** `TlsByteStream` (F.1 — bọc `Transport.Tcp` `TcpByteStream`) |
 | Được dùng bởi | [TqkLibrary.VpnClient](../TqkLibrary.VpnClient) (façade) | `VpnClientBuilder.UseSoftEther(hubName)` đăng ký driver |
 
 ## Cấu trúc thư mục
@@ -34,8 +35,7 @@ TqkLibrary.VpnClient.Drivers.SoftEther/
 ├─ SoftEtherReconnectOptions.cs       : VpnReconnectOptions — named type giữ API public (knob backoff/jitter ở base Drivers.Core, F.6)
 ├─ Transport/
 │  ├─ ISoftEtherTransportFactory.cs   Seam dựng byte-stream TLS tới host:port (production / test loopback)
-│  ├─ SoftEtherTlsTransport.cs        IByteStreamTransport thật: TCP + SslStream (cùng shape SSTP TlsByteStream, F.1), cross-TFM
-│  └─ SoftEtherTlsTransportFactory.cs Production factory dựng SoftEtherTlsTransport mỗi attempt
+│  └─ SoftEtherTlsTransportFactory.cs Production factory dựng shared TlsByteStream (Transport.Tls, F.1) mỗi attempt
 ├─ Enums/SoftEtherConnectionState.cs  Disconnected/Connecting/Connected/Reconnecting
 └─ Models/SoftEtherReconnectInfo.cs   Địa chỉ + cờ AddressChanged sau reconnect (DHCP có thể lease IP khác)
 ```
@@ -50,14 +50,13 @@ TqkLibrary.VpnClient.Drivers.SoftEther/
 | `SoftEtherVpnSession` | `IVpnSession`: `PacketChannel` (facade ổn định) + `Config` (DHCP-leased) | [SoftEtherVpnSession.cs:11](SoftEtherVpnSession.cs#L11) |
 | `SoftEtherReconnectOptions` | `: VpnReconnectOptions` (F.6) — named type giữ API public; `Enabled`/`MaxAttempts`/backoff/jitter ở base `Drivers.Core` | [SoftEtherReconnectOptions.cs:11](SoftEtherReconnectOptions.cs#L11) |
 | `ISoftEtherTransportFactory` | Seam dựng byte-stream TLS tới host:port (production socket / test loopback) | [Transport/ISoftEtherTransportFactory.cs:13](Transport/ISoftEtherTransportFactory.cs#L13) |
-| `SoftEtherTlsTransport` | `IByteStreamTransport` thật: `TcpClient` + `SslStream` (accept-any cert mặc định; cross-TFM net5+ overload ct, ns2.0 cancel-by-dispose) — cùng shape SSTP `TlsByteStream`, **live-only** | [Transport/SoftEtherTlsTransport.cs:18](Transport/SoftEtherTlsTransport.cs#L18) |
-| `SoftEtherTlsTransportFactory` | Production factory dựng `SoftEtherTlsTransport` mỗi attempt (cert-callback optional) | [Transport/SoftEtherTlsTransportFactory.cs:12](Transport/SoftEtherTlsTransportFactory.cs#L12) |
+| `SoftEtherTlsTransportFactory` | Production factory dựng **shared** [`TlsByteStream`](../TqkLibrary.VpnClient.Transport.Tls/TlsByteStream.cs#L25) (F.1 — `Transport.Tls`, `TcpClient`+`SslStream`, accept-any cert mặc định, cert-callback optional; cross-TFM net5+ overload ct, ns2.0 cancel-by-dispose) mỗi attempt | [Transport/SoftEtherTlsTransportFactory.cs:14](Transport/SoftEtherTlsTransportFactory.cs#L14) |
 | `SoftEtherConnectionState` | `Disconnected`/`Connecting`/`Connected`/`Reconnecting` | [Enums/SoftEtherConnectionState.cs:4](Enums/SoftEtherConnectionState.cs#L4) |
 | `SoftEtherReconnectInfo` | Địa chỉ + cờ `AddressChanged` sau reconnect (DHCP có thể lease IP khác) | [Models/SoftEtherReconnectInfo.cs:6](Models/SoftEtherReconnectInfo.cs#L6) |
 
 ## Luồng kết nối (as-built)
 
-1. **Transport TLS**: `ISoftEtherTransportFactory.ConnectAsync(host, port, afp, ct)` dựng `IByteStreamTransport` → `transport.ConnectAsync` (TCP + TLS handshake). Resolve host nằm trong transport (`SoftEtherTlsTransport` dùng `IHostResolver`).
+1. **Transport TLS**: `ISoftEtherTransportFactory.ConnectAsync(host, port, afp, ct)` dựng shared `TlsByteStream` (`IByteStreamTransport`) → `transport.ConnectAsync` (TCP + TLS handshake). Resolve host nằm trong transport (`TlsByteStream` bọc `Transport.Tcp` `TcpByteStream` dùng `IHostResolver`).
 2. **Control handshake** ([`SoftEtherHandshake.RunAsync`](../TqkLibrary.VpnClient.SoftEther/SoftEtherHandshake.cs#L143)): watermark POST `/vpnsvc/connect.cgi` → đọc `hello` (random 20B challenge) → POST `login` PACK (`secure_password` SHA-0 + session params) `/vpnsvc/vpn.cgi` → đọc `welcome` (`session_name` + `max_connection`/`half_connection`) hoặc lỗi (`error`≠0 ⇒ `SoftEtherProtocolException`).
 3. **Multi-connection (V.4)** ([`OpenAdditionalConnectionsAsync`](SoftEtherConnection.cs)): mở `min(login.MaxConnection, welcome.MaxConnection, 32)−1` socket phụ — mỗi socket TLS mới chạy [`SoftEtherHandshake.RunAdditionalConnectAsync`](../TqkLibrary.VpnClient.SoftEther/SoftEtherHandshake.cs#L209) reattach bằng session key (lỗi = best-effort, log + chạy tiếp). Gộp tất cả vào [`SoftEtherMultiConnectionMux`](../TqkLibrary.VpnClient.SoftEther/DataChannel/SoftEtherMultiConnectionMux.cs) (hướng theo [`SoftEtherConnectionDirectionPlanner`](../TqkLibrary.VpnClient.SoftEther/DataChannel/SoftEtherConnectionDirectionPlanner.cs), full/half-duplex).
 4. **Data channel L2** ([`SoftEtherEthernetChannel`](../TqkLibrary.VpnClient.SoftEther/DataChannel/SoftEtherEthernetChannel.cs)): gắn lên mux — egress `mux.SendBlockAsync` (round-robin N socket), ingress `mux.StartReceiveLoops` (1 decode loop/socket) raise `mux.InboundFrame → channel.Deliver` (drop keep-alive). EOF/fault ở bất kỳ socket ⇒ link lost một lần (`OnLinkLost` ở base).
@@ -86,7 +85,7 @@ TqkLibrary.VpnClient.Drivers.SoftEther/
 | NDISC v6 | RFC 4861 (`NdiscResolver` L2.4) | opt-in `enableIpv6` — RS/RA + NS/NA resolve next-hop MAC (IPv6) |
 | SLAAC | RFC 4862/4291 (`Ipv6AddressConfigurator` L2.6, `SlaacAddress`) | opt-in — địa chỉ global EUI-64 từ prefix /64 autonomous trong RA; link-local `fe80::/64`+EUI-64 |
 | DHCPv6 | RFC 8415 (`Ipv6AddressConfigurator` L2.6) | opt-in — stateful (M flag) lease địa chỉ + DNS (O flag) khi SecureNAT cấp |
-| Transport | TLS over TCP (HTTPS) | byte-stream `IByteStreamTransport` (F.1); shape giống SSTP `TlsByteStream` |
+| Transport | TLS over TCP (HTTPS) | byte-stream `IByteStreamTransport` — **shared** `TlsByteStream` (F.1 — `Transport.Tls` bọc `Transport.Tcp`) |
 
 ## Trạng thái & ghi chú
 
@@ -103,4 +102,4 @@ TqkLibrary.VpnClient.Drivers.SoftEther/
   - **validate live** (lab **Q.1** — SoftEther server chính chủ): interop watermark/PACK/SecureNAT thật, multi-connection, IPv6 pool.
 - **Tham chiếu**: SoftEther protocol spec/behavior ([`.docs/07`](../../.docs/07-softether.md)) — **chỉ đọc spec/behavior, không copy GPL source** (`Pack.c`/`Watermark.c`/`Protocol.c`/`Connection.c`); roadmap [`11`](../../.docs/11-todo-roadmap.md) §V.4.
 
-> Build xanh cả `netstandard2.0` + `net8.0`. `SoftEtherTlsTransport` theo TFM giống SSTP `TlsByteStream` (net5+ overload ct; ns2.0 cancel-by-dispose). `record`/`init`/`required` qua `TqkLibrary.CompilerServices`.
+> Build xanh cả `netstandard2.0` + `net8.0`. Transport TLS nay dùng **shared** `TlsByteStream` ([`Transport.Tls`](../TqkLibrary.VpnClient.Transport.Tls), F.1 — net5+ overload ct; ns2.0 cancel-by-dispose). `record`/`init`/`required` qua `TqkLibrary.CompilerServices`.

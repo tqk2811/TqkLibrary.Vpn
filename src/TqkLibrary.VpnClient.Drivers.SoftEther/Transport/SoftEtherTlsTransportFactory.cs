@@ -1,13 +1,15 @@
 using System.Net.Security;
 using TqkLibrary.VpnClient.Abstractions.Net;
 using TqkLibrary.VpnClient.Abstractions.Transport.Interfaces;
+using TqkLibrary.VpnClient.Transport.Tls;
 
 namespace TqkLibrary.VpnClient.Drivers.SoftEther.Transport
 {
     /// <summary>
-    /// The production <see cref="ISoftEtherTransportFactory"/>: opens a real TLS-over-TCP <see cref="SoftEtherTlsTransport"/>
-    /// for each connect attempt. The optional <paramref name="certificateValidationCallback"/> validates the server
-    /// certificate (null = accept any, since SoftEther binds identity through its own auth, not PKI).
+    /// The production <see cref="ISoftEtherTransportFactory"/>: opens a real shared <see cref="TlsByteStream"/>
+    /// (roadmap F.1's <c>Transport.Tls</c>) for each connect attempt. The optional
+    /// <paramref name="certificateValidationCallback"/> validates the server certificate (null = accept any, since
+    /// SoftEther binds identity through its own auth/watermark, not PKI).
     /// </summary>
     public sealed class SoftEtherTlsTransportFactory : ISoftEtherTransportFactory
     {
@@ -27,7 +29,7 @@ namespace TqkLibrary.VpnClient.Drivers.SoftEther.Transport
         public ValueTask<IByteStreamTransport> ConnectAsync(string host, int port,
             AddressFamilyPreference addressFamilyPreference, CancellationToken cancellationToken)
         {
-            IByteStreamTransport transport = new SoftEtherTlsTransport(
+            IByteStreamTransport transport = new TlsByteStream(
                 host, port, _certificateValidationCallback, addressFamilyPreference, _hostResolver);
             return new ValueTask<IByteStreamTransport>(transport);
         }

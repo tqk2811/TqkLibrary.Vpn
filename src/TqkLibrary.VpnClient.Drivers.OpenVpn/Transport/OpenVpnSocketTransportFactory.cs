@@ -4,16 +4,17 @@ using System.Runtime.InteropServices;
 using TqkLibrary.VpnClient.OpenVpn;
 using TqkLibrary.VpnClient.OpenVpn.Enums;
 using TqkLibrary.VpnClient.OpenVpn.Transport;
+using TqkLibrary.VpnClient.Transport.Tcp;
 
 namespace TqkLibrary.VpnClient.Drivers.OpenVpn.Transport
 {
     /// <summary>
     /// The production <see cref="IOpenVpnTransportFactory"/>: opens a real outer socket. For <see cref="OpenVpnProtocol.Udp"/>
     /// it connects a UDP socket and wraps it in an <see cref="OpenVpnUdpTransport"/> (no framing — one datagram is one
-    /// packet); for <see cref="OpenVpnProtocol.Tcp"/> it connects a raw TCP socket (OpenVPN runs TLS <em>inside</em> the
-    /// control channel, not on the transport) and wraps it in an <see cref="OpenVpnTcpTransport"/> (16-bit length
-    /// framing). The socket I/O is exercised live (lab Q.1); the offline tests drive the connection through an in-process
-    /// factory instead.
+    /// packet); for <see cref="OpenVpnProtocol.Tcp"/> it connects the shared (non-TLS) <see cref="TcpByteStream"/>
+    /// (roadmap F.1's <c>Transport.Tcp</c> — OpenVPN runs TLS <em>inside</em> the control channel, not on the transport)
+    /// and wraps it in an <see cref="OpenVpnTcpTransport"/> (16-bit length framing). The socket I/O is exercised live
+    /// (lab Q.1); the offline tests drive the connection through an in-process factory instead.
     /// </summary>
     public sealed class OpenVpnSocketTransportFactory : IOpenVpnTransportFactory
     {
@@ -42,7 +43,7 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn.Transport
             }
         }
 
-        /// <summary>A connected UDP datagram pipe over a real socket (live-only; mirrors the <c>TlsByteStream</c> TFM handling).</summary>
+        /// <summary>A connected UDP datagram pipe over a real socket (live-only; mirrors the TcpByteStream TFM handling).</summary>
         sealed class UdpDatagramSocket : Abstractions.Transport.Interfaces.IDatagramTransport
         {
             // Windows-only ioctl: when false, a UDP send that draws an ICMP "port unreachable" no longer makes the *next*
@@ -102,71 +103,6 @@ namespace TqkLibrary.VpnClient.Drivers.OpenVpn.Transport
             public ValueTask DisposeAsync()
             {
                 try { _client.Dispose(); } catch { }
-                return default;
-            }
-        }
-
-        /// <summary>A raw (non-TLS) TCP byte stream over a real socket — OpenVPN's <c>proto tcp</c> transport (live-only).</summary>
-        sealed class TcpByteStream : Abstractions.Transport.Interfaces.IByteStreamTransport
-        {
-            readonly IPEndPoint _remote;
-            TcpClient? _tcp;
-            NetworkStream? _stream;
-
-            public TcpByteStream(IPEndPoint remote) => _remote = remote;
-
-            public async ValueTask ConnectAsync(CancellationToken cancellationToken = default)
-            {
-                var tcp = new TcpClient(_remote.AddressFamily);
-                _tcp = tcp;
-#if NET5_0_OR_GREATER
-                await tcp.ConnectAsync(_remote.Address, _remote.Port, cancellationToken).ConfigureAwait(false);
-#else
-                using (cancellationToken.Register(() => { try { tcp.Dispose(); } catch { } }))
-                {
-                    try { await tcp.ConnectAsync(_remote.Address, _remote.Port).ConfigureAwait(false); }
-                    catch (Exception) when (cancellationToken.IsCancellationRequested) { }
-                }
-                cancellationToken.ThrowIfCancellationRequested();
-#endif
-                _stream = tcp.GetStream();
-            }
-
-            public async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
-            {
-                NetworkStream stream = _stream ?? throw new InvalidOperationException("The TCP stream is not connected.");
-#if NET5_0_OR_GREATER
-                return await stream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
-#else
-                if (MemoryMarshal.TryGetArray<byte>(buffer, out ArraySegment<byte> segment))
-                    return await stream.ReadAsync(segment.Array!, segment.Offset, segment.Count, cancellationToken).ConfigureAwait(false);
-                byte[] temp = new byte[buffer.Length];
-                int read = await stream.ReadAsync(temp, 0, temp.Length, cancellationToken).ConfigureAwait(false);
-                temp.AsMemory(0, read).CopyTo(buffer);
-                return read;
-#endif
-            }
-
-            public async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
-            {
-                NetworkStream stream = _stream ?? throw new InvalidOperationException("The TCP stream is not connected.");
-#if NET5_0_OR_GREATER
-                await stream.WriteAsync(buffer, cancellationToken).ConfigureAwait(false);
-#else
-                if (MemoryMarshal.TryGetArray(buffer, out ArraySegment<byte> segment))
-                    await stream.WriteAsync(segment.Array!, segment.Offset, segment.Count, cancellationToken).ConfigureAwait(false);
-                else
-                {
-                    byte[] temp = buffer.ToArray();
-                    await stream.WriteAsync(temp, 0, temp.Length, cancellationToken).ConfigureAwait(false);
-                }
-#endif
-            }
-
-            public ValueTask DisposeAsync()
-            {
-                try { _stream?.Dispose(); } catch { }
-                try { _tcp?.Dispose(); } catch { }
                 return default;
             }
         }

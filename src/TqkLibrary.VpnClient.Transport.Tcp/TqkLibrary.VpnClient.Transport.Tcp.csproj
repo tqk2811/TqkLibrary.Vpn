@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Plain TCP byte-stream transport: a concrete IByteStreamTransport over a TcpClient. Resolves the host honouring an AddressFamilyPreference (so the socket opens in the chosen IPv4/IPv6 family) or connects a pre-resolved endpoint, then reads/writes the raw NetworkStream. It is the transport OpenVPN's `proto tcp` rides directly (OpenVPN runs TLS inside its control channel, not on the wire), and the layer the TLS byte stream (Transport.Tls) is built on (roadmap F.1). Cancellation is honoured on both target frameworks (native overloads on net8.0; cancel-by-dispose on netstandard2.0).</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Abstractions\TqkLibrary.VpnClient.Abstractions.csproj" />
+  </ItemGroup>
+
+</Project>

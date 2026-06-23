@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>TLS-over-TCP byte-stream transport: a concrete ITlsByteStream that wraps a Transport.Tcp TcpByteStream in an SslStream and runs the client TLS handshake. It is the single shared TLS transport the SSTP, SoftEther and OpenConnect drivers ride (roadmap F.1). The server certificate is captured (SSTP's crypto binding needs it); validation accepts any certificate by default — these protocols bind identity through their own auth/crypto binding, not PKI — unless a RemoteCertificateValidationCallback is supplied (roadmap P0.6). Cancellation is honoured on both target frameworks.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Abstractions\TqkLibrary.VpnClient.Abstractions.csproj" />
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Transport.Tcp\TqkLibrary.VpnClient.Transport.Tcp.csproj" />
+  </ItemGroup>
+
+</Project>

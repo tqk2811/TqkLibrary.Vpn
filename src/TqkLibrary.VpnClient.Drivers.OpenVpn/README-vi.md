@@ -6,7 +6,7 @@ Driver **OpenVPN** (tương thích OpenVPN community server) — ráp các khố
 
 `PROTOCOL`-layer driver, hiện thực [`IVpnProtocolDriver`](../TqkLibrary.VpnClient.Abstractions/Drivers/Interfaces/IVpnProtocolDriver.cs). Lắp ráp các khối protocol thuần từ [`OpenVpn`](../TqkLibrary.VpnClient.OpenVpn) thành 1 tunnel sống:
 
-- **Transport**: [`OpenVpnUdpTransport`](../TqkLibrary.VpnClient.OpenVpn/Transport/OpenVpnUdpTransport.cs) (UDP) / [`OpenVpnTcpTransport`](../TqkLibrary.VpnClient.OpenVpn/Transport/OpenVpnTcpTransport.cs) (TCP) — driver dựng socket thật qua [`OpenVpnSocketTransportFactory`](Transport/OpenVpnSocketTransportFactory.cs) (seam `IOpenVpnTransportFactory`, test inject loopback).
+- **Transport**: [`OpenVpnUdpTransport`](../TqkLibrary.VpnClient.OpenVpn/Transport/OpenVpnUdpTransport.cs) (UDP) / [`OpenVpnTcpTransport`](../TqkLibrary.VpnClient.OpenVpn/Transport/OpenVpnTcpTransport.cs) (TCP, bọc **shared** [`TcpByteStream`](../TqkLibrary.VpnClient.Transport.Tcp/TcpByteStream.cs#L22) trần F.1) — driver dựng socket thật qua [`OpenVpnSocketTransportFactory`](Transport/OpenVpnSocketTransportFactory.cs) (seam `IOpenVpnTransportFactory`, test inject loopback).
 - **Control plane**: [`OpenVpnControlChannel`](../TqkLibrary.VpnClient.OpenVpn/OpenVpnControlChannel.cs#L22) (reset HARD_RESET → `SslStream` trong reliability layer → key-method-2 → PUSH_REQUEST/PUSH_REPLY); wrap tls-auth/tls-crypt opt-in (`IOpenVpnControlWrap`).
 - **Data plane**: [`OpenVpnDataPlane`](../TqkLibrary.VpnClient.OpenVpn/DataChannel/OpenVpnDataPlane.cs#L10) (P_DATA_V2 + AES-GCM, make-before-break) qua device-link — **tun** [`OpenVpnTunChannel`](../TqkLibrary.VpnClient.OpenVpn/Transport/OpenVpnTunChannel.cs) → `IPacketChannel` trực tiếp; **tap** [`OpenVpnTapChannel`](../TqkLibrary.VpnClient.OpenVpn/Transport/OpenVpnTapChannel.cs) → (1-host/pure-DHCP) [`VirtualHost`](../TqkLibrary.VpnClient.Ethernet/VirtualHost.cs) + [`ArpResolver`](../TqkLibrary.VpnClient.Ethernet/ArpResolver.cs) (+ [`DhcpV4Configurator`](../TqkLibrary.VpnClient.Ethernet/DhcpV4Configurator.cs) khi không ifconfig) / (multi-host) [`EthernetAdapter.ConnectUplink`](../TqkLibrary.VpnClient.Ethernet/EthernetAdapter.cs) + [`MultiHostSession`](../TqkLibrary.VpnClient.Ethernet/MultiHostSession.cs) → `IPacketChannel`.
 
@@ -18,6 +18,7 @@ Driver **OpenVPN** (tương thích OpenVPN community server) — ráp các khố
 | Dùng | [Drivers.Core](../TqkLibrary.VpnClient.Drivers.Core) | base **`ReconnectingVpnConnection<TState>`** (supervisor/reconnect/backoff-jitter/`StateChanged`/clock/teardown dùng chung — F.6) + `VpnReconnectOptions` |
 | Dùng | [OpenVpn](../TqkLibrary.VpnClient.OpenVpn) | `OpenVpnControlChannel`, transport TCP/UDP + tun/tap channel, key-method-2/NCP, data plane/keepalive/ping, config `OpenVpnProfile`, wrap tls-auth/tls-crypt |
 | Dùng | [Ethernet](../TqkLibrary.VpnClient.Ethernet) | `OpenVpnTapChannel` → `VirtualHost` + `ArpResolver` + `MacAddress` bắc cầu L2→L3 cho **tap-mode** |
+| Dùng | [Transport.Tcp](../TqkLibrary.VpnClient.Transport.Tcp) | `TcpByteStream` **trần** (F.1) cho `proto tcp` — OpenVPN làm TLS in-band trong control channel, không trên transport |
 | Được dùng bởi | [TqkLibrary.VpnClient](../TqkLibrary.VpnClient) (façade) | `VpnClientBuilder.UseOpenVpn(profile)` đăng ký driver |
 
 ## Cấu trúc thư mục
@@ -32,7 +33,7 @@ TqkLibrary.VpnClient.Drivers.OpenVpn/
 ├─ Transport/
 │  ├─ IOpenVpnTransportFactory.cs      Seam dựng transport tới endpoint (production socket / test loopback)
 │  ├─ OpenVpnTransportHandle.cs        Transport + receive-pump + socket disposable trả về từ factory
-│  └─ OpenVpnSocketTransportFactory.cs Socket thật: UDP (UdpClient) / TCP raw (TcpClient) — live-only, cross-TFM
+│  └─ OpenVpnSocketTransportFactory.cs Socket thật: UDP (UdpClient inline) / TCP raw (shared Transport.Tcp TcpByteStream, F.1) — live-only
 ├─ Enums/OpenVpnConnectionState.cs     Disconnected/Connecting/Connected/Reconnecting
 └─ Models/OpenVpnReconnectInfo.cs      Địa chỉ mới + cờ AddressChanged sau reconnect
 ```
@@ -47,7 +48,7 @@ TqkLibrary.VpnClient.Drivers.OpenVpn/
 | `OpenVpnVpnSession` | `IVpnSession`: `PacketChannel` (facade) + `Config`; `ApplyReconnect` cập nhật config sau reconnect | [OpenVpnVpnSession.cs:9](OpenVpnVpnSession.cs#L9) |
 | `OpenVpnReconnectOptions` | **kế thừa [`VpnReconnectOptions`](../TqkLibrary.VpnClient.Drivers.Core/Models/VpnReconnectOptions.cs#L14)** (knob `Enabled`/`MaxAttempts`/backoff/jitter ở base F.6); giữ tên cho public API driver | [OpenVpnReconnectOptions.cs:12](OpenVpnReconnectOptions.cs#L12) |
 | `IOpenVpnTransportFactory` / `OpenVpnTransportHandle` | Seam dựng transport: trả `IOpenVpnTransport` + receive-pump (UDP/TCP loop, null nếu self-pump) + socket disposable | [Transport/IOpenVpnTransportFactory.cs:10](Transport/IOpenVpnTransportFactory.cs#L10) |
-| `OpenVpnSocketTransportFactory` | Production: UDP qua `UdpClient`, TCP raw qua `TcpClient` (TLS chạy **trong** control channel, không trên transport); cross-TFM (net5+ overload ct, ns2.0 cancel-by-dispose) — **live-only** | [Transport/OpenVpnSocketTransportFactory.cs:18](Transport/OpenVpnSocketTransportFactory.cs#L18) |
+| `OpenVpnSocketTransportFactory` | Production: UDP qua `UdpClient` (inline), TCP raw qua **shared** [`TcpByteStream`](../TqkLibrary.VpnClient.Transport.Tcp/TcpByteStream.cs#L22) (F.1 — TLS chạy **trong** control channel, không trên transport); cross-TFM (net5+ overload ct, ns2.0 cancel-by-dispose) — **live-only** | [Transport/OpenVpnSocketTransportFactory.cs:19](Transport/OpenVpnSocketTransportFactory.cs#L19) |
 
 ## Luồng kết nối (as-built)
 
@@ -95,4 +96,4 @@ TqkLibrary.VpnClient.Drivers.OpenVpn/
   - **validate live rộng** (lab **Q.1** — OpenVPN community server Docker): OCC options string strict, cipher AEAD/NCP, direction key tls-auth, interop UDP/TCP thật.
 - **Tham chiếu**: doc protocol OpenVPN (openvpn.net + source GPL **chỉ đọc spec/behavior, không copy code**); thiết kế [`06`](../../.docs/06-openvpn.md) + roadmap [`11`](../../.docs/11-todo-roadmap.md) §V.2.
 
-> Build xanh cả `netstandard2.0` + `net8.0`. Socket transport theo TFM giống [`TlsByteStream`](../TqkLibrary.VpnClient.Drivers.Sstp/Transport/TlsByteStream.cs) (net5+ overload ct; ns2.0 cancel-by-dispose + `MemoryMarshal.TryGetArray`). `OpenVpnConnection` giữ Span ngoài await (ping `Protect(WrapOutgoing(Magic))` tính đồng bộ trước await — an toàn C# 12).
+> Build xanh cả `netstandard2.0` + `net8.0`. TCP transport nay là **shared** [`TcpByteStream`](../TqkLibrary.VpnClient.Transport.Tcp/TcpByteStream.cs#L22) ([`Transport.Tcp`](../TqkLibrary.VpnClient.Transport.Tcp), F.1 — net5+ overload ct; ns2.0 cancel-by-dispose + `MemoryMarshal.TryGetArray`); UDP socket vẫn inline. `OpenVpnConnection` giữ Span ngoài await (ping `Protect(WrapOutgoing(Magic))` tính đồng bộ trước await — an toàn C# 12).

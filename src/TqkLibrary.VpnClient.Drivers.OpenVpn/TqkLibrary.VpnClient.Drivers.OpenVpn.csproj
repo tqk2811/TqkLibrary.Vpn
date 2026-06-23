@@ -9,6 +9,7 @@
     <ProjectReference Include="..\TqkLibrary.VpnClient.Drivers.Core\TqkLibrary.VpnClient.Drivers.Core.csproj" />
     <ProjectReference Include="..\TqkLibrary.VpnClient.Ethernet\TqkLibrary.VpnClient.Ethernet.csproj" />
     <ProjectReference Include="..\TqkLibrary.VpnClient.OpenVpn\TqkLibrary.VpnClient.OpenVpn.csproj" />
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Transport.Tcp\TqkLibrary.VpnClient.Transport.Tcp.csproj" />
   </ItemGroup>
 
 </Project>

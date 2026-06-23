@@ -8,6 +8,7 @@
     <ProjectReference Include="..\TqkLibrary.VpnClient.Abstractions\TqkLibrary.VpnClient.Abstractions.csproj" />
     <ProjectReference Include="..\TqkLibrary.VpnClient.Drivers.Core\TqkLibrary.VpnClient.Drivers.Core.csproj" />
     <ProjectReference Include="..\TqkLibrary.VpnClient.Ppp\TqkLibrary.VpnClient.Ppp.csproj" />
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Transport.Tls\TqkLibrary.VpnClient.Transport.Tls.csproj" />
   </ItemGroup>
 
 </Project>

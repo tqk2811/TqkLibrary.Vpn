@@ -92,6 +92,7 @@ gọi `RunAsync` của subclass). `dns` chạy [`ProbeUdpDnsAsync` @ :44](../dem
 |---|---|---|
 | `--vpn` | `sstp://vpn:vpn@public-vpn-226.opengw.net` | target VPN: **URI** `scheme://user:pass@host[:port][?psk=...][?hub=...]` **hoặc đường dẫn một file `.ovpn`** (OpenVPN — host/port/proto/cert đọc từ file). `scheme` = `sstp` (MS-SSTP/TLS, default port 443), `l2tp` (L2TP/IPsec IKEv1, NAT-T 500/4500 — bỏ qua port; PSK qua `?psk=`), `softether`/`ssl` (SoftEther SSL-VPN/TLS, default 443; Hub qua `?hub=`). Thiếu `user:pass` ⇒ `vpn:vpn`; L2TP thiếu `?psk=` ⇒ PSK `vpn`; SoftEther thiếu `?hub=` ⇒ `VPNGATE` (group PSK/hub VPN Gate) |
 | `--watermark` | *(rỗng)* | **(Chỉ SoftEther)** đường dẫn file chứa **watermark blob THẬT** của SoftEther — server thật từ chối blob placeholder (HTTP 403). Rỗng ⇒ placeholder (chỉ chạy với server giả lập offline). Blob là dữ liệu GPL, KHÔNG có sẵn trong repo |
+| `--native-esp` | `false` | **(Chỉ L2TP/IPsec)** chở **ESP gốc trên IP proto-50** (native ESP) cho gateway **no-NAT**, dưới chế độ NAT-T `HonestFirst` (P0.8c) thay vì float UDP/4500 — **cần quyền raw socket/CAP_NET_RAW** (Administrator/root). Cấp `RawIpTransportFactory` (`TqkLibrary.VpnClient.Transport.RawIp`) cho `L2tpIpsecConnection`. Scheme khác L2TP ⇒ cờ **bỏ qua** (cảnh báo, không crash) |
 
 **`dns`** (probe UDP-DNS) thêm:
 

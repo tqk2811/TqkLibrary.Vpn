@@ -4,7 +4,9 @@ using System.Text;
 using Microsoft.Extensions.Logging;
 using TqkLibrary.VpnClient.Abstractions.Drivers.Interfaces;
 using TqkLibrary.VpnClient.Abstractions.Drivers.Models;
+using TqkLibrary.VpnClient.Abstractions.Transport.Interfaces;
 using TqkLibrary.VpnClient.Drivers.L2tpIpsec;
+using TqkLibrary.VpnClient.Drivers.L2tpIpsec.Enums;
 using TqkLibrary.VpnClient.Drivers.OpenVpn;
 using TqkLibrary.VpnClient.Drivers.SoftEther;
 using TqkLibrary.VpnClient.Drivers.Sstp;
@@ -99,12 +101,25 @@ namespace Vpn2ProxyDemo
         }
 
         /// <summary>Connect VPN Gate qua L2TP/IPsec (IKEv1 PSK, NAT-T) bằng host/user/pass + group PSK; trả tunnel đã lên (đang sống).
-        /// <paramref name="enableIpv6"/>: bật IPV6CP + lấy IPv6 global qua SLAAC/DHCPv6 trên link PPP-trong-L2TP (P1.1, best-effort).</summary>
-        public static async Task<VpnTunnel> ConnectL2tpAsync(string host, string user, string pass, string preSharedKey, CancellationToken ct, bool enableIpv6 = false)
+        /// <paramref name="enableIpv6"/>: bật IPV6CP + lấy IPv6 global qua SLAAC/DHCPv6 trên link PPP-trong-L2TP (P1.1, best-effort).
+        /// <paramref name="useNativeEsp"/>: bật carrier ESP gốc (proto-50) qua raw-IP cho gateway no-NAT dưới chế độ
+        /// <see cref="L2tpIpsecNatTraversalMode.HonestFirst"/> (P0.8c) thay vì float UDP/4500 — cần quyền raw socket (CAP_NET_RAW/Administrator).</summary>
+        public static async Task<VpnTunnel> ConnectL2tpAsync(string host, string user, string pass, string preSharedKey, CancellationToken ct, bool enableIpv6 = false, bool useNativeEsp = false)
         {
             Console.WriteLine("=== [L2TP/IPsec] ===");
+            // P0.8c: khi bật native-ESP, cấp raw-IP factory (ESP proto-50) + đặt NAT-T mode HonestFirst để chở ESP gốc khi
+            // gateway no-NAT (không float UDP/4500). Cờ tắt ⇒ rawIpFactory null + giữ NAT-T mặc định (hành vi cũ không đổi).
+            L2tpIpsecNatTraversalMode natTraversalMode = useNativeEsp
+                ? L2tpIpsecNatTraversalMode.HonestFirst
+                : L2tpIpsecNatTraversalMode.ForcedNatT;
+            IRawIpTransportFactory? rawIpFactory = useNativeEsp
+                ? new TqkLibrary.VpnClient.Transport.RawIp.RawIpTransportFactory()
+                : null;
+            if (useNativeEsp)
+                Console.WriteLine("[l2tp] native-ESP BẬT (P0.8c): ESP proto-50 qua raw-IP, NAT-T HonestFirst — cần CAP_NET_RAW/Administrator.");
             // PSK do caller cấp (VpnTarget mặc định "vpn" của VPN Gate). Driver không còn nhét PSK mặc định (P0.4).
-            var vpn = new L2tpIpsecConnection(host, Encoding.ASCII.GetBytes(preSharedKey), enableIpv6: enableIpv6);
+            var vpn = new L2tpIpsecConnection(host, Encoding.ASCII.GetBytes(preSharedKey),
+                natTraversalMode: natTraversalMode, enableIpv6: enableIpv6, rawIpFactory: rawIpFactory);
             try
             {
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);

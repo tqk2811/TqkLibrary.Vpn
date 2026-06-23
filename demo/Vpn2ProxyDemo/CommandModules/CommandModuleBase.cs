@@ -20,6 +20,7 @@ namespace Vpn2ProxyDemo.CommandModules
         Option<string> VpnOption { get; }
         Option<string> WatermarkOption { get; }
         Option<bool> Ipv6Option { get; }
+        Option<bool> NativeEspOption { get; }
 
         readonly Command _command;
         public Command Command => _command;
@@ -53,6 +54,15 @@ namespace Vpn2ProxyDemo.CommandModules
             };
             _command.Options.Add(Ipv6Option);
 
+            NativeEspOption = new Option<bool>("--native-esp")
+            {
+                Description = "(Chỉ L2TP/IPsec) chở ESP gốc trên IP proto-50 (native ESP) cho gateway no-NAT, dưới chế độ "
+                    + "NAT-T HonestFirst (P0.8c) thay vì float UDP/4500 — cần quyền raw socket/CAP_NET_RAW (Administrator/root). "
+                    + "Scheme khác L2TP ⇒ cờ bị bỏ qua. Mặc định tắt.",
+                DefaultValueFactory = _ => false,
+            };
+            _command.Options.Add(NativeEspOption);
+
             _command.SetAction(InvokeAsync);
         }
 
@@ -79,11 +89,19 @@ namespace Vpn2ProxyDemo.CommandModules
 
             string watermarkPath = parseResult.GetValue(WatermarkOption) ?? string.Empty;
             bool enableIpv6 = parseResult.GetValue(Ipv6Option);
+            bool useNativeEsp = parseResult.GetValue(NativeEspOption);
+
+            // --native-esp chỉ áp cho L2TP/IPsec (P0.8c). Bật với scheme khác ⇒ bỏ qua + cảnh báo rõ (không crash).
+            if (useNativeEsp && target!.Protocol != VpnProtocol.L2tp)
+            {
+                Console.WriteLine($"  !! --native-esp chỉ dùng cho L2TP/IPsec; scheme '{tag}' bỏ qua cờ này.");
+                useNativeEsp = false;
+            }
 
             try
             {
                 // Connect VPN theo giao thức đã chọn và trả về tunnel (giữ vòng đời kết nối).
-                await using VpnTunnel tunnel = await ConnectAsync(target, watermarkPath, enableIpv6, ct);
+                await using VpnTunnel tunnel = await ConnectAsync(target, watermarkPath, enableIpv6, useNativeEsp, ct);
 
                 // Panel "VPN này hỗ trợ gì" — probe (UDP/LAN ảo) + suy luận (IPv6/listen-external) ngay sau khi tunnel lên,
                 // TRƯỚC hành động (tự bao timeout, nuốt lỗi nên không làm hỏng lệnh).
@@ -140,12 +158,13 @@ namespace Vpn2ProxyDemo.CommandModules
         protected virtual string? ValidateOptions(ParseResult parseResult) => null;
 
         /// <summary>Dispatch connect theo giao thức đã parse về hàm static tương ứng của <see cref="VpnTunnel"/>.</summary>
-        Task<VpnTunnel> ConnectAsync(VpnTarget target, string watermarkPath, bool enableIpv6, CancellationToken ct)
+        Task<VpnTunnel> ConnectAsync(VpnTarget target, string watermarkPath, bool enableIpv6, bool useNativeEsp, CancellationToken ct)
             => target.Protocol switch
             {
                 // enableIpv6 chỉ áp cho đường PPP (SSTP/L2TP — P1.1); SoftEther/OpenVPN bật IPv6 theo cấu hình driver riêng.
+                // useNativeEsp chỉ áp cho L2TP/IPsec (P0.8c — ESP proto-50 native, no-NAT); caller đã chặn scheme khác.
                 VpnProtocol.Sstp => VpnTunnel.ConnectSstpAsync(target.Host, target.Port, target.User, target.Pass, ct, enableIpv6),
-                VpnProtocol.L2tp => VpnTunnel.ConnectL2tpAsync(target.Host, target.User, target.Pass, target.PreSharedKey, ct, enableIpv6),
+                VpnProtocol.L2tp => VpnTunnel.ConnectL2tpAsync(target.Host, target.User, target.Pass, target.PreSharedKey, ct, enableIpv6, useNativeEsp),
                 VpnProtocol.SoftEther => VpnTunnel.ConnectSoftEtherAsync(target.Host, target.Port, target.User, target.Pass, target.HubName, watermarkPath, ct),
                 VpnProtocol.OpenVpn => VpnTunnel.ConnectOpenVpnAsync(target.ConfigPath!, target.User, target.Pass, ct),
                 _ => throw new ArgumentOutOfRangeException(nameof(target), target.Protocol, "Giao thức VPN không hỗ trợ."),

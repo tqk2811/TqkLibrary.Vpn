@@ -177,7 +177,7 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
             CancellationToken recvToken = _recvCts.Token;
 
             // Build the CSTP-over-TLS channel + parse the in-band config (no live-field side effects until the bind).
-            (IByteStreamTransport stream, CstpChannel channel, OpenConnectTunnelInfo tunnelInfo, TunnelConfig config, int mtu) =
+            (IByteStreamTransport stream, CstpChannel channel, OpenConnectTunnelInfo tunnelInfo, TunnelConfig config, int mtu, byte[]? dtlsMasterSecret) =
                 await BuildCstpChannelAsync(serverIp, cancellationToken).ConfigureAwait(false);
 
             _stream = stream;
@@ -199,7 +199,7 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
 
             // --- try to swap the data plane onto a parallel DTLS datagram channel (fallback to TLS on any failure) ---
             if (_datagramFactory != null && tunnelInfo.HasDtls)
-                await TryEstablishDtlsAsync(serverIp, tunnelInfo, mtu, recvToken, connectToken).ConfigureAwait(false);
+                await TryEstablishDtlsAsync(serverIp, tunnelInfo, mtu, dtlsMasterSecret, recvToken, connectToken).ConfigureAwait(false);
 
             _timer = new System.Threading.Timer(_ => _ = TimerTickAsync(), null, TimerTick, TimerTick);
 
@@ -210,7 +210,7 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
         // Connects a fresh TLS byte stream, runs auth + the HTTP CONNECT, and wraps the result in a CstpChannel —
         // without touching any live field. Returned to the caller, which decides whether to bind it (first connect /
         // reconnect) or swap it in make-before-break (rekey).
-        async Task<(IByteStreamTransport stream, CstpChannel channel, OpenConnectTunnelInfo tunnelInfo, TunnelConfig config, int mtu)>
+        async Task<(IByteStreamTransport stream, CstpChannel channel, OpenConnectTunnelInfo tunnelInfo, TunnelConfig config, int mtu, byte[]? dtlsMasterSecret)>
             BuildCstpChannelAsync(IPAddress serverIp, CancellationToken cancellationToken)
         {
             OpenConnectTransportHandle handle = await _transportFactory
@@ -225,11 +225,14 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
             Logger.LogHandshake(DriverName, "config-auth accepted; session cookie received");
 
             // --- HTTP CONNECT /CSCOSSLC/tunnel: the response X-CSTP-* headers are the in-band tunnel config ---
-            // Advertise the DTLS data path only when a datagram factory is wired (otherwise stay TLS-only).
+            // Advertise the DTLS data path only when a datagram factory is wired (otherwise stay TLS-only). The 48-byte
+            // master secret we generate here is transported in-band as X-DTLS-Master-Secret; we keep the raw bytes so the
+            // DTLS data path can resume the legacy AnyConnect session with them (ocserv dtls-legacy abbreviated handshake).
             bool requestDtls = _datagramFactory != null;
+            byte[]? dtlsMasterSecret = requestDtls ? GenerateDtlsMasterSecret() : null;
             string connectRequest = OpenConnectConnectCodec.BuildConnectRequest(_host, cookie, _requestedMtu,
                 requestDtls: requestDtls,
-                dtlsMasterSecretHex: requestDtls ? GenerateDtlsMasterSecretHex() : null);
+                dtlsMasterSecretHex: dtlsMasterSecret is not null ? ToHex(dtlsMasterSecret) : null);
             OpenConnectHttpResponse connectResponse = await http.ConnectTunnelAsync(connectRequest, cancellationToken).ConfigureAwait(false);
             OpenConnectTunnelInfo tunnelInfo = OpenConnectConnectCodec.ParseConnectResponse(connectResponse.RawHeaderText + "\r\n\r\n");
             if (tunnelInfo.Address is null && tunnelInfo.AddressV6 is null)
@@ -240,7 +243,7 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
             config.Mtu = mtu;
 
             var channel = new CstpChannel(stream, mtu);
-            return (stream, channel, tunnelInfo, config, mtu);
+            return (stream, channel, tunnelInfo, config, mtu, dtlsMasterSecret);
         }
 
         // Subscribes / unsubscribes the shared DPD/peer-close/liveness handlers on a TLS channel.
@@ -279,7 +282,7 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
         // Opens UDP → DTLS → CstpDatagramChannel and swaps the data plane onto it. Any failure leaves the data plane on
         // CSTP-over-TLS (the fallback) — DTLS is an optimisation, never a hard requirement.
         async Task TryEstablishDtlsAsync(IPAddress serverIp, OpenConnectTunnelInfo tunnelInfo, int mtu,
-            CancellationToken loopToken, CancellationToken cancellationToken)
+            byte[]? dtlsMasterSecret, CancellationToken loopToken, CancellationToken cancellationToken)
         {
             IDatagramTransport? udp = null;
             DtlsDatagramTransport? dtls = null;
@@ -290,9 +293,11 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
             {
                 var dtlsEndpoint = new IPEndPoint(serverIp, tunnelInfo.DtlsPort!.Value);
                 udp = await _datagramFactory!.ConnectAsync(_host, dtlsEndpoint, handshakeCts.Token).ConfigureAwait(false);
-                // The X-DTLS-Session-ID correlates the UDP/DTLS session to this CSTP session (it is carried as the DTLS
-                // ClientHello session_id by AnyConnect/ocserv; the offline loopback link already pairs the two ends).
-                dtls = new DtlsDatagramTransport(udp, _dtlsCertificateValidation, ownsInner: true);
+                // Legacy AnyConnect DTLS (ocserv dtls-legacy): the gateway pushed X-DTLS-Session-ID/CipherSuite and we
+                // transported X-DTLS-Master-Secret in-band over the TLS CONNECT — resume that session so the DTLS
+                // ClientHello carries the session id ocserv expects (it otherwise rejects "invalid session ID size (0)").
+                DtlsResumptionParameters? resumption = BuildDtlsResumption(tunnelInfo, dtlsMasterSecret);
+                dtls = new DtlsDatagramTransport(udp, _dtlsCertificateValidation, ownsInner: true, resumption: resumption);
                 await dtls.ConnectAsync(handshakeCts.Token).ConfigureAwait(false);
 
                 var dtlsChannel = new CstpDatagramChannel(dtls, mtu, ownsTransport: false);
@@ -305,9 +310,9 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
                 _dtlsReceiveTask = Task.Run(() => dtlsChannel.RunReceiveLoopAsync(loopToken));
                 Logger.LogHandshake(DriverName, "DTLS 1.2 data path established (data plane swapped to DTLS)");
             }
-            catch
+            catch (Exception ex)
             {
-                Logger.LogHandshake(DriverName, "DTLS data path unavailable; staying on CSTP-over-TLS (fallback)");
+                Logger.LogHandshake(DriverName, $"DTLS data path unavailable ({ex.GetType().Name}: {ex.Message}); staying on CSTP-over-TLS (fallback)");
                 // DTLS handshake / socket failed (or hit the handshake timeout) — fall back to CSTP-over-TLS (already
                 // bound). Clean up the half-open DTLS first.
                 _dtlsActive = false;
@@ -321,14 +326,46 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
             }
         }
 
-        // A fresh 48-byte DTLS master secret (legacy AnyConnect X-DTLS-Master-Secret), hex-encoded.
-        string GenerateDtlsMasterSecretHex()
+        // A fresh 48-byte DTLS master secret (legacy AnyConnect X-DTLS-Master-Secret).
+        byte[] GenerateDtlsMasterSecret()
         {
             byte[] secret = new byte[48];
             NextRandomBytes(secret);
-            var sb = new StringBuilder(secret.Length * 2);
-            foreach (byte b in secret) sb.Append(b.ToString("x2"));
+            return secret;
+        }
+
+        // Builds the legacy AnyConnect DTLS resumption parameters from the gateway's X-DTLS-Session-ID/CipherSuite and our
+        // in-band master secret; null when any piece is missing (the master secret, a hex session id, or a known cipher)
+        // ⇒ the DTLS client falls back to a full handshake. ocserv dtls-legacy needs the resumption to accept the session.
+        static DtlsResumptionParameters? BuildDtlsResumption(OpenConnectTunnelInfo tunnelInfo, byte[]? masterSecret)
+        {
+            if (masterSecret is null || masterSecret.Length == 0) return null;
+            if (!TryParseHex(tunnelInfo.DtlsSessionId, out byte[] sessionId) || sessionId.Length == 0) return null;
+            if (!DtlsCipherSuiteMap.TryResolve(tunnelInfo.DtlsCipherSuite, out int cipherSuite)) return null;
+            return new DtlsResumptionParameters(masterSecret, sessionId, cipherSuite);
+        }
+
+        static string ToHex(byte[] bytes)
+        {
+            var sb = new StringBuilder(bytes.Length * 2);
+            foreach (byte b in bytes) sb.Append(b.ToString("x2"));
             return sb.ToString();
+        }
+
+        static bool TryParseHex(string? hex, out byte[] bytes)
+        {
+            bytes = Array.Empty<byte>();
+            if (string.IsNullOrEmpty(hex) || (hex!.Length & 1) != 0) return false;
+            var result = new byte[hex.Length / 2];
+            for (int i = 0; i < result.Length; i++)
+            {
+                if (!byte.TryParse(hex.Substring(i * 2, 2), System.Globalization.NumberStyles.HexNumber,
+                        System.Globalization.CultureInfo.InvariantCulture, out byte b))
+                    return false;
+                result[i] = b;
+            }
+            bytes = result;
+            return true;
         }
 
         // Runs the ocserv config-auth handshake and returns the session cookie ("webvpn=..."), throwing on rejection.
@@ -521,7 +558,7 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
             IPAddress serverIp = await _hostResolver.ResolveAsync(_host, _addressFamilyPreference, connectToken).ConfigureAwait(false);
 
             // 1) Build a fresh tunnel into locals (the current tunnel keeps carrying traffic throughout).
-            (IByteStreamTransport newStream, CstpChannel newChannel, OpenConnectTunnelInfo newInfo, TunnelConfig newConfig, int newMtu) =
+            (IByteStreamTransport newStream, CstpChannel newChannel, OpenConnectTunnelInfo newInfo, TunnelConfig newConfig, int newMtu, byte[]? newDtlsMasterSecret) =
                 await BuildCstpChannelAsync(serverIp, connectToken).ConfigureAwait(false);
 
             // 2) Capture the old resources + the old receive-loop token so we can cancel the old loops after the swap.
@@ -553,7 +590,7 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
 
             // Re-open the DTLS data path on the new tunnel when the gateway still offers it (fallback to TLS otherwise).
             if (_datagramFactory != null && newInfo.HasDtls)
-                await TryEstablishDtlsAsync(serverIp, newInfo, newMtu, newRecvToken, connectToken).ConfigureAwait(false);
+                await TryEstablishDtlsAsync(serverIp, newInfo, newMtu, newDtlsMasterSecret, newRecvToken, connectToken).ConfigureAwait(false);
 
             // 4) Tear the old tunnel down: detach its events (so its EOF cannot call OnLinkLost), send a best-effort
             //    DISCONNECT, cancel + await its loops, then dispose it. Done after the swap = make-before-break.

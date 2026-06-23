@@ -29,6 +29,7 @@ namespace TqkLibrary.VpnClient.Transport.Dtls
     {
         readonly IDatagramTransport _inner;
         readonly DtlsServerCertificateValidationCallback? _certificateValidationCallback;
+        readonly DtlsResumptionParameters? _resumption;
         readonly bool _ownsInner;
 
         BouncyCastleDatagramBridge? _bridge;
@@ -38,13 +39,18 @@ namespace TqkLibrary.VpnClient.Transport.Dtls
         /// <summary>
         /// Wraps <paramref name="inner"/> (the plaintext UDP pipe) in DTLS. <paramref name="certificateValidationCallback"/>
         /// validates the server certificate during the handshake (null = accept any). When <paramref name="ownsInner"/> is
-        /// true (the default) disposing this transport also disposes the inner pipe.
+        /// true (the default) disposing this transport also disposes the inner pipe. When <paramref name="resumption"/> is
+        /// supplied the client runs the legacy AnyConnect <b>abbreviated</b> handshake — offering the gateway's session id
+        /// + pre-shared master secret (ocserv <c>dtls-legacy</c>) — instead of a full handshake; null = full handshake
+        /// (offline loopback / non-legacy gateways).
         /// </summary>
         public DtlsDatagramTransport(IDatagramTransport inner,
-            DtlsServerCertificateValidationCallback? certificateValidationCallback = null, bool ownsInner = true)
+            DtlsServerCertificateValidationCallback? certificateValidationCallback = null, bool ownsInner = true,
+            DtlsResumptionParameters? resumption = null)
         {
             _inner = inner ?? throw new ArgumentNullException(nameof(inner));
             _certificateValidationCallback = certificateValidationCallback;
+            _resumption = resumption;
             _ownsInner = ownsInner;
         }
 
@@ -65,7 +71,7 @@ namespace TqkLibrary.VpnClient.Transport.Dtls
             _bridge = bridge;
 
             var crypto = new BcTlsCrypto(new SecureRandom());
-            var client = new DefaultDtlsClient(crypto, _certificateValidationCallback);
+            var client = new DefaultDtlsClient(crypto, _certificateValidationCallback, _resumption);
             var protocol = new DtlsClientProtocol();
 
             try

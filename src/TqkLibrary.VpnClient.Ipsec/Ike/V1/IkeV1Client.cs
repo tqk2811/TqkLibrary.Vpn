@@ -88,6 +88,13 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.V1
         /// <summary>The negotiated Phase 1 hash (for NAT-D and Quick Mode IV).</summary>
         public HashAlgorithmName NegotiatedHash => _hash;
 
+        /// <summary>
+        /// When set, Quick Mode offers plain Transport encapsulation before UDP-Encapsulated-Transport so a no-NAT
+        /// gateway installs a native (IP proto-50) ESP SA instead of an espinudp one. The driver sets it when it
+        /// carries ESP natively (honest-first with no NAT); left false for forced NAT-T (ESP over UDP/4500).
+        /// </summary>
+        public bool PreferNativeTransport { get; set; }
+
         // ---- Main Mode ----
 
         /// <summary>MM1: SA proposal + NAT-T Vendor IDs.</summary>
@@ -229,7 +236,7 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.V1
             _quickModeId = RandomNonZeroUInt32();
             var afterHash = new List<IsakmpPayload>
             {
-                IkeV1Proposals.Phase2(ChildInboundSpi),
+                IkeV1Proposals.Phase2(ChildInboundSpi, PreferNativeTransport),
                 new IsakmpRawPayload(IsakmpPayloadType.Nonce, _quickModeNonce),
                 new IsakmpRawPayload(IsakmpPayloadType.Identification, IdBody(IdTypeIpv4, 17, 1701, _localIdentity.GetAddressBytes())),
                 new IsakmpRawPayload(IsakmpPayloadType.Identification, IdBody(IdTypeIpv4, 17, 1701, _remoteIdentity.GetAddressBytes())),
@@ -322,7 +329,7 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.V1
 
             var afterHash = new List<IsakmpPayload>
             {
-                IkeV1Proposals.Phase2(_rekeyChildInboundSpi),
+                IkeV1Proposals.Phase2(_rekeyChildInboundSpi, PreferNativeTransport),
                 new IsakmpRawPayload(IsakmpPayloadType.Nonce, _rekeyNonceInitiator),
                 new IsakmpRawPayload(IsakmpPayloadType.Identification, IdBody(IdTypeIpv4, 17, 1701, _localIdentity.GetAddressBytes())),
                 new IsakmpRawPayload(IsakmpPayloadType.Identification, IdBody(IdTypeIpv4, 17, 1701, _remoteIdentity.GetAddressBytes())),

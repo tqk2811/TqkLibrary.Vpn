@@ -1,9 +1,11 @@
+using System.Linq;
 using System.Net;
 using System.Security.Cryptography;
 using TqkLibrary.VpnClient.Crypto;
 using TqkLibrary.VpnClient.Ipsec.Esp;
 using TqkLibrary.VpnClient.Ipsec.Ike.V1;
 using TqkLibrary.VpnClient.Ipsec.Ike.V1.Enums;
+using TqkLibrary.VpnClient.Ipsec.Ike.V1.Models;
 using Xunit;
 
 namespace TqkLibrary.VpnClient.Ipsec.Ike.Tests
@@ -73,6 +75,29 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.Tests
             byte[] h3Other = IkeV1QuickMode.ComputeHash3(prf, skeyidA, mid, ni, Bytes(0x99, 16));
             Assert.NotEqual(h3, h3Other);
         }
+
+        [Fact]
+        public void Phase2_EncapsulationModeOrder_FollowsCarrierPreference()
+        {
+            byte[] spi = { 1, 2, 3, 4 };
+
+            // Forced NAT-T (default): UDP-Encapsulated-Transport offered first so the gateway installs an espinudp SA.
+            var forced = IkeV1Proposals.Phase2(spi).Proposals[0].Transforms;
+            Assert.Equal(IkeV1Constants.EncapsulationMode.UdpTransport, EncapMode(forced[0]));
+
+            // Native ESP (no NAT, IP proto-50 carrier): plain Transport first so the gateway installs a native SA.
+            // Regression for the P0.8c espinudp blocker — a UDP-encap-first offer made strongSwan install espinudp and
+            // drop our native proto-50 even with no NAT (the gateway selects the first acceptable transform).
+            var native = IkeV1Proposals.Phase2(spi, preferTransport: true).Proposals[0].Transforms;
+            Assert.Equal(IkeV1Constants.EncapsulationMode.Transport, EncapMode(native[0]));
+
+            // Either order still offers the other mode so a gateway preferring the alternative can still select it.
+            Assert.Contains(forced, t => EncapMode(t) == IkeV1Constants.EncapsulationMode.Transport);
+            Assert.Contains(native, t => EncapMode(t) == IkeV1Constants.EncapsulationMode.UdpTransport);
+        }
+
+        static ushort EncapMode(IsakmpTransform transform)
+            => (ushort)transform.Attributes.First(a => a.Type == IkeV1Constants.Phase2Attribute.EncapsulationMode).NumericValue;
 
         static uint ToSpi(byte[] spi) => (uint)((spi[0] << 24) | (spi[1] << 16) | (spi[2] << 8) | spi[3]);
 

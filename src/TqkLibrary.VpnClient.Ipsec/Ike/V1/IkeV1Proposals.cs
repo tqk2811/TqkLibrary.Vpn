@@ -42,17 +42,22 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.V1
         /// <summary>
         /// Builds the Phase 2 (ESP) SA payload. AES-CBC-256 + HMAC-SHA1 transforms come first (the broad-interop
         /// default the live path relies on); AES-GCM-256 transforms are appended so a GCM-capable gateway can
-        /// select them. All offer UDP-encapsulated transport mode first, then plain transport mode.
+        /// select them. Each cipher is offered in two encapsulation modes; <paramref name="preferTransport"/> decides
+        /// the order — plain transport first for a native (proto-50) ESP carrier, UDP-encapsulated transport first
+        /// for forced NAT-T. The gateway selects the first acceptable transform, so the order decides the
+        /// encapsulation it installs (Transport ⇒ native SA, UDP-Encapsulated-Transport ⇒ espinudp SA).
         /// </summary>
-        public static IsakmpSaPayload Phase2(byte[] spi)
+        public static IsakmpSaPayload Phase2(byte[] spi, bool preferTransport = false)
         {
             var sa = new IsakmpSaPayload();
             var proposal = new IsakmpProposal { Number = 1, ProtocolId = IkeV1Constants.Protocol.Esp, Spi = spi };
             byte n = 1;
-            proposal.Transforms.Add(CbcTransform(n++, IkeV1Constants.EncapsulationMode.UdpTransport));
-            proposal.Transforms.Add(CbcTransform(n++, IkeV1Constants.EncapsulationMode.Transport));
-            proposal.Transforms.Add(GcmTransform(n++, IkeV1Constants.EncapsulationMode.UdpTransport));
-            proposal.Transforms.Add(GcmTransform(n, IkeV1Constants.EncapsulationMode.Transport));
+            ushort first = preferTransport ? IkeV1Constants.EncapsulationMode.Transport : IkeV1Constants.EncapsulationMode.UdpTransport;
+            ushort second = preferTransport ? IkeV1Constants.EncapsulationMode.UdpTransport : IkeV1Constants.EncapsulationMode.Transport;
+            proposal.Transforms.Add(CbcTransform(n++, first));
+            proposal.Transforms.Add(CbcTransform(n++, second));
+            proposal.Transforms.Add(GcmTransform(n++, first));
+            proposal.Transforms.Add(GcmTransform(n, second));
             sa.Proposals.Add(proposal);
             return sa;
         }

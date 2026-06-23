@@ -381,7 +381,9 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
 
                 case L2tpIpsecPhase1Strategy.NativeEsp:
                     // No NAT: IKE (incl. MM5/6, Quick Mode, DPD, rekey) stays plain on UDP/500; ESP goes native over
-                    // IP proto-50 from the same source address IKE authenticated on.
+                    // IP proto-50 from the same source address IKE authenticated on. Offer plain Transport first in
+                    // Quick Mode so the gateway installs a native SA (not espinudp) — otherwise it drops our proto-50.
+                    ike.PreferNativeTransport = true;
                     IDatagramTransport nativeEsp = _rawIpFactory!.Create(serverIp, EspIpProtocol, localBind: localIp);
                     _nativeEsp = nativeEsp; // publish for cleanup before any later step can fail
                     Logger.LogHandshake(DriverName, "No NAT detected — carrying ESP natively over IP proto-50 (raw socket)");

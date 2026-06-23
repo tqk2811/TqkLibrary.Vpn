@@ -21,8 +21,8 @@ noccp
 # proxyarp: server trả lời ARP hộ IP client (để gói trong subnet 10.31.0.0/24 tới được client).
 proxyarp
 
-# lock: khóa tty/pseudo-tty của phiên (tránh tranh chấp khi nhiều session).
-lock
+# (KHÔNG dùng 'lock': là option cho tty/serial — pppd qua plugin pppol2tp KHÔNG nhận
+#  → "unrecognized option 'lock'" → pppd exit code 2 → call đóng. Đã gặp live.)
 
 # connect-delay: chờ tối đa 5000ms để khung PPP đầu tới (tránh đua khi tunnel vừa lên).
 connect-delay 5000

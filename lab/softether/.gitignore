@@ -1,0 +1,4 @@
+# Binary publish của demo client (self-contained linux-x64, ~80MB) — tạo theo README §3, KHÔNG commit.
+client-bin/
+# File watermark runtime ("VPNCONNECT" 10 byte) — tạo trên VM, KHÔNG commit (an toàn dù không phải GPL).
+watermark.bin

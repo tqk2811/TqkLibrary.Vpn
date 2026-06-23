@@ -1,0 +1,60 @@
+# =====================================================================
+# lab/softether — compose RIÊNG cho VALIDATE LIVE driver V.4 SoftEther.
+#
+# 2 container trên CÙNG một Docker bridge tùy biến 'labnet':
+#   - softether-server : SoftEther VPN Server tự host (image siomiz/softethervpn).
+#                        Hub DEFAULT + SecureNAT (DHCP + NAT user-mode) + 1 user
+#                        password-auth (SHA-0). Cổng 443/tcp = SSL-VPN (PACK-over-TLS).
+#   - dotnet-client    : binary demo .NET self-contained
+#                        (--vpn ssl://USER:PASS@softether-server?hub=DEFAULT --watermark <file>)
+#
+# Vì sao AN TOÀN (giống lab ikev2-native/wireguard/openvpn/openconnect):
+#   - KHÔNG network_mode: host  -> SecureNAT chạy user-mode, không TUN host.
+#   - KHÔNG privileged-trên-host -> server chỉ NET_ADMIN + /dev/net/tun.
+#   - 2 container cùng bridge -> client mở TLS/443 tới server qua tên service.
+#     KHÔNG publish cổng ra ngoài: test nội bộ bridge.
+#
+# WATERMARK (rủi ro GPL đã GỠ): SoftEther server chấp nhận watermark POST khi body
+#   == hằng giao thức "VPNCONNECT" (HTTP_VPN_TARGET_POSTDATA, 10 byte ASCII) — KHÔNG
+#   cần ảnh GPL WaterMark[]. README §3 tạo file watermark.bin = "VPNCONNECT" rồi
+#   truyền --watermark. (Đường thứ hai trong ServerDownloadSignature của chính server.)
+# =====================================================================
+services:
+  softether-server:
+    image: siomiz/softethervpn:latest
+    container_name: lab-se-server
+    restart: "no"
+    cap_add:
+      - NET_ADMIN          # SecureNAT (NAT/route) trong netns container (KHÔNG đụng VM)
+    devices:
+      - /dev/net/tun       # SoftEther SecureNAT cần /dev/net/tun
+    environment:
+      # User password-auth: client gửi secure_password = SHA0(SHA0(pass||UPPER(user))||random).
+      USERNAME: "${SE_USER:-vpn}"
+      PASSWORD: "${SE_PASS:-vpn}"
+      PSK: "${SE_PSK:-vpn}"          # IPsec PSK (không dùng cho đường SSL-VPN, để mặc định)
+      MTU: "1500"
+    networks:
+      - labnet
+
+  dotnet-client:
+    # runtime-deps đủ chạy binary self-contained publish (linux-x64). KHÔNG cần SDK.
+    image: mcr.microsoft.com/dotnet/runtime-deps:8.0
+    container_name: lab-se-client
+    restart: "no"
+    # SoftEther chở data Ethernet-over-TLS trên TCP socket thường ⇒ KHÔNG cần CAP_NET_RAW.
+    networks:
+      - labnet
+    volumes:
+      # Binary publish demo (đặt vào ./client-bin trên VM trước).
+      - ./client-bin:/opt/client:ro
+    working_dir: /opt/client
+    # Container đứng yên: runbook 'docker exec' chạy demo với --vpn ssl://... --watermark ...
+    entrypoint: ["sleep", "infinity"]
+    depends_on:
+      - softether-server
+
+networks:
+  # bridge tùy biến: client mở TLS/443 tới server qua tên service 'softether-server'.
+  labnet:
+    driver: bridge

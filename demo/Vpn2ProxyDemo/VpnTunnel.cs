@@ -9,6 +9,7 @@ using TqkLibrary.VpnClient.Abstractions.Transport.Interfaces;
 using TqkLibrary.VpnClient.Drivers.Ikev2;
 using TqkLibrary.VpnClient.Drivers.L2tpIpsec;
 using TqkLibrary.VpnClient.Drivers.L2tpIpsec.Enums;
+using TqkLibrary.VpnClient.Drivers.OpenConnect;
 using TqkLibrary.VpnClient.Drivers.OpenVpn;
 using TqkLibrary.VpnClient.Drivers.SoftEther;
 using TqkLibrary.VpnClient.Drivers.Sstp;
@@ -344,6 +345,57 @@ namespace Vpn2ProxyDemo
             catch
             {
                 await vpn.DisposeAsync();
+                loggerFactory.Dispose();
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Connect tới một gateway OpenConnect (Cisco AnyConnect / ocserv) bằng host/port/user/pass (V.5): driver chạy
+        /// HTTPS <c>config-auth</c> (POST <c>/</c> user/pass → session cookie) → HTTP <c>CONNECT /CSCOSSLC/tunnel</c> →
+        /// CSTP-over-TLS, lấy IP từ <c>X-CSTP-Address</c> rồi gói IP thẳng vào <see cref="TcpIpStack"/> (KHÔNG PPP). Khi
+        /// <paramref name="enableDtls"/> bật và gateway quảng bá <c>X-DTLS-*</c>, data plane chuyển sang DTLS 1.2 (UDP)
+        /// song song, fallback CSTP-over-TLS nếu DTLS không lên. Cert gateway tự-ký ⇒ accept-any (cookie mới là phần
+        /// authorize tunnel). Trả tunnel đã lên (đang sống).
+        /// </summary>
+        public static async Task<VpnTunnel> ConnectOpenConnectAsync(string host, int port, string user, string pass, bool enableDtls, CancellationToken ct)
+        {
+            Console.WriteLine("=== [OpenConnect] ===");
+            ILoggerFactory loggerFactory = CreateDriverLoggerFactory();
+            // Cert tự-ký của ocserv lab ⇒ accept-any cho cả TLS byte-stream và DTLS (cookie mới authorize tunnel).
+            var driver = new OpenConnectDriver(
+                serverCertificateValidation: (_, _, _, _) => true,
+                dtlsCertificateValidation: _ => true,
+                enableDtls: enableDtls,
+                loggerFactory: loggerFactory);
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(TimeSpan.FromSeconds(90));
+
+            Console.WriteLine($"[openconnect] connecting to {host}:{port} (HTTPS config-auth → CSTP-over-TLS{(enableDtls ? " + DTLS data path" : "")}) ...");
+            IVpnConnection connection;
+            try
+            {
+                connection = await driver.ConnectAsync(
+                    new VpnEndpoint(host, port),
+                    new VpnCredentials { Username = string.IsNullOrEmpty(user) ? null : user, Password = string.IsNullOrEmpty(pass) ? null : pass },
+                    cts.Token);
+            }
+            catch { loggerFactory.Dispose(); throw; }
+            try
+            {
+                IVpnSession session = connection.Sessions[0];
+                IPAddress assigned = session.Config.AssignedAddress ?? IPAddress.Any;
+                IPAddress? dns = session.Config.DnsServers.Count > 0 ? session.Config.DnsServers[0] : null;
+                IPAddress? v6 = GlobalV6(session.Config.AssignedAddressV6);
+                Console.WriteLine($"[openconnect] tunnel up. assigned IP = {assigned}, ipv6 = {v6?.ToString() ?? "(none)"}, dns = {dns}");
+
+                var stack = new TcpIpStack(session.PacketChannel, assigned, v6);
+                return new VpnTunnel(stack, async () => { await connection.DisposeAsync(); loggerFactory.Dispose(); },
+                    assigned, session.PacketChannel.Mtu, driver.Capabilities, driver.Name, dns, v6);
+            }
+            catch
+            {
+                await connection.DisposeAsync();
                 loggerFactory.Dispose();
                 throw;
             }

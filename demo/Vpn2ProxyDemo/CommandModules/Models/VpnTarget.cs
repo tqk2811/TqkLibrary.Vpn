@@ -86,13 +86,17 @@ namespace Vpn2ProxyDemo.CommandModules.Models
                 error = $"--vpn '{value}' không phải URI hợp lệ. Cần scheme://user:pass@host[:port] hoặc đường dẫn .ovpn.";
                 return false;
             }
-            // scheme → giao thức. "ssl" là alias của SoftEther (VPN Gate gọi giao thức SoftEther là "SSL-VPN").
+            // scheme → giao thức. "ssl" là alias của SoftEther (VPN Gate gọi giao thức SoftEther là "SSL-VPN");
+            // "anyconnect" là alias của OpenConnect (Cisco AnyConnect/ocserv).
             VpnProtocol protocol;
             if (string.Equals(uri.Scheme, "ssl", StringComparison.OrdinalIgnoreCase))
                 protocol = VpnProtocol.SoftEther;
-            else if (!Enum.TryParse(uri.Scheme, ignoreCase: true, out protocol) || protocol == VpnProtocol.OpenVpn)
+            else if (string.Equals(uri.Scheme, "anyconnect", StringComparison.OrdinalIgnoreCase))
+                protocol = VpnProtocol.OpenConnect;
+            else if (!Enum.TryParse(uri.Scheme, ignoreCase: true, out protocol) || protocol == VpnProtocol.OpenVpn || protocol == VpnProtocol.WireGuard)
             {
-                error = $"--vpn scheme '{uri.Scheme}' không hỗ trợ. Dùng 'sstp', 'l2tp', 'softether'/'ssl', hoặc trỏ tới một file .ovpn cho OpenVPN.";
+                error = $"--vpn scheme '{uri.Scheme}' không hỗ trợ. Dùng 'sstp', 'l2tp', 'ikev2', 'softether'/'ssl', 'openconnect'/'anyconnect', "
+                    + "hoặc trỏ tới một file .ovpn (OpenVPN) / .conf (WireGuard).";
                 return false;
             }
             if (string.IsNullOrEmpty(uri.Host))
@@ -121,7 +125,7 @@ namespace Vpn2ProxyDemo.CommandModules.Models
             }
 
             int port = uri.Port; // -1 nếu URI không ghi port
-            if ((protocol == VpnProtocol.Sstp || protocol == VpnProtocol.SoftEther) && port < 0) port = 443;
+            if ((protocol == VpnProtocol.Sstp || protocol == VpnProtocol.SoftEther || protocol == VpnProtocol.OpenConnect) && port < 0) port = 443;
 
             // PSK từ ?psk=... (L2TP) + Hub từ ?hub=... (SoftEther) — percent-decoded; thiếu ⇒ áp default trong ctor.
             string? psk = TryGetQueryValue(uri.Query, "psk");

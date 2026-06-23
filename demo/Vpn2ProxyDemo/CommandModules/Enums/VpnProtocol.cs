@@ -20,5 +20,8 @@ namespace Vpn2ProxyDemo.CommandModules.Enums
 
         /// <summary>WireGuard (Noise_IKpsk2, UDP) cấu hình từ một file <c>.conf</c> wg-quick (<c>--vpn</c> trỏ thẳng tới đường dẫn file).</summary>
         WireGuard,
+
+        /// <summary>OpenConnect (Cisco AnyConnect/ocserv): HTTPS config-auth → CSTP-over-TLS (+DTLS data path), bare IP — no PPP (scheme <c>openconnect</c>/<c>anyconnect</c>) (V.5).</summary>
+        OpenConnect,
     }
 }

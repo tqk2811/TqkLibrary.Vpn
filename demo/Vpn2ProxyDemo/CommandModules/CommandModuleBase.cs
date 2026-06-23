@@ -24,6 +24,7 @@ namespace Vpn2ProxyDemo.CommandModules
         Option<bool> NativeEspOption { get; }
         Option<int> ExtraSessionsOption { get; }
         Option<bool> Ikev2EapOption { get; }
+        Option<bool> OpenConnectDtlsOption { get; }
 
         readonly Command _command;
         public Command Command => _command;
@@ -94,6 +95,15 @@ namespace Vpn2ProxyDemo.CommandModules
             };
             _command.Options.Add(Ikev2EapOption);
 
+            OpenConnectDtlsOption = new Option<bool>("--openconnect-dtls")
+            {
+                Description = "(Chỉ OpenConnect) bật đường data DTLS 1.2 (UDP) song song khi gateway quảng bá X-DTLS-* (V5.c) — "
+                    + "data đi qua DTLS thay vì CSTP-over-TLS, fallback TLS nếu DTLS không lên. Mặc định tắt ⇒ TLS-only. "
+                    + "Scheme khác OpenConnect ⇒ bỏ qua.",
+                DefaultValueFactory = _ => false,
+            };
+            _command.Options.Add(OpenConnectDtlsOption);
+
             _command.SetAction(InvokeAsync);
         }
 
@@ -124,6 +134,7 @@ namespace Vpn2ProxyDemo.CommandModules
             bool useNativeEsp = parseResult.GetValue(NativeEspOption);
             int extraSessions = parseResult.GetValue(ExtraSessionsOption);
             bool ikev2Eap = parseResult.GetValue(Ikev2EapOption);
+            bool openConnectDtls = parseResult.GetValue(OpenConnectDtlsOption);
 
             // --native-esp chỉ áp cho L2TP/IPsec (P0.8c). Bật với scheme khác ⇒ bỏ qua + cảnh báo rõ (không crash).
             if (useNativeEsp && target!.Protocol != VpnProtocol.L2tp)
@@ -157,11 +168,17 @@ namespace Vpn2ProxyDemo.CommandModules
                 Console.WriteLine($"  !! --ikev2-eap chỉ dùng cho IKEv2; scheme '{tag}' bỏ qua cờ này.");
                 ikev2Eap = false;
             }
+            // --openconnect-dtls chỉ áp cho OpenConnect (V.5). Bật với scheme khác ⇒ bỏ qua + cảnh báo.
+            if (openConnectDtls && target!.Protocol != VpnProtocol.OpenConnect)
+            {
+                Console.WriteLine($"  !! --openconnect-dtls chỉ dùng cho OpenConnect; scheme '{tag}' bỏ qua cờ này.");
+                openConnectDtls = false;
+            }
 
             try
             {
                 // Connect VPN theo giao thức đã chọn và trả về tunnel (giữ vòng đời kết nối).
-                await using VpnTunnel tunnel = await ConnectAsync(target, watermarkPath, enableIpv6, useNativeEsp, extraSessions, preferOuterIpv6, ikev2Eap, ct);
+                await using VpnTunnel tunnel = await ConnectAsync(target, watermarkPath, enableIpv6, useNativeEsp, extraSessions, preferOuterIpv6, ikev2Eap, openConnectDtls, ct);
 
                 // Panel "VPN này hỗ trợ gì" — probe (UDP/LAN ảo) + suy luận (IPv6/listen-external) ngay sau khi tunnel lên,
                 // TRƯỚC hành động (tự bao timeout, nuốt lỗi nên không làm hỏng lệnh).
@@ -218,7 +235,7 @@ namespace Vpn2ProxyDemo.CommandModules
         protected virtual string? ValidateOptions(ParseResult parseResult) => null;
 
         /// <summary>Dispatch connect theo giao thức đã parse về hàm static tương ứng của <see cref="VpnTunnel"/>.</summary>
-        Task<VpnTunnel> ConnectAsync(VpnTarget target, string watermarkPath, bool enableIpv6, bool useNativeEsp, int extraSessions, bool preferOuterIpv6, bool ikev2Eap, CancellationToken ct)
+        Task<VpnTunnel> ConnectAsync(VpnTarget target, string watermarkPath, bool enableIpv6, bool useNativeEsp, int extraSessions, bool preferOuterIpv6, bool ikev2Eap, bool openConnectDtls, CancellationToken ct)
             => target.Protocol switch
             {
                 // enableIpv6 chỉ áp cho đường PPP (SSTP/L2TP — P1.1); SoftEther/OpenVPN bật IPv6 theo cấu hình driver riêng.
@@ -233,6 +250,8 @@ namespace Vpn2ProxyDemo.CommandModules
                 VpnProtocol.OpenVpn => VpnTunnel.ConnectOpenVpnAsync(target.ConfigPath!, target.User, target.Pass, ct),
                 // WireGuard (V.3): keys/endpoint/address đọc từ file .conf wg-quick (configPath); driver chạy handshake UDP.
                 VpnProtocol.WireGuard => VpnTunnel.ConnectWireGuardAsync(target.ConfigPath!, ct),
+                // OpenConnect (V.5): HTTPS config-auth → CSTP-over-TLS (+DTLS với --openconnect-dtls), bare IP — no PPP.
+                VpnProtocol.OpenConnect => VpnTunnel.ConnectOpenConnectAsync(target.Host, target.Port, target.User, target.Pass, openConnectDtls, ct),
                 _ => throw new ArgumentOutOfRangeException(nameof(target), target.Protocol, "Giao thức VPN không hỗ trợ."),
             };
 

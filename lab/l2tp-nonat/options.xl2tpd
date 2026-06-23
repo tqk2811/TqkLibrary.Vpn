@@ -1,0 +1,42 @@
+# pppd options cho mỗi phiên L2TP (xl2tpd gọi: pppd ... file /etc/ppp/options.xl2tpd).
+# KHÔNG ghi local/remote IP ở đây — xl2tpd tự truyền (ip range / local ip trong xl2tpd.conf).
+
+# Tên local dùng để tra chap-secrets (cột 'server'); khớp 'name = l2tpd' trong xl2tpd.conf.
+name l2tpd
+
+# Xác thực: bắt client dùng MS-CHAPv2 (client repo hỗ trợ). 'auth' = yêu cầu peer xác thực.
+require-mschap-v2
+auth
+
+# DNS đẩy cho client (IPCP option 129/131).
+ms-dns 1.1.1.1
+
+# asyncmap 0: không escape control char nào (L2TP là synchronous-ish, an toàn để 0).
+asyncmap 0
+
+# Tránh CCP (MPPE/compression negotiation) cho đơn giản — L2TP/IPsec đã có IPsec bảo vệ.
+# KHÔNG bật mppe: L2TP/IPsec KHÔNG cần (khác PPTP). Bật mppe dễ làm IPCP rối.
+noccp
+
+# proxyarp: server trả lời ARP hộ IP client (để gói trong subnet 10.31.0.0/24 tới được client).
+proxyarp
+
+# lock: khóa tty/pseudo-tty của phiên (tránh tranh chấp khi nhiều session).
+lock
+
+# connect-delay: chờ tối đa 5000ms để khung PPP đầu tới (tránh đua khi tunnel vừa lên).
+connect-delay 5000
+
+# MTU/MRU 1410: chừa chỗ cho header L2TP(12) + IPsec/ESP transport + IP/UDP, tránh phân mảnh.
+# CHECK: nếu client thương lượng MRU khác hoặc thấy phân mảnh, chỉnh 1400/1380.
+mtu 1410
+mru 1410
+
+# Log chi tiết để soi IPCP/IPV6CP ConfReq/ConfAck khi debug live.
+debug
+
+# Không tự cướp default route / nhân bản DNS server trên server lab.
+nodefaultroute
+
+# CHECK: KHÔNG đặt 'nodetach' ở đây — xl2tpd quản lý pppd qua pty và muốn pppd
+#        chạy theo cơ chế của nó. Để xl2tpd điều khiển vòng đời pppd.

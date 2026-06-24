@@ -142,9 +142,17 @@ namespace TqkLibrary.VpnClient.Pptp.Gre
             return frame;
         }
 
-        // Re-prepend FF 03 so the surfaced frame matches the canonical [FF 03][proto:2][info] form.
+        // Re-prepend FF 03 so the surfaced frame matches the canonical [FF 03][proto:2][info] form — but ONLY when the
+        // GRE payload does not already carry it. RFC 2637 §4.3 says the PPP frame rides without the HDLC Address/Control,
+        // yet real PACs (the Linux kernel pptp/accel-ppp GRE) keep FF 03 inside the GRE payload. Prepending it
+        // unconditionally would double it (FF 03 FF 03 …), so the upper layers read 0xFF03 as the protocol and never
+        // dispatch the frame. Idempotent prepend keeps both forms canonical for the consuming PPP engine.
         static ReadOnlyMemory<byte> PrependAddressControl(ReadOnlyMemory<byte> body)
         {
+            ReadOnlySpan<byte> span = body.Span;
+            if (span.Length >= 2 && span[0] == 0xFF && span[1] == 0x03)
+                return body; // the PAC already included the HDLC Address/Control — surface it as-is
+
             var framed = new byte[body.Length + 2];
             framed[0] = 0xFF;
             framed[1] = 0x03;

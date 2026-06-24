@@ -88,6 +88,36 @@ namespace TqkLibrary.VpnClient.Pptp.Tests
         }
 
         [Fact]
+        public async Task Inbound_Payload_Already_Carrying_AddressControl_Is_Not_Doubled()
+        {
+            // Real PACs (the Linux kernel pptp / accel-ppp GRE) keep the HDLC Address/Control (FF 03) INSIDE the GRE
+            // payload, contrary to RFC 2637 §4.3. The channel must surface that as the canonical [FF 03][proto][info]
+            // form WITHOUT prepending a second FF 03 — a regression of the double-FF03 bug makes the PPP engine read
+            // 0xFF03 as the protocol and never dispatch the frame (the live PPTP handshake then stalls at LCP).
+            var link = new LoopbackDatagramLink();
+            var a = new PptpGreChannel(link.A, localCallId: CallA, peerCallId: CallB);
+
+            var received = new TaskCompletionSource<byte[]>(TaskCreationOptions.RunContinuationsAsynchronously);
+            a.FrameReceived += f => received.TrySetResult(f.ToArray());
+            a.Start();
+
+            // Inbound GRE payload that ALREADY includes FF 03 (as a real PAC sends it): [FF 03][C0 21][LCP info].
+            var inbound = new PptpGrePacket
+            {
+                CallId = CallA,
+                SequenceNumber = 0,
+                Payload = new byte[] { 0xFF, 0x03, 0xC0, 0x21, 0x01, 0x01, 0x00, 0x04 },
+            };
+            await link.B.SendAsync(PptpGreCodec.Encode(inbound));
+
+            byte[] got = await WithTimeout(received.Task);
+            // Exactly one FF 03 — the payload is surfaced verbatim, NOT FF 03 FF 03 C0 21 …
+            Assert.Equal(new byte[] { 0xFF, 0x03, 0xC0, 0x21, 0x01, 0x01, 0x00, 0x04 }, got);
+
+            await a.DisposeAsync();
+        }
+
+        [Fact]
         public async Task Ack_Piggybacks_HighestReceivedSeq_On_Next_Send()
         {
             var link = new LoopbackDatagramLink();

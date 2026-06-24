@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>SSH transport protocol layer (RFC 4251/4253/4252/4254 + OpenSSH extensions) for VPN-over-SSH (OpenSSH `-w` tun): the SSH binary packet protocol (length+padding+payload, plaintext and the chacha20-poly1305@openssh.com / aes256-gcm@openssh.com AEAD records), the version banner exchange, the KEXINIT algorithm negotiation, the curve25519-sha256 key exchange (X25519 + the SSH exchange hash / KDF), ed25519 host-key verification, publickey (ed25519) / password user authentication and the tun@openssh.com point-to-point tunnel channel. Pure protocol — rides any IByteStreamTransport. Reuses Crypto (X25519/Ed25519/ChaCha20/AES-GCM/SHA-256/Poly1305).</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Abstractions\TqkLibrary.VpnClient.Abstractions.csproj" />
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Crypto\TqkLibrary.VpnClient.Crypto.csproj" />
+  </ItemGroup>
+
+</Project>

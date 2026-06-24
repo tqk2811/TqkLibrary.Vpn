@@ -8,8 +8,12 @@ on:
 
 jobs:
   build-test:
-    name: Build + offline tests (Linux)
-    runs-on: ubuntu-latest
+    name: Build + offline tests
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, windows-latest, macos-latest ]
+    runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v4
@@ -29,7 +33,10 @@ jobs:
       # Tests use xUnit v3, so each test project is a self-contained Microsoft.Testing.Platform executable.
       # Run them directly (not `dotnet test`) so the runner matches the local Termux/PRoot arm64 dev flow.
       # `-trait- "Category=Integration"` skips live tests that need a real VPN Gate / lab server.
+      # `shell: bash` makes this step run identically on Linux, macOS and Windows runners
+      # (Windows defaults to PowerShell, where this script would not parse).
       - name: Test (offline)
+        shell: bash
         run: |
           set -euo pipefail
           status=0

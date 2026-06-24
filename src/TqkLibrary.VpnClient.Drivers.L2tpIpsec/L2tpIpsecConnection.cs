@@ -240,7 +240,7 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
             // ESP data plane + L2TP + PPP. The suite (AES-CBC or AES-GCM) follows what the gateway selected in QM2.
             // The ESP packet is identical either way; only the carrier differs — native IP proto-50 (no-NAT gateway) or
             // ESP-in-UDP/4500 over the NAT-T channel — so the rest of the data plane is unchanged.
-            EspSession esp = BuildEspSession(ike.NegotiatedEsp, ike.CreatePhase2Keys(), ike.ChildOutboundSpi, ike.ChildInboundSpi);
+            EspSession esp = BuildEspSession(ike.NegotiatedEsp, ike.CreatePhase2Keys(), ike.ChildOutboundSpi, ike.ChildInboundSpi, Logger);
             Func<ReadOnlyMemory<byte>, Task> sendEsp = nativeEsp != null
                 ? datagram => nativeEsp.SendAsync(datagram).AsTask()
                 : datagram => natt.SendEspAsync(datagram);
@@ -466,11 +466,12 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
 
         // Builds the bidirectional ESP session from the negotiated suite. For AES-CBC the per-direction key material
         // is encryption-key ‖ integrity-key; for AES-GCM it is encryption-key ‖ 4-byte salt (EspSuiteSelection maps it).
-        static EspSession BuildEspSession(EspSuiteSelection selection, IkeV1Phase2Keys keys, byte[] outboundSpi, byte[] inboundSpi)
+        static EspSession BuildEspSession(EspSuiteSelection selection, IkeV1Phase2Keys keys, byte[] outboundSpi, byte[] inboundSpi,
+            ILogger? logger = null)
         {
             EspCipherSuite outbound = selection.BuildSuite(keys.OutboundEncryption, keys.OutboundIntegrity);
             EspCipherSuite inbound = selection.BuildSuite(keys.InboundEncryption, keys.InboundIntegrity);
-            return new EspSession(ToSpi(outboundSpi), outbound, ToSpi(inboundSpi), inbound);
+            return new EspSession(ToSpi(outboundSpi), outbound, ToSpi(inboundSpi), inbound, logger);
         }
 
         async Task<byte[]> ExchangeIkeAsync(NatTraversalChannel natt, byte[] request, CancellationToken cancellationToken)
@@ -714,7 +715,7 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
 
                 IpsecL2tpTransport? transport = _dataTransport;
                 if (transport == null) return;
-                EspSession next = BuildEspSession(ike.RekeyNegotiatedEsp, ike.CreateRekeyPhase2Keys(), ike.RekeyChildOutboundSpi, ike.RekeyChildInboundSpi);
+                EspSession next = BuildEspSession(ike.RekeyNegotiatedEsp, ike.CreateRekeyPhase2Keys(), ike.RekeyChildOutboundSpi, ike.RekeyChildInboundSpi, Logger);
                 transport.SwapSession(next);
                 Logger.LogRekey(DriverName, "Phase 2 ESP CHILD SA rekeyed (make-before-break)");
                 ScheduleDropPreviousInbound();
@@ -810,7 +811,7 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
                 await natt.SendIkeAsync(newIke.BuildQuickMode3()).ConfigureAwait(false); // QM3 has no reply
 
                 // Make-before-break: install the new CHILD SA for outbound, keep the old inbound during the grace window.
-                EspSession next = BuildEspSession(newIke.NegotiatedEsp, newIke.CreatePhase2Keys(), newIke.ChildOutboundSpi, newIke.ChildInboundSpi);
+                EspSession next = BuildEspSession(newIke.NegotiatedEsp, newIke.CreatePhase2Keys(), newIke.ChildOutboundSpi, newIke.ChildInboundSpi, Logger);
                 transport.SwapSession(next);
 
                 // Release the old ISAKMP SA at the gateway, then swing DPD / Phase 2 rekey / teardown onto the new SA.

@@ -185,7 +185,7 @@ namespace TqkLibrary.VpnClient.Drivers.Ikev2
             _assignedDns = ike.Configuration!.DnsServers.FirstOrDefault();
 
             // --- ESP tunnel-mode data plane straight to the IP channel ---
-            EspSession esp = BuildEspSession(ike);
+            EspSession esp = BuildEspSession(ike, Logger);
             var dataPlane = new EspTunnelChannel(esp, datagram => natt.SendEspAsync(datagram), Mtu);
             dataPlane.RekeyNeeded += OnRekeyNeeded; // outbound ESP sequence nearing 2^32 → rekey before it wraps
             _dataPlane = dataPlane;
@@ -240,13 +240,13 @@ namespace TqkLibrary.VpnClient.Drivers.Ikev2
         }
 
         // Builds the bidirectional ESP session from the negotiated CHILD_SA: initiator keys outbound, responder inbound.
-        static EspSession BuildEspSession(IkeClient ike)
+        static EspSession BuildEspSession(IkeClient ike, ILogger? logger = null)
         {
             ChildSaKeys k = ike.ChildKeys!;
             EspSuiteSelection suite = ike.NegotiatedEsp!;
             EspCipherSuite outbound = suite.BuildSuite(k.EncryptionInitiator, k.IntegrityInitiator);
             EspCipherSuite inbound = suite.BuildSuite(k.EncryptionResponder, k.IntegrityResponder);
-            return new EspSession(ToSpi(ike.ChildOutboundSpi), outbound, ToSpi(ike.ChildInboundSpi), inbound);
+            return new EspSession(ToSpi(ike.ChildOutboundSpi), outbound, ToSpi(ike.ChildInboundSpi), inbound, logger);
         }
 
         // ---- IKE request/response with retransmit (handshake exchanges) ----
@@ -431,7 +431,7 @@ namespace TqkLibrary.VpnClient.Drivers.Ikev2
 
                 EspCipherSuite outbound = rekeyed.Suite.BuildSuite(rekeyed.Keys.EncryptionInitiator, rekeyed.Keys.IntegrityInitiator);
                 EspCipherSuite inbound = rekeyed.Suite.BuildSuite(rekeyed.Keys.EncryptionResponder, rekeyed.Keys.IntegrityResponder);
-                var fresh = new EspSession(ToSpi(rekeyed.OutboundSpi), outbound, ToSpi(rekeyed.InboundSpi), inbound);
+                var fresh = new EspSession(ToSpi(rekeyed.OutboundSpi), outbound, ToSpi(rekeyed.InboundSpi), inbound, Logger);
 
                 dataPlane.SwapSession(fresh);                       // send on the new SA now; keep the old for inbound
                 Logger.LogRekey(DriverName, "CHILD_SA rekeyed (make-before-break)");

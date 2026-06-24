@@ -16,6 +16,8 @@ using TqkLibrary.VpnClient.Drivers.OpenVpn;
 using TqkLibrary.VpnClient.Drivers.Pptp;
 using TqkLibrary.VpnClient.Drivers.SoftEther;
 using TqkLibrary.VpnClient.Drivers.Sstp;
+using TqkLibrary.VpnClient.Drivers.Tailscale;
+using TqkLibrary.VpnClient.Drivers.Tailscale.Config;
 using TqkLibrary.VpnClient.Drivers.Tinc;
 using TqkLibrary.VpnClient.Drivers.Tinc.Config;
 using TqkLibrary.VpnClient.Drivers.Vtun;
@@ -164,6 +166,21 @@ namespace TqkLibrary.VpnClient
         /// <summary>Registers the Nebula driver with explicit auto-reconnect options (e.g. to disable it).</summary>
         public VpnClientBuilder UseNebula(NebulaConfig config, NebulaReconnectOptions reconnectOptions)
             => AddDriver(new NebulaDriver(config, reconnectOptions));
+
+        /// <summary>
+        /// Registers the Tailscale driver: the ts2021 control plane (a Noise IK handshake to a Headscale/Tailscale
+        /// coordination server, a preauth-key node registration and a netmap fetch over HTTP/2) projected onto a
+        /// multi-peer WireGuard config, with the WireGuard data plane reused wholesale (Noise_IKpsk2 + type-4 transport +
+        /// crypto-routing). The static <see cref="TailscaleConfig"/> (server URL, preauth key, machine/node X25519 keys,
+        /// MTU) drives the control plane; the overlay address and routes come from the netmap
+        /// (<c>AddressAssignment.OutOfBand</c>). DERP relay + disco NAT traversal are future work (peers must be directly
+        /// reachable). Auto-reconnect is enabled by default.
+        /// </summary>
+        public VpnClientBuilder UseTailscale(TailscaleConfig config) => AddDriver(new TailscaleDriver(config));
+
+        /// <summary>Registers the Tailscale driver with explicit auto-reconnect options (e.g. to disable it).</summary>
+        public VpnClientBuilder UseTailscale(TailscaleConfig config, TailscaleReconnectOptions reconnectOptions)
+            => AddDriver(new TailscaleDriver(config, reconnectOptions));
 
         /// <summary>
         /// Registers the tinc 1.1 (SPTPS) driver: a TCP meta-connection (ID + Curve25519/Ed25519/ChaCha-Poly1305 SPTPS

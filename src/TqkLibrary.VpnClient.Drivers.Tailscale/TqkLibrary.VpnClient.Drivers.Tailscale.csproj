@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Tailscale protocol driver: runs the ts2021 control plane (login a Headscale/Tailscale coordination server with a preauth key, register the node, long-poll the netmap) and projects the resulting netmap onto a multi-peer WireGuardConfig, then reuses the WireGuard data plane wholesale (WireGuardConnection: Noise_IKpsk2 handshake + type-4 transport + crypto-routing) behind a stable L3 packet channel.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Abstractions\TqkLibrary.VpnClient.Abstractions.csproj" />
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Drivers.Core\TqkLibrary.VpnClient.Drivers.Core.csproj" />
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Drivers.WireGuard\TqkLibrary.VpnClient.Drivers.WireGuard.csproj" />
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Tailscale\TqkLibrary.VpnClient.Tailscale.csproj" />
+  </ItemGroup>
+
+</Project>

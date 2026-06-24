@@ -28,7 +28,7 @@ namespace TqkLibrary.VpnClient.Tailscale.Control
     /// key) — both X25519, generated and held by the caller. The data plane is not this client's concern: the netmap is
     /// projected onto a WireGuard config elsewhere.
     /// </summary>
-    public sealed class TailscaleControlClient : IDisposable
+    public sealed class TailscaleControlClient : ITailscaleControlClient, IDisposable
     {
         // Enables HTTP/2 over a cleartext (non-TLS) custom stream — the Noise channel is already encrypted, but Go's
         // HttpClient does not know that, so it must be told to speak h2c. Set once, process-wide (idempotent).

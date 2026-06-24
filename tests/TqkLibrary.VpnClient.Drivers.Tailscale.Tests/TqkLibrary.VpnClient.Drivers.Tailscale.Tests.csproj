@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\TqkLibrary.VpnClient.Drivers.Tailscale\TqkLibrary.VpnClient.Drivers.Tailscale.csproj" />
+  </ItemGroup>
+
+</Project>

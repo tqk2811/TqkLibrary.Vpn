@@ -259,6 +259,8 @@ namespace Vpn2ProxyDemo.CommandModules
                 VpnProtocol.Pptp => VpnTunnel.ConnectPptpAsync(target.Host, target.User, target.Pass, ct),
                 // IP-encap (V.8): plain GRE-47/IPIP-4/SIT-41 trên raw IP socket (cần CAP_NET_RAW) — connectionless, IP tĩnh từ ?addr/?peer.
                 VpnProtocol.IpEncap => VpnTunnel.ConnectIpEncapAsync(target.Host, target.IpEncapKind, target.TunnelAddress!, target.TunnelPeerAddress, ct),
+                // Nebula (V.7.1): ca/cert/key + peer endpoint + overlay đọc từ file .nebula (configPath); driver chạy Noise IX UDP.
+                VpnProtocol.Nebula => VpnTunnel.ConnectNebulaAsync(target.ConfigPath!, ct),
                 _ => throw new ArgumentOutOfRangeException(nameof(target), target.Protocol, "Giao thức VPN không hỗ trợ."),
             };
 

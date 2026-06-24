@@ -98,6 +98,14 @@ namespace Vpn2ProxyDemo.CommandModules.Models
                 return true;
             }
 
+            // Dạng Nebula (V.7.1): --vpn trỏ tới một file .nebula (ini: ca/cert/key PEM paths + peer endpoint + overlay) —
+            // cert/key là PEM nhiều dòng nên không nhét vừa URI; đọc thẳng từ file (giống .ovpn/.conf).
+            if (value.Trim().EndsWith(".nebula", StringComparison.OrdinalIgnoreCase))
+            {
+                target = new VpnTarget(VpnProtocol.Nebula, host: value.Trim(), port: 0, user: "", pass: "", configPath: value.Trim());
+                return true;
+            }
+
             if (!Uri.TryCreate(value, UriKind.Absolute, out Uri? uri))
             {
                 error = $"--vpn '{value}' không phải URI hợp lệ. Cần scheme://user:pass@host[:port] hoặc đường dẫn .ovpn.";

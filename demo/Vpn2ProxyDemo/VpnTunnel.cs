@@ -11,6 +11,8 @@ using TqkLibrary.VpnClient.Drivers.IpEncap;
 using TqkLibrary.VpnClient.Drivers.IpEncap.Enums;
 using TqkLibrary.VpnClient.Drivers.L2tpIpsec;
 using TqkLibrary.VpnClient.Drivers.L2tpIpsec.Enums;
+using TqkLibrary.VpnClient.Drivers.Nebula;
+using TqkLibrary.VpnClient.Drivers.Nebula.Config;
 using TqkLibrary.VpnClient.Drivers.OpenConnect;
 using TqkLibrary.VpnClient.Drivers.OpenVpn;
 using TqkLibrary.VpnClient.Drivers.Pptp;
@@ -497,6 +499,113 @@ namespace Vpn2ProxyDemo
                 loggerFactory.Dispose();
                 throw;
             }
+        }
+
+        /// <summary>
+        /// Connect tới một peer Nebula (Slack mesh VPN — Noise_IX_25519_AESGCM_SHA256, UDP) từ một file
+        /// <paramref name="configPath"/> <c>.nebula</c> (ini: <c>ca=</c>/<c>cert=</c>/<c>key=</c> trỏ tới PEM của
+        /// nebula-cert + <c>endpoint=host:port</c> static-host-map + <c>overlay=ip/prefix</c>): nạp CA/cert/X25519-key,
+        /// dựng <see cref="NebulaConfig"/>, rồi tái dùng nguyên <see cref="NebulaConnection"/> (driver chạy handshake
+        /// initiator → data type-1 Message → <see cref="TcpIpStack"/> trực tiếp, KHÔNG PPP — V.7.1). Trả tunnel đã lên.
+        /// </summary>
+        public static async Task<VpnTunnel> ConnectNebulaAsync(string configPath, CancellationToken ct)
+        {
+            Console.WriteLine("=== [Nebula] ===");
+            string path = ResolveConfigPath(configPath);
+            (NebulaConfig config, string host, int port) = ParseNebulaConf(File.ReadAllText(path), Path.GetDirectoryName(Path.GetFullPath(path))!);
+            ILoggerFactory loggerFactory = CreateDriverLoggerFactory();
+            var factory = new TqkLibrary.VpnClient.Drivers.Nebula.Transport.NebulaSocketTransportFactory();
+            var vpn = new NebulaConnection(host, port, config, factory, loggerFactory: loggerFactory);
+            try
+            {
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                cts.CancelAfter(TimeSpan.FromSeconds(90));
+
+                Console.WriteLine($"[nebula] connecting to {host}:{port} (UDP, Noise IX initiator) ...");
+                await vpn.ConnectAsync(cts.Token);
+                IPAddress assigned = vpn.AssignedAddress ?? IPAddress.Any;
+                IPAddress? dns = vpn.Config.DnsServers.Count > 0 ? vpn.Config.DnsServers[0] : null;
+                Console.WriteLine($"[nebula] tunnel up. overlay IP = {assigned}, dns = {dns?.ToString() ?? "(none)"}, mtu = {vpn.PacketChannel.Mtu}");
+
+                var stack = new TcpIpStack(vpn.PacketChannel, assigned, null);
+                var driver = new NebulaDriver(config);
+                return new VpnTunnel(stack, async () => { await vpn.DisposeAsync(); loggerFactory.Dispose(); },
+                    assigned, vpn.PacketChannel.Mtu, driver.Capabilities, driver.Name, dns);
+            }
+            catch
+            {
+                await vpn.DisposeAsync();
+                loggerFactory.Dispose();
+                throw;
+            }
+        }
+
+        // Parse một file .nebula tối giản (ini key=value): ca/cert/key (đường dẫn PEM, tương đối với file .nebula),
+        // endpoint=host:port (static-host-map của peer), overlay=ip/prefix (đè IP trong cert nếu muốn), dns=ip[,ip].
+        // Pure helper (chỉ đọc các PEM được trỏ tới). Tái dùng codec/PEM của project Nebula.
+        static (NebulaConfig config, string host, int port) ParseNebulaConf(string text, string baseDir)
+        {
+            string? caPath = null, certPath = null, keyPath = null, endpoint = null, overlay = null;
+            var dnsServers = new List<IPAddress>();
+
+            foreach (string rawLine in text.Split('\n'))
+            {
+                string line = rawLine.Trim();
+                if (line.Length == 0 || line.StartsWith("#") || line.StartsWith(";")) continue;
+                int eq = line.IndexOf('=');
+                if (eq < 0) continue;
+                string key = line.Substring(0, eq).Trim().ToLowerInvariant();
+                string val = line.Substring(eq + 1).Trim();
+                switch (key)
+                {
+                    case "ca": caPath = val; break;
+                    case "cert": certPath = val; break;
+                    case "key": keyPath = val; break;
+                    case "endpoint": endpoint = val; break;
+                    case "overlay": overlay = val; break;
+                    case "dns":
+                        foreach (string d in val.Split(','))
+                            if (IPAddress.TryParse(d.Trim(), out IPAddress? ip)) dnsServers.Add(ip);
+                        break;
+                }
+            }
+
+            if (caPath is null || certPath is null || keyPath is null)
+                throw new InvalidOperationException("File .nebula cần ca=, cert= và key= (đường dẫn PEM của nebula-cert).");
+            if (string.IsNullOrEmpty(endpoint))
+                throw new InvalidOperationException("File .nebula cần endpoint=<host>:<port> (static-host-map của peer).");
+
+            string Resolve(string p) => Path.IsPathRooted(p) ? p : Path.Combine(baseDir, p);
+            var codec = new TqkLibrary.VpnClient.Nebula.Certificate.NebulaCertificateCodec();
+            var caCert = codec.UnmarshalCertificate(
+                TqkLibrary.VpnClient.Nebula.Certificate.NebulaPem.Decode(File.ReadAllText(Resolve(caPath))).Body, out _);
+            var clientCert = codec.UnmarshalCertificate(
+                TqkLibrary.VpnClient.Nebula.Certificate.NebulaPem.Decode(File.ReadAllText(Resolve(certPath))).Body, out _);
+            byte[] x25519Priv = TqkLibrary.VpnClient.Nebula.Certificate.NebulaPem.Decode(File.ReadAllText(Resolve(keyPath))).Body;
+
+            int colon = endpoint!.LastIndexOf(':');
+            string host = colon > 0 ? endpoint.Substring(0, colon) : endpoint;
+            int port = 4242;
+            if (colon > 0) int.TryParse(endpoint.Substring(colon + 1), out port);
+
+            IPAddress? overlayAddr = null;
+            int prefix = 24;
+            if (!string.IsNullOrEmpty(overlay)) { (overlayAddr, prefix) = ParseCidr(overlay!); }
+
+            // IP literal ⇒ static-host-map trực tiếp; hostname ⇒ để connection tự resolve (PeerEndpoint null).
+            IPEndPoint? peerEndpoint = IPAddress.TryParse(host, out IPAddress? hostIp) ? new IPEndPoint(hostIp, port) : null;
+
+            var config = new NebulaConfig
+            {
+                CaCertificate = caCert,
+                ClientCertificate = clientCert,
+                ClientX25519PrivateKey = x25519Priv,
+                PeerEndpoint = peerEndpoint,
+                OverlayAddress = overlayAddr,
+                PrefixLength = prefix,
+                DnsServers = dnsServers,
+            };
+            return (config, host, port);
         }
 
         // Parse một file wg-quick .conf tối thiểu: [Interface] PrivateKey/Address/DNS + [Peer] PublicKey/PresharedKey/

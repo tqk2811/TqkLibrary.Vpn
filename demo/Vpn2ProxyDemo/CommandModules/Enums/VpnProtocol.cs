@@ -29,5 +29,8 @@ namespace Vpn2ProxyDemo.CommandModules.Enums
 
         /// <summary>Plain IP-in-IP / GRE encapsulation (no control plane): standard GRE proto-47 (scheme <c>gre</c>), IPIP proto-4 (scheme <c>ipip</c>) or SIT/6in4 proto-41 (scheme <c>sit</c>) over a raw IP socket — needs CAP_NET_RAW/Administrator; the tunnel address is static (?addr=/?peer=) since there is no IPCP/DHCP (V.8).</summary>
         IpEncap,
+
+        /// <summary>Nebula (Slack mesh VPN, Noise_IX/AES-256-GCM, UDP) cấu hình từ một file <c>.nebula</c> (ini trỏ tới ca/cert/key PEM + peer endpoint + overlay) (<c>--vpn</c> trỏ thẳng tới file) (V.7.1).</summary>
+        Nebula,
     }
 }

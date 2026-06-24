@@ -1,0 +1,41 @@
+# Lab V.10: OpenSSH server (PermitTunnel point-to-point) + .NET VPN-over-SSH driver client on one bridge labnet.
+# Server: sshd with PermitTunnel point-to-point + a tunuser (password tunpass) + the client's ed25519 authorized
+#   key; brings up tun0 = 10.10.0.1 peer 10.10.0.2 when the client opens the tun@openssh.com channel.
+# Client: TCP/22 -> SSH-2 handshake (curve25519-sha256 + ed25519 + chacha20-poly1305@openssh.com) -> auth ->
+#   tun@openssh.com L3 -> ICMP 10.10.0.1 both ways.
+#
+# Prep on the VM (~/ssh-lab/): build image lab-ssh (Dockerfile), publish the demo -> ./client-bin, generate the
+# client ed25519 key -> ./shared/, then docker compose up -d. See README.
+services:
+  ssh-server:
+    image: lab-ssh:latest
+    container_name: ssh-server
+    networks: [labnet]
+    cap_add: [NET_ADMIN]
+    devices: ["/dev/net/tun:/dev/net/tun"]
+    sysctls:
+      - net.ipv4.ip_forward=1
+    volumes:
+      - ./:/lab:ro
+      - ./shared:/lab/shared:rw
+    working_dir: /lab
+    command: sh -c "cp /lab/setup-server.sh /tmp/s.sh && chmod +x /tmp/s.sh && exec /tmp/s.sh"
+
+  client:
+    image: mcr.microsoft.com/dotnet/runtime-deps:8.0
+    container_name: ssh-client
+    depends_on: [ssh-server]
+    networks: [labnet]
+    cap_add: [NET_ADMIN]
+    devices: ["/dev/net/tun:/dev/net/tun"]
+    volumes:
+      - ./:/lab:ro
+      - ./client-bin:/app:ro
+      - ./shared:/lab/shared:ro
+    working_dir: /app
+    # Keep the container alive so `docker exec` can run the demo manually (see README).
+    command: sleep infinity
+
+networks:
+  labnet:
+    driver: bridge

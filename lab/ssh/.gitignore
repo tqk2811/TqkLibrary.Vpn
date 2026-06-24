@@ -1,0 +1,6 @@
+# Lab artifacts — KHÔNG commit (binary publish, generated keys, pcap).
+client-bin/
+shared/
+publish/
+*.pcap
+*.tgz

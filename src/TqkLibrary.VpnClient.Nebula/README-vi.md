@@ -3,8 +3,8 @@
 Thư viện **protocol Nebula** (mesh VPN của Slack) thuần .NET — hiện thực handshake **Noise IX**
 (`Noise_IX_25519_AESGCM_SHA256`), codec **Nebula certificate** (protobuf v1 + verify chữ ký **Ed25519**), codec **gói
 UDP 16-byte header** và codec **payload handshake** (`NebulaHandshake` protobuf). Đây là project protocol-level cho
-driver **V.7.1** (xem [`.docs/11`](../../.docs/11-todo-roadmap.md) §V.7.1). Driver runtime (UDP transport, lighthouse,
-data-plane lifecycle) là phase (b) — **chưa làm**.
+driver **V.7.1** (xem [`.docs/11`](../../.docs/11-todo-roadmap.md) §V.7.1). Driver runtime (UDP transport,
+data-plane lifecycle, re-handshake) là phase (b) — **XONG** ở [`Drivers.Nebula`](../TqkLibrary.VpnClient.Drivers.Nebula), validate live full-tunnel ICMP 2 chiều.
 
 > **Trạng thái:** **phase (a) protocol XONG + VALIDATE LIVE handshake ✓** (2026-06-24, nebula v1.9.5 thật, lab
 > [`lab/nebula`](../../lab/nebula/README-vi.md)): nebula THẬT chấp nhận stage-1 của ta (`Handshake message received
@@ -26,7 +26,7 @@ hash SHA-256 vs BLAKE2s, cipher AES-256-GCM mặc định) + danh tính bằng *
 | Hướng | Project | Lý do |
 |-------|---------|-------|
 | Dùng | [Crypto](../TqkLibrary.VpnClient.Crypto) | [`NoiseSymmetricState`](../TqkLibrary.VpnClient.Crypto/Noise/NoiseSymmetricState.cs#L20) (symmetric IX), [`Curve25519DhGroup`](../TqkLibrary.VpnClient.Crypto/Noise/Curve25519DhGroup.cs#L15) (X25519 DH), [`AesGcmCipher`](../TqkLibrary.VpnClient.Crypto/Aead/AesGcmCipher.cs#L18)/[`ChaCha20Poly1305Cipher`](../TqkLibrary.VpnClient.Crypto/Aead/ChaCha20Poly1305Cipher.cs#L18) (AEAD), [`HmacPrf.Sha256`](../TqkLibrary.VpnClient.Crypto/HmacPrf.cs#L29) (KDF PRF), [`Sha256Hash`](../TqkLibrary.VpnClient.Crypto/Sha256Hash.cs#L13) (transcript hash), [`Ed25519Signer`](../TqkLibrary.VpnClient.Crypto/Noise/Ed25519Signer.cs#L17) (verify chữ ký cert) |
-| Được dùng bởi | `Drivers.Nebula` (V.7.1 phase b — **chưa có**) | driver lắp ráp UDP transport + lighthouse + data-plane lifecycle |
+| Được dùng bởi | [`Drivers.Nebula`](../TqkLibrary.VpnClient.Drivers.Nebula) (V.7.1 phase b) | driver lắp ráp UDP transport + data-plane lifecycle + re-handshake quanh các codec/handshake này |
 
 ## Cấu trúc thư mục
 
@@ -88,4 +88,5 @@ TqkLibrary.VpnClient.Nebula/
 - **Build xanh `netstandard2.0` + `net8.0`**; 22 test offline (`tests/TqkLibrary.VpnClient.Nebula.Tests`) — handshake self-pair (crossed keys + biến thể ChaChaPoly), codec round-trip, cert sign/verify. WireGuard 77 test không regression (không refactor shared code).
 - **VALIDATE LIVE ✓**: offline interop với cert THẬT (re-marshal == signed bytes 100==100, fingerprint khớp `nebula-cert print`, sig valid against CA) + live Noise IX handshake với nebula v1.9.5 (first-run success, không bug interop). Chi tiết [`lab/nebula`](../../lab/nebula/README-vi.md).
 - **Cipher**: mặc định AES-256-GCM (name `…AESGCM…`); network `chachapoly` truyền `cipher: ChaCha20Poly1305Cipher` + `protocolName: "Noise_IX_25519_ChaChaPoly_SHA256"`.
-- **Chưa làm (phase b)**: UDP transport runtime, lighthouse query, `SwappablePacketChannel` + supervisor F.6, **tunnel lifecycle** (giữ tunnel sống để data-plane 2 chiều — data packet AEAD đã đúng codec/nonce, nhưng cần lifecycle để nebula không tear-down), `VpnClientBuilder.UseNebula`. Cert v2 (ASN.1 DER) + P256/ECDSA cũng chưa làm (chỉ v1 + Curve25519/Ed25519).
+- **Phase b XONG ✓** ([`Drivers.Nebula`](../TqkLibrary.VpnClient.Drivers.Nebula)): UDP transport runtime, **tunnel lifecycle** (giữ tunnel sống bằng re-handshake make-before-break định kỳ), `SwappablePacketChannel` + supervisor F.6, `VpnClientBuilder.UseNebula`. **VALIDATE LIVE FULL-TUNNEL ICMP 2 chiều** với nebula v1.9.5 thật (tcpdump overlay echo request+reply, 0 bug data-plane). Chi tiết [`Drivers.Nebula README`](../TqkLibrary.VpnClient.Drivers.Nebula/README-vi.md) + [`lab/nebula`](../../lab/nebula/README-vi.md).
+- **Chưa làm**: lighthouse query động (discovery peer→endpoint runtime — phase b dùng `static_host_map`/endpoint tĩnh), relay/punchy NAT hole-punching, multi-peer mesh. Cert v2 (ASN.1 DER) + P256/ECDSA cũng chưa (chỉ v1 + Curve25519/Ed25519).

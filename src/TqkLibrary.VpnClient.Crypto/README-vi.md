@@ -1,6 +1,6 @@
 # TqkLibrary.VpnClient.Crypto
 
-> Managed crypto: primitive contracts (Interfaces/), MD4/DES/SHA-0/DH-MODP/AES-CBC/CTR/RC4/HMAC/RNG, AEAD (AES-GCM + ChaCha20-Poly1305: native trên net8.0, BouncyCastle trên netstandard2.0; cộng XChaCha20-Poly1305 = HChaCha20 + ChaCha20-Poly1305 cho WireGuard cookie-reply), PRF TLS 1.0 (`Tls1Prf`) + cửa sổ chống replay (`AntiReplayWindow`), MPPE/PPTP (RC4 + key schedule RFC 3078/3079), và Noise primitives (X25519/BLAKE2s/HMAC-BLAKE2s/Noise-KDF/SymmetricState qua BouncyCastle trên cả 2 TFM — nền cho WireGuard/Nebula).
+> Managed crypto: primitive contracts (Interfaces/), MD4/DES/SHA-0/SHA-256/DH-MODP/AES-CBC/CTR/RC4/HMAC/RNG, AEAD (AES-GCM + ChaCha20-Poly1305: native trên net8.0, BouncyCastle trên netstandard2.0; cộng XChaCha20-Poly1305 = HChaCha20 + ChaCha20-Poly1305 cho WireGuard cookie-reply), PRF TLS 1.0 (`Tls1Prf`) + cửa sổ chống replay (`AntiReplayWindow`), MPPE/PPTP (RC4 + key schedule RFC 3078/3079), và Noise primitives (X25519/Ed25519/BLAKE2s/HMAC-BLAKE2s/Noise-KDF/SymmetricState qua BouncyCastle trên cả 2 TFM — nền cho WireGuard `Noise_IKpsk2` + Nebula `Noise_IX`).
 
 ## Mục đích
 
@@ -41,13 +41,15 @@ TqkLibrary.VpnClient.Crypto/
 │   ├── Enums/MppeKeyStrength.cs # cường độ session key (40/56/128-bit)
 │   ├── MppeKeyDerivation.cs    # GetNewKeyFromSHA + initial/re-key + strength reduction (static codec)
 │   └── MppeSession.cs          # 1 chiều MPPE: RC4 state + coherency count + stateless/stateful re-key
-├── Noise/                 # Primitive cho Noise/WireGuard — BouncyCastle trên CẢ 2 TFM (BCL không có X25519/BLAKE2s)
+├── Noise/                 # Primitive cho Noise/WireGuard/Nebula — BouncyCastle trên CẢ 2 TFM (BCL không có X25519/BLAKE2s/Ed25519)
 │   ├── Curve25519DhGroup.cs # X25519 (RFC 7748, IANA group 31) — IDhGroup
+│   ├── Ed25519Signer.cs     # Ed25519 PureEdDSA (RFC 8032), key 32B/sig 64B — ISignatureAlgo (verify cert Nebula V.7.1)
 │   ├── Blake2s.cs           # BLAKE2s-256 unkeyed (RFC 7693) — IHashAlgo
 │   ├── Blake2sKeyedMac.cs   # keyed BLAKE2s output tùy chỉnh (WG mac1/mac2 16B) — static
 │   ├── HmacBlake2sPrf.cs     # HMAC-BLAKE2s (RFC 2104, block 64) — IPrf
 │   ├── NoiseKdf.cs          # KDF Noise/WireGuard (HKDF RFC 5869 trên HMAC-BLAKE2s) — static
-│   └── NoiseSymmetricState.cs # Noise SymmetricState (spec §5.2) cho WireGuard Noise_IKpsk2 — class state machine
+│   └── NoiseSymmetricState.cs # Noise SymmetricState (spec §5.2) — WireGuard Noise_IKpsk2 + Nebula Noise_IX (generic) — class state machine
+├── Sha256Hash.cs          # SHA-256 (IHashAlgo, FIPS 180-4) — transcript hash Noise IX cho Nebula (V.7.1)
 ├── AesCbcCipher.cs        # AES-CBC no-padding (IBlockCipher)
 ├── AesCtr.cs              # AES-CTR (static, dựng từ AES-ECB)
 ├── Rc4.cs                 # RC4 stream cipher (KSA/PRGA) — MPPE/PPTP + SoftEther use_encrypt (BROKEN, RFC 7465)
@@ -76,6 +78,7 @@ TqkLibrary.VpnClient.Crypto/
 | `IDhGroup` | Nhóm Diffie-Hellman cho IKE (`GeneratePrivateKey`/`DerivePublicValue`/`DeriveSharedSecret`) | [IDhGroup.cs:4](Interfaces/IDhGroup.cs#L4) |
 | `IPrf` | Pseudo-random function (1 block) cho key derivation | [IPrf.cs:4](Interfaces/IPrf.cs#L4) |
 | `IIntegrityAlgo` | MAC toàn vẹn với ICV (thường cắt ngắn) | [IIntegrityAlgo.cs:4](Interfaces/IIntegrityAlgo.cs#L4) |
+| `ISignatureAlgo` | Lược đồ chữ ký khóa-công-khai (`DerivePublicKey`/`Sign`/`Verify`); Ed25519/ECDSA — verify cert Nebula (V.7.1) | [ISignatureAlgo.cs:4](Interfaces/ISignatureAlgo.cs#L4) |
 
 ### Hiện thực
 
@@ -83,6 +86,7 @@ TqkLibrary.VpnClient.Crypto/
 |------|---------|--------|
 | `Md4` | MD4 digest (16 byte) — NT hash cho MS-CHAPv2; có `static Hash(...)` tiện dụng | [Md4.cs:9](Md4.cs#L9) |
 | `Sha0` | SHA-0 digest (20 byte, FIPS 180 1993 — SHA-1 **bỏ ROTL1** trong message schedule); auth password SoftEther (V.4); có `static Hash(...)` | [Sha0.cs:13](Sha0.cs#L13) |
+| `Sha256Hash` | SHA-256 (32 byte, FIPS 180-4, `IHashAlgo`) qua BCL `SHA256` cả 2 TFM; transcript hash Noise IX cho Nebula (V.7.1) | [Sha256Hash.cs:13](Sha256Hash.cs#L13) |
 | `Des` | DES 1 block, ECB-encrypt, **không** check weak-key; `static EncryptBlock(key8, block8)` | [Des.cs:8](Des.cs#L8) |
 | `AesCbcCipher` | AES-CBC no-padding (`IBlockCipher`, block 16 byte) | [AesCbcCipher.cs:10](AesCbcCipher.cs#L10) |
 | `AesCtr` | AES-CTR `static Transform(...)` dựng từ AES-ECB, counter big-endian | [AesCtr.cs:9](AesCtr.cs#L9) |
@@ -102,11 +106,12 @@ TqkLibrary.VpnClient.Crypto/
 | `MppeKeyStrength` | enum cường độ session key MPPE (40/56/128-bit) | [Mppe/Enums/MppeKeyStrength.cs:8](Mppe/Enums/MppeKeyStrength.cs#L8) |
 | `HmacUtil` | Internal: chọn `HMACMD5/SHA1/SHA256/SHA384/SHA512` theo `HashAlgorithmName` | [HmacUtil.cs:6](HmacUtil.cs#L6) |
 | `Curve25519DhGroup` | X25519 (RFC 7748, IANA group 31), key 32B (`IDhGroup`); BouncyCastle `Rfc7748.X25519` cả 2 TFM | [Noise/Curve25519DhGroup.cs:15](Noise/Curve25519DhGroup.cs#L15) |
+| `Ed25519Signer` | Ed25519 PureEdDSA (RFC 8032, `ISignatureAlgo`), key 32B / sig 64B, **không** pre-hash (khớp Go `crypto/ed25519`); BouncyCastle `Rfc8032.Ed25519` cả 2 TFM; verify chữ ký Nebula cert (V.7.1) | [Noise/Ed25519Signer.cs:17](Noise/Ed25519Signer.cs#L17) |
 | `Blake2s` | BLAKE2s-256 unkeyed (RFC 7693), digest 32B (`IHashAlgo`); BouncyCastle `Blake2sDigest` | [Noise/Blake2s.cs:12](Noise/Blake2s.cs#L12) |
 | `Blake2sKeyedMac` | Keyed BLAKE2s output 1..32B (WG mac1/mac2 16B), `static ComputeMac(key, input, output)` | [Noise/Blake2sKeyedMac.cs:11](Noise/Blake2sKeyedMac.cs#L11) |
 | `HmacBlake2sPrf` | HMAC-BLAKE2s (RFC 2104, block 64, **không** phải keyed-BLAKE2s), output 32B (`IPrf`) | [Noise/HmacBlake2sPrf.cs:14](Noise/HmacBlake2sPrf.cs#L14) |
 | `NoiseKdf` | KDF Noise/WireGuard (HKDF RFC 5869 trên HMAC-BLAKE2s); `static Derive/Kdf1/Kdf2/Kdf3` | [Noise/NoiseKdf.cs:11](Noise/NoiseKdf.cs#L11) |
-| `NoiseSymmetricState` | Noise SymmetricState (spec §5.2) cho WireGuard `Noise_IKpsk2_25519_ChaCha20Poly1305_BLAKE2s` (**seed string** = `Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s` — cipher viết tắt, đúng `wg` thật; **đã sửa bug + validate live V.3**): `InitializeWireGuard`/`InitializeSymmetric`/`MixHash`/`MixKey` (Kdf2)/`MixKeyAndHash` (Kdf3, PSK)/`EncryptAndHash`+`DecryptAndHash` (ChaCha20-Poly1305 nonce `0^4‖counter` LE, AAD = `h`)/`Split` (Kdf2 → cặp transport key 32B); DI `IPrf`/`IHashAlgo`/`IAeadCipher` (tái dùng nguyên primitive Noise/) | [Noise/NoiseSymmetricState.cs:23](Noise/NoiseSymmetricState.cs#L23) |
+| `NoiseSymmetricState` | Noise SymmetricState (spec §5.2) **generic** — WireGuard `Noise_IKpsk2_25519_ChaCha20Poly1305_BLAKE2s` (**seed string** = `Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s`, **đã sửa bug + validate live V.3**) **và** Nebula `Noise_IX_25519_AESGCM_SHA256` (V.7.1, **validate live** — qua `InitializeSymmetric` + HMAC-SHA-256/`Sha256Hash`/`AesGcmCipher`, đều pass validate 32/12/16, **KHÔNG refactor**): `InitializeWireGuard`/`InitializeSymmetric`/`MixHash`/`MixKey` (Kdf2)/`MixKeyAndHash` (Kdf3, PSK)/`EncryptAndHash`+`DecryptAndHash` (nonce `0^4‖counter` LE, AAD = `h`)/`Split` (Kdf2 → cặp transport key 32B); DI `IPrf`/`IHashAlgo`/`IAeadCipher` (tái dùng nguyên primitive) | [Noise/NoiseSymmetricState.cs:23](Noise/NoiseSymmetricState.cs#L23) |
 
 ## Chuẩn / RFC tuân thủ
 
@@ -128,6 +133,8 @@ TqkLibrary.VpnClient.Crypto/
 | RFC 8439 (ChaCha20-Poly1305) | `ChaCha20Poly1305Cipher` | [Aead/ChaCha20Poly1305Cipher.cs:18](Aead/ChaCha20Poly1305Cipher.cs#L18) | Comment; test vector §2.8.2 |
 | draft-irtf-cfrg-xchacha (XChaCha20-Poly1305 / HChaCha20) | `XChaCha20Poly1305Cipher` | [Aead/XChaCha20Poly1305Cipher.cs:6](Aead/XChaCha20Poly1305Cipher.cs#L6) | KAT HChaCha20 §2.2.1 + AEAD §A.3.1 (test ở WireGuard.Tests) |
 | RFC 7748 (X25519) + RFC 8031 (Curve25519 IKE group 31) | `Curve25519DhGroup` | [Noise/Curve25519DhGroup.cs:11](Noise/Curve25519DhGroup.cs#L11) | Comment; test vector RFC 7748 §5.2/§6.1 (KAT) |
+| RFC 8032 (Ed25519 PureEdDSA) | `Ed25519Signer` | [Noise/Ed25519Signer.cs:12](Noise/Ed25519Signer.cs#L12) | Comment; KAT RFC 8032 §7.1 TEST 2/3 + cross-check BouncyCastle; verify cert Nebula |
+| FIPS 180-4 (SHA-256) | `Sha256Hash` | [Sha256Hash.cs:6](Sha256Hash.cs#L6) | Comment; KAT FIPS ""/`abc`/56-byte; transcript hash Noise IX |
 | RFC 7693 (BLAKE2) | `Blake2s`, `Blake2sKeyedMac` | [Noise/Blake2s.cs:8](Noise/Blake2s.cs#L8), [Noise/Blake2sKeyedMac.cs:7](Noise/Blake2sKeyedMac.cs#L7) | Comment; KAT BLAKE2s-256 + keyed-KAT (blake2s-kat) |
 | RFC 5869 (HKDF) — Noise/WireGuard KDF | `NoiseKdf` | [Noise/NoiseKdf.cs:6](Noise/NoiseKdf.cs#L6) | Comment; extract t0=HMAC(key,input) rồi expand ti=HMAC(t0,t(i-1)\|i) |
 | Noise Protocol Framework §5.2 (SymmetricState) + WireGuard whitepaper §5.4 (handshake) | `NoiseSymmetricState` | [Noise/NoiseSymmetricState.cs:7](Noise/NoiseSymmetricState.cs#L7) | Comment; CONSTRUCTION/IDENTIFIER WireGuard, nonce AEAD `0^4‖counter` LE + AAD = `h`; test đối chiếu hằng trung gian `ck0`/`h0` |
@@ -200,7 +207,7 @@ integ.ComputeIcv(key, data, icv);
 - **Đã hiện thực & dùng thật:** MD4, DES, AES-CBC, AES-CTR, AES-GCM, ChaCha20-Poly1305, XChaCha20-Poly1305, MODP DH (group 2/14), HMAC-PRF, HMAC-integrity, prf+, `Tls1Prf` (PRF TLS 1.0 cho OpenVPN key-method-2), `AntiReplayWindow` (cửa sổ chống replay 64 gói, RFC 4303 §3.4.3 — dùng cho ESP + OpenVPN AEAD) — tiêu thụ bởi `Ipsec` (IKE/ESP), `Ppp` (MS-CHAPv2), `OpenVpn` (NCP data channel: AES-GCM + ChaCha20-Poly1305) và `WireGuard` (XChaCha20-Poly1305 cho cookie-reply V3.c).
 - **SHA-0 ([Sha0.cs](Sha0.cs)) — đã hiện thực + KAT, consumer SoftEther (V.4) còn ở roadmap:** `Sha0` (`IHashAlgo`, 20 byte, FIPS 180 1993) = SHA-1 **bỏ ROTL1** ở message schedule, mirror cách viết `Md4`/`Des`. Dùng cho auth password SoftEther SSL-VPN (hash password+username **cục bộ**, hash không lên wire). KAT FIPS-180: "abc" `0164b8a9…`, chuỗi rỗng `f96cea19…`, ví dụ 2-block `d2516ee1…` + đối chiếu **khác** SHA-1 cho mọi padding ([Sha0Tests](../../tests/TqkLibrary.VpnClient.Crypto.Tests/Sha0Tests.cs)).
 - **MPPE + RC4 ([Mppe/](Mppe) + [Rc4.cs](Rc4.cs)) — đã hiện thực + KAT offline (F.5b); consumer đầu tiên = CCP negotiator PPTP (V6.a):** `Rc4` (stream cipher KSA/PRGA) + `MppeKeyDerivation` (suy khóa RFC 3078/3079: `GetNewKeyFromSHA` SHA-1, initial key SHA-only, re-key SHA→RC4-self, strength reduction 40/56/128-bit) + `MppeSession` (1 chiều: RC4 state + coherency count 12-bit + framing A/B/C/D, stateless re-key-mỗi-gói vs stateful re-key-mỗi-256-gói). MPPE start key suy từ MS-CHAPv2 qua `MsChapV2.DeriveMppe*StartKey` (tái dùng `GetMasterKey`/`GetAsymmetricStartKey` sẵn có, thêm cờ `isServer` chọn Magic2/Magic3 — client-send=server-receive). **CẢNH BÁO BẢO MẬT: MPPE + MS-CHAPv2 đã bị phá hoàn toàn** (MS-CHAPv2 brute-force DES 2¹⁶, RC4 keystream lệch RFC 7465) — chỉ dùng cho tương thích PPTP legacy, **tuyệt đối không** cho thiết kế mới. KAT byte-chính-xác: RC4 (RFC 6229 40/128-bit + classic Rivest), MPPE key derivation (RFC 3079 §3.5 MasterKey/StartKey/SessionKey 40/56/128 + "Sample Encrypted Message" rc4(SessionKey,"test message") — lưu ý byte cuối 56-bit §3.5.2 là erratum RFC, giá trị thật kết thúc `B8`), session round-trip stateless/stateful qua 600 gói ([`Rc4Tests`](../../tests/TqkLibrary.VpnClient.Crypto.Tests/Rc4Tests.cs)/[`MppeKeyDerivationTests`](../../tests/TqkLibrary.VpnClient.Crypto.Tests/MppeKeyDerivationTests.cs)/[`MppeSessionTests`](../../tests/TqkLibrary.VpnClient.Crypto.Tests/MppeSessionTests.cs)). **Nay đã có consumer**: CCP negotiator + `MppeSessionFactory` ở [`TqkLibrary.VpnClient.Pptp`](../TqkLibrary.VpnClient.Pptp) (V6.a) suy `MppeSession` từ MS-CHAPv2 + kết quả CCP; **GRE data plane** PPTP (V6.b) còn chờ F.9 raw-IP.
-- **Noise primitives ([Noise/](Noise)) — đã hiện thực + KAT, chưa có consumer:** `Curve25519DhGroup` (X25519), `Blake2s`, `Blake2sKeyedMac`, `HmacBlake2sPrf`, `NoiseKdf`, **`NoiseSymmetricState` (V3.a)** là nền cho WireGuard (roadmap V.3) và Nebula (V.7). KAT byte-chính-xác: X25519 (RFC 7748 §5.2/§6.1), BLAKE2s-256 + keyed-KAT, HMAC-BLAKE2s đối chiếu HMAC-textbook trên `Blake2s` đã KAT, `NoiseKdf` kiểm cấu trúc extract/expand. `NoiseSymmetricState` là Noise SymmetricState (spec §5.2) đối xứng thuần cho `Noise_IKpsk2_25519_ChaCha20Poly1305_BLAKE2s` (InitializeWireGuard/MixHash/MixKey/MixKeyAndHash/EncryptAndHash/DecryptAndHash/Split) — tái dùng nguyên primitive Noise/ qua DI, test cấu trúc offline đối chiếu hằng trung gian WireGuard `ck0`/`h0` + round-trip + Split 2×32B. **Chưa** có handshake state machine Noise_IKpsk2 (initiation/response/transport keys — làm cùng driver V.3 để KAT trọn handshake).
+- **Noise primitives ([Noise/](Noise)) — đã hiện thực + KAT + dùng thật bởi WireGuard (V.3) và Nebula (V.7.1):** `Curve25519DhGroup` (X25519), `Ed25519Signer` (RFC 8032, **mới V.7.1**), `Blake2s`, `Blake2sKeyedMac`, `HmacBlake2sPrf`, `NoiseKdf`, **`NoiseSymmetricState` (V3.a)** + `Sha256Hash` (FIPS 180-4, **mới V.7.1**). KAT byte-chính-xác: X25519 (RFC 7748 §5.2/§6.1), Ed25519 (RFC 8032 §7.1 TEST 2/3 + cross-check BCL — **validate live** verify cert nebula thật), SHA-256 (FIPS 180-4), BLAKE2s-256 + keyed-KAT, HMAC-BLAKE2s đối chiếu HMAC-textbook, `NoiseKdf` extract/expand. `NoiseSymmetricState` là Noise SymmetricState (spec §5.2) **generic**: WireGuard `Noise_IKpsk2_…ChaChaPoly_BLAKE2s` (validate live V.3) **và** Nebula `Noise_IX_25519_AESGCM_SHA256` (validate live V.7.1 — qua `InitializeSymmetric` + SHA-256/HMAC-SHA-256/AES-256-GCM, đều pass validate 32/12/16, **KHÔNG refactor**). Handshake state machine Noise_IKpsk2 ở [`WireGuard`](../TqkLibrary.VpnClient.WireGuard); Noise IX ở [`Nebula`](../TqkLibrary.VpnClient.Nebula).
 - **Khác biệt netstandard2.0 vs net8.0:** chỉ ở `AesGcmCipher` + `ChaCha20Poly1305Cipher` — net8.0 dùng `AesGcm`/`ChaCha20Poly1305` của BCL, netstandard2.0 fallback BouncyCastle. Các primitive `Noise/` (X25519/BLAKE2s/HMAC-BLAKE2s) dùng BouncyCastle **giống nhau trên cả 2 TFM** (BCL không có sẵn ⇒ không nhánh `#if`). `BouncyCastle.Cryptography` nay là PackageReference **không điều kiện** (cả 2 TFM). Các primitive còn lại dùng BCL chung cho cả hai TFM.
 - **MODP group 2 (1024-bit)** giữ lại cho tương thích IKEv1/VPN Gate dù đã yếu theo tiêu chuẩn hiện đại; **group 14 (2048-bit)** là lựa chọn mặc định khuyến nghị.
 - **MD4, DES & SHA-0** cố ý dùng thuật toán đã "vỡ" về mặt mật mã — MD4/DES vì MS-CHAPv2 bắt buộc, SHA-0 vì SoftEther auth bắt buộc; **không** dùng cho mục đích bảo mật mới.

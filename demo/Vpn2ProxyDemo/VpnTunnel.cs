@@ -18,10 +18,13 @@ using TqkLibrary.VpnClient.Drivers.OpenVpn;
 using TqkLibrary.VpnClient.Drivers.Pptp;
 using TqkLibrary.VpnClient.Drivers.SoftEther;
 using TqkLibrary.VpnClient.Drivers.Sstp;
+using TqkLibrary.VpnClient.Drivers.Tinc;
+using TqkLibrary.VpnClient.Drivers.Tinc.Config;
 using TqkLibrary.VpnClient.Drivers.WireGuard;
 using TqkLibrary.VpnClient.Drivers.WireGuard.Transport;
 using TqkLibrary.VpnClient.IpStack;
 using TqkLibrary.VpnClient.OpenVpn.Config;
+using TqkLibrary.VpnClient.Tinc.Hosts;
 using TqkLibrary.VpnClient.WireGuard.Config;
 
 namespace Vpn2ProxyDemo
@@ -538,6 +541,120 @@ namespace Vpn2ProxyDemo
                 loggerFactory.Dispose();
                 throw;
             }
+        }
+
+        /// <summary>
+        /// Kết nối tinc 1.1 (SPTPS) từ một file <c>.tinc</c> (ini: name/key/peerhost/endpoint/overlay/dns). Mở
+        /// TCP meta-connection + SPTPS handshake -> data-plane SPTPS (REQ_KEY/ANS_KEY) -> bare-IP router-mode over UDP.
+        /// </summary>
+        public static async Task<VpnTunnel> ConnectTincAsync(string configPath, CancellationToken ct)
+        {
+            Console.WriteLine("=== [tinc] ===");
+            string path = ResolveConfigPath(configPath);
+            (TincConfig config, string host, int port) = ParseTincConf(File.ReadAllText(path), Path.GetDirectoryName(Path.GetFullPath(path))!);
+            ILoggerFactory loggerFactory = CreateDriverLoggerFactory();
+            var factory = new TqkLibrary.VpnClient.Drivers.Tinc.Transport.TincSocketTransportFactory();
+            var vpn = new TincConnection(host, port, config, factory, loggerFactory: loggerFactory);
+            try
+            {
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                cts.CancelAfter(TimeSpan.FromSeconds(90));
+
+                Console.WriteLine($"[tinc] connecting to {host}:{port} (TCP meta + UDP data, SPTPS initiator) ...");
+                await vpn.ConnectAsync(cts.Token);
+                IPAddress assigned = vpn.AssignedAddress ?? IPAddress.Any;
+                IPAddress? dns = vpn.Config.DnsServers.Count > 0 ? vpn.Config.DnsServers[0] : null;
+                Console.WriteLine($"[tinc] tunnel up. overlay IP = {assigned}, dns = {dns?.ToString() ?? "(none)"}, mtu = {vpn.PacketChannel.Mtu}");
+
+                var stack = new TcpIpStack(vpn.PacketChannel, assigned, null);
+                var driver = new TincDriver(config);
+                return new VpnTunnel(stack, async () => { await vpn.DisposeAsync(); loggerFactory.Dispose(); },
+                    assigned, vpn.PacketChannel.Mtu, driver.Capabilities, driver.Name, dns);
+            }
+            catch
+            {
+                await vpn.DisposeAsync();
+                loggerFactory.Dispose();
+                throw;
+            }
+        }
+
+        // Parse một file .tinc tối giản (ini key=value): name=<tên node ta>, key=<đường dẫn file seed Ed25519 base64 32B>,
+        // peerhost=<đường dẫn host file của peer (Ed25519PublicKey/Address/Subnet)>, endpoint=host:port (đè Address của
+        // peer host), overlay=ip/prefix (Subnet của ta), dns=ip[,ip]. Pure helper. Tái dùng TincHostConfig của project Tinc.
+        static (TincConfig config, string host, int port) ParseTincConf(string text, string baseDir)
+        {
+            string? name = null, keyPath = null, peerHostPath = null, endpoint = null, overlay = null;
+            var dnsServers = new List<IPAddress>();
+
+            foreach (string rawLine in text.Split('\n'))
+            {
+                string line = rawLine.Trim();
+                if (line.Length == 0 || line.StartsWith("#") || line.StartsWith(";")) continue;
+                int eq = line.IndexOf('=');
+                if (eq < 0) continue;
+                string key = line.Substring(0, eq).Trim().ToLowerInvariant();
+                string val = line.Substring(eq + 1).Trim();
+                switch (key)
+                {
+                    case "name": name = val; break;
+                    case "key": keyPath = val; break;
+                    case "peerhost": peerHostPath = val; break;
+                    case "endpoint": endpoint = val; break;
+                    case "overlay": overlay = val; break;
+                    case "dns":
+                        foreach (string d in val.Split(','))
+                            if (IPAddress.TryParse(d.Trim(), out IPAddress? ip)) dnsServers.Add(ip);
+                        break;
+                }
+            }
+
+            if (name is null || keyPath is null || peerHostPath is null)
+                throw new InvalidOperationException("File .tinc cần name=, key= (seed Ed25519 base64) và peerhost= (host file của peer).");
+
+            string Resolve(string p) => Path.IsPathRooted(p) ? p : Path.Combine(baseDir, p);
+
+            // Our Ed25519 seed: a base64 (standard) 32-byte seed file (the client owns its keypair; its public key is
+            // registered in the peer's hosts/<name>). Strip PEM/whitespace and pad to a multiple of 4 before decoding.
+            string seedText = string.Concat(File.ReadAllText(Resolve(keyPath))
+                .Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0 && !l.StartsWith("-----")));
+            int pad = (4 - (seedText.Length % 4)) % 4;
+            byte[] seedFull = Convert.FromBase64String(seedText + new string('=', pad));
+            byte[] seed = seedFull.Length >= 32 ? seedFull[..32] : seedFull;
+
+            var peerHost = TincHostConfig.Parse(File.ReadAllText(Resolve(peerHostPath)), "server");
+
+            string host;
+            int port;
+            if (!string.IsNullOrEmpty(endpoint))
+            {
+                int colon = endpoint!.LastIndexOf(':');
+                host = colon > 0 ? endpoint.Substring(0, colon) : endpoint;
+                port = colon > 0 && int.TryParse(endpoint.Substring(colon + 1), out int p) ? p : 655;
+            }
+            else
+            {
+                host = peerHost.Addresses.Count > 0 ? peerHost.Addresses[0] : throw new InvalidOperationException("File .tinc cần endpoint= hoặc host file có Address.");
+                port = peerHost.Port;
+            }
+
+            IPAddress? overlayAddr = null;
+            int prefix = 32;
+            if (!string.IsNullOrEmpty(overlay)) { (overlayAddr, prefix) = ParseCidr(overlay!); }
+
+            IPEndPoint? peerEndpoint = IPAddress.TryParse(host, out IPAddress? hostIp) ? new IPEndPoint(hostIp, port) : null;
+
+            var config = new TincConfig
+            {
+                NodeName = name,
+                PrivateKey = seed,
+                PeerHost = peerHost,
+                PeerEndpoint = peerEndpoint,
+                OverlayAddress = overlayAddr,
+                PrefixLength = prefix,
+                DnsServers = dnsServers,
+            };
+            return (config, host, port);
         }
 
         // Parse một file .nebula tối giản (ini key=value): ca/cert/key (đường dẫn PEM, tương đối với file .nebula),

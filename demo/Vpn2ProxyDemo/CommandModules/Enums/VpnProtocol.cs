@@ -32,5 +32,8 @@ namespace Vpn2ProxyDemo.CommandModules.Enums
 
         /// <summary>Nebula (Slack mesh VPN, Noise_IX/AES-256-GCM, UDP) cấu hình từ một file <c>.nebula</c> (ini trỏ tới ca/cert/key PEM + peer endpoint + overlay) (<c>--vpn</c> trỏ thẳng tới file) (V.7.1).</summary>
         Nebula,
+
+        /// <summary>tinc 1.1 (SPTPS: Curve25519/Ed25519/ChaCha-Poly1305) cấu hình từ một file <c>.tinc</c> (ini trỏ tới seed Ed25519 của ta + host file của peer + endpoint + overlay); TCP meta-connection + UDP data plane (<c>--vpn</c> trỏ thẳng tới file) (V.7.2).</summary>
+        Tinc,
     }
 }

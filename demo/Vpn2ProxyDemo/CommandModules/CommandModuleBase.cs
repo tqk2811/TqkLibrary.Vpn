@@ -261,6 +261,8 @@ namespace Vpn2ProxyDemo.CommandModules
                 VpnProtocol.IpEncap => VpnTunnel.ConnectIpEncapAsync(target.Host, target.IpEncapKind, target.TunnelAddress!, target.TunnelPeerAddress, ct),
                 // Nebula (V.7.1): ca/cert/key + peer endpoint + overlay đọc từ file .nebula (configPath); driver chạy Noise IX UDP.
                 VpnProtocol.Nebula => VpnTunnel.ConnectNebulaAsync(target.ConfigPath!, ct),
+                // tinc (V.7.2): seed Ed25519 ta + host file peer + endpoint + overlay đọc từ file .tinc; TCP meta + UDP data SPTPS.
+                VpnProtocol.Tinc => VpnTunnel.ConnectTincAsync(target.ConfigPath!, ct),
                 _ => throw new ArgumentOutOfRangeException(nameof(target), target.Protocol, "Giao thức VPN không hỗ trợ."),
             };
 

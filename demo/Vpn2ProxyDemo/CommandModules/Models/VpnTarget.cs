@@ -106,6 +106,13 @@ namespace Vpn2ProxyDemo.CommandModules.Models
                 return true;
             }
 
+            // Dạng tinc (V.7.2): --vpn trỏ tới một file .tinc (ini: seed Ed25519 ta + host file peer + endpoint + overlay).
+            if (value.Trim().EndsWith(".tinc", StringComparison.OrdinalIgnoreCase))
+            {
+                target = new VpnTarget(VpnProtocol.Tinc, host: value.Trim(), port: 0, user: "", pass: "", configPath: value.Trim());
+                return true;
+            }
+
             if (!Uri.TryCreate(value, UriKind.Absolute, out Uri? uri))
             {
                 error = $"--vpn '{value}' không phải URI hợp lệ. Cần scheme://user:pass@host[:port] hoặc đường dẫn .ovpn.";

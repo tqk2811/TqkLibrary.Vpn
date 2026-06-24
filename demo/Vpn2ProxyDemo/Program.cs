@@ -20,6 +20,7 @@ namespace Vpn2ProxyDemo
                 new ProbeUdpDnsCommandModule().Command,
                 new ProxyServerCommandModule().Command,
                 new HttpRequestProxyServerCommandModule().Command,
+                new HttpPostUploadProxyServerCommandModule().Command,
             };
 
             return root.Parse(args).InvokeAsync();

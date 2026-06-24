@@ -206,6 +206,46 @@ echo "hello-from-ovpn-gateway" > /var/www/index.txt
 ( cd /var/www && python3 -m http.server 8080 --bind "$GW" ) >/var/log/http.log 2>&1 &
 echo "[entrypoint] HTTP test server on $GW:8080 (/index.txt nhỏ, /big.txt ~64KB)"
 
+# ---------------------------------------------------------------------
+# HTTP POST-receiver bind GW:8081 (chỉ trong tunnel) — ĐỌC HẾT body POST + ĐẾM byte
+# (test UPLOAD lớn qua tunnel cho re-validate Q.4 sender-side SWS-avoidance). Server
+# đọc Content-Length byte body rồi trả "received N bytes". python http.server chỉ GET
+# nên dùng BaseHTTPRequestHandler.do_POST tự viết (đọc rfile theo Content-Length, đếm).
+# ---------------------------------------------------------------------
+cat > /usr/local/bin/post_receiver.py <<'PYEOF'
+import sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+class PostHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"  # cho phép Content-Length response (HttpClient giữ keep-alive)
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        remaining = length
+        total = 0
+        # Đọc body theo từng khối — KHÔNG đọc một phát (chứng minh server thật sự nhận đủ
+        # mọi byte upload; nếu sender chỉ gửi 1 byte/segment thì vẫn đếm đúng nhưng cực chậm).
+        while remaining > 0:
+            chunk = self.rfile.read(min(65536, remaining))
+            if not chunk:
+                break
+            total += len(chunk)
+            remaining -= len(chunk)
+        body = ("received %d bytes" % total).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, fmt, *args):
+        sys.stderr.write("[post_receiver] " + (fmt % args) + "\n")
+
+if __name__ == "__main__":
+    host, port = sys.argv[1], int(sys.argv[2])
+    ThreadingHTTPServer((host, port), PostHandler).serve_forever()
+PYEOF
+( python3 /usr/local/bin/post_receiver.py "$GW" 8081 ) >/var/log/http-post.log 2>&1 &
+echo "[entrypoint] HTTP POST-receiver on $GW:8081 (/upload — đọc hết body + đếm byte, test upload lớn Q.4)"
+
 # UDP echo trên GW:7 (test UDP 2 chiều qua tunnel)
 socat -u UDP4-RECVFROM:7,bind=$GW,fork SYSTEM:'cat' 2>/dev/null &
 socat UDP4-LISTEN:7,bind=$GW,fork EXEC:'cat' 2>/dev/null &

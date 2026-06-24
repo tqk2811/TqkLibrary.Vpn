@@ -18,7 +18,7 @@ client gửi gói OpenVPN (UDP/TCP) tới server qua tên service. KHÔNG publis
 
 | Container | Vai trò |
 |---|---|
-| `lab-ovpn-server` | OpenVPN 2.6 community server, `dev tun`/`tap`, `proto udp`/`tcp`, `server 10.60.0.0/24` (tun) hoặc `server-bridge` (tap), `data-ciphers $CIPHER`, push route/DNS, `keepalive 10 60`, `verb 4`. `cap_add: NET_ADMIN` + `devices: /dev/net/tun`. Sinh PKI (openssl) + viết `/shared/client.ovpn` inline lúc khởi động. HTTP test server `10.60.0.1:8080` (`/index.txt` nhỏ + `/big.txt` ~64KB), UDP echo `:7`, dnsmasq `:53` (tùy chọn). Monitor `tail` log mỗi 10s. |
+| `lab-ovpn-server` | OpenVPN 2.6 community server, `dev tun`/`tap`, `proto udp`/`tcp`, `server 10.60.0.0/24` (tun) hoặc `server-bridge` (tap), `data-ciphers $CIPHER`, push route/DNS, `keepalive 10 60`, `verb 4`. `cap_add: NET_ADMIN` + `devices: /dev/net/tun`. Sinh PKI (openssl) + viết `/shared/client.ovpn` inline lúc khởi động. HTTP test server `10.60.0.1:8080` (`/index.txt` nhỏ + `/big.txt` ~64KB GET), **HTTP POST-receiver `10.60.0.1:8081`** (`/upload` — đọc hết body + đếm byte, test **upload lớn** Q.4), UDP echo `:7`, dnsmasq `:53` (tùy chọn). Monitor `tail` log mỗi 10s. |
 | `lab-ovpn-client` | `runtime-deps:8.0`, mount `./client-bin` (binary publish) + `/shared` (client.ovpn), `sleep infinity` — chạy demo bằng `docker exec`. OpenVPN chở data trên UDP/TCP socket thường ⇒ **KHÔNG cần CAP_NET_RAW**. |
 
 An toàn: **KHÔNG** `network_mode: host`, **KHÔNG** privileged-host. **KHÔNG** publish cổng.
@@ -97,6 +97,23 @@ docker exec lab-ovpn-client /opt/client/Vpn2ProxyDemo http-request \
 #           tunnel up; => hello-from-ovpn-gateway
 ```
 
+**Re-validate Q.4 (sender SWS — upload lớn qua tunnel):** demo `http-post-upload` POST một payload
+lớn qua proxy-trong-tunnel tới POST-receiver `:8081` (server đọc hết body + đếm byte). Đo segment-size
+bằng tcpdump để chứng minh segment đầy-MSS (không "1 byte/segment"):
+
+```bash
+docker exec -d lab-ovpn-server tcpdump -i tun0 -n -w /tmp/upload.pcap tcp port 8081
+docker exec lab-ovpn-client /opt/client/Vpn2ProxyDemo http-post-upload \
+    --vpn /shared/client.ovpn --url http://10.60.0.1:8081/upload --size 10485760
+#   => HTTP 200 sau 0.44s — 10.00 MB ⇒ 22.74 MB/s. Server: received 10485760 bytes
+docker exec lab-ovpn-server pkill tcpdump
+# phân bố TCP payload-length hướng upload (client 10.60.0.2 -> server :8081):
+docker exec lab-ovpn-server bash -c \
+  'tcpdump -r /tmp/upload.pcap -n "tcp dst port 8081 and src host 10.60.0.2" 2>/dev/null \
+   | grep -oP "length \K[0-9]+" | sort -n | uniq -c | sort -rn | head'
+#   5973 segment x 1400 (đầy MSS) + 1613 x 1296 — 7587/7670 (≈99%) >=1296 byte, 0 segment 1-byte
+```
+
 **Quan sát phía server (bằng chứng interop):**
 
 ```bash
@@ -112,16 +129,16 @@ docker exec lab-ovpn-server grep -E "Peer Connection Initiated|Data Channel: cip
 | tun UDP + NCP AES-256-GCM (P_DATA_V2) | ✅ tunnel + HTTP nhỏ + 64KB + UDP DNS + ICMP RTT 1ms; server `Data Channel: cipher 'AES-256-GCM'` |
 | tun TCP (16-bit length framing) | ✅ HTTP 4/4 + 64KB 2/2; server `TCPv4_SERVER … bound` |
 | gói lớn ~64KB qua tunnel (Q.4) | ✅ cả UDP + TCP carrier (`Received 65536 bytes`) — **Q.4 không tái hiện trên download** |
+| **upload lớn 10 MB qua tunnel (Q.4 SWS)** | ✅ POST 10 MB ⇒ HTTP 200 + `received 10485760 bytes`, 22.7 MB/s; tcpdump tun0 **7587/7670 segment ≥1296 byte (≈99% đầy-MSS), 0 segment 1-byte** — stall biến mất |
 | tap server-bridge (L2/ARP) | ✅ `tap bridge bound on 10.60.0.50` (OpenVpnTapChannel→ARP→VirtualHost) + ICMP gateway RTT 1ms |
 
-> **Residual (KHÔNG phải OpenVPN — shared IpStack, cross-ref Q.4):** HTTP **upload (request)** đôi khi
-> stall: userspace [`TcpIpStack`](../../src/TqkLibrary.VpnClient.IpStack/TcpIpStack.cs) gửi **1 byte/
-> segment** rồi rơi vào zero-window persist probe (`_sndWnd` kẹt 0 dù server advertise `win 502 wscale 7`).
-> tcpdump tun0 server: handshake `[S]→[S.]→[.]` OK, data + ACK 2 chiều, **mọi checksum correct** ⇒
-> tunnel OpenVPN chở MỌI gói TCP đúng (data plane V.2 ĐÚNG). Intermittent theo RTT (TCP-carrier 4/4,
-> UDP-carrier ~2/4). Root-cause = send-window update không reopen sau khi peer mở window
-> ([`TcpConnection`](../../src/TqkLibrary.VpnClient.IpStack/Tcp/TcpConnection.cs) RFC 5681/7323) — DEFER
-> debug IpStack, không sửa mù.
+> **Q.4 ĐÃ SỬA + VALIDATE LIVE ✓ (shared IpStack [`TcpConnection`](../../src/TqkLibrary.VpnClient.IpStack/Tcp/TcpConnection.cs)):**
+> triệu chứng cũ HTTP **upload** stall "1 byte/segment" là **thiếu sender-side Silly-Window-Syndrome
+> avoidance** (RFC 9293 §3.8.6.2.1 / RFC 1122 §4.2.3.4 — KHÔNG phải lỗi window-scaling). Đã sửa bằng
+> [`ShouldSendNow`](../../src/TqkLibrary.VpnClient.IpStack/Tcp/TcpConnection.cs#L569) (giữ segment dưới-MSS,
+> mốc `_maxSndWnd`). Re-validate live qua lab này: POST 10 MB qua tunnel hoàn tất 0.44s/22.7 MB/s,
+> tcpdump tun0 ≈99% segment đầy/gần-đầy MSS (1400/1296 byte), trung bình 1367 byte/segment, **0 segment
+> 1-byte** — chứng minh stall biến mất end-to-end.
 
 ---
 

@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>n2n v3 (ntop) L2 mesh protocol driver: a UDP transport to the supernode that registers an edge (REGISTER_SUPER / REGISTER_SUPER_ACK) and then carries full Ethernet frames as PACKET messages (NULL or AES-CBC transform). The data session is an L2 IEthernetChannel that plugs into the userspace Ethernet fabric (ARP + VirtualHost), bridged down to a stable L3 packet channel. Static config (supernode host:port, community, edge MAC, static overlay IP/netmask, transform key) maps to a TunnelConfig (no DHCP); a keepalive REGISTER timer keeps the edge registered, with teardown and auto-reconnect via the shared supervisor.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Abstractions\TqkLibrary.VpnClient.Abstractions.csproj" />
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Crypto\TqkLibrary.VpnClient.Crypto.csproj" />
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Drivers.Core\TqkLibrary.VpnClient.Drivers.Core.csproj" />
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Ethernet\TqkLibrary.VpnClient.Ethernet.csproj" />
+    <ProjectReference Include="..\TqkLibrary.VpnClient.N2n\TqkLibrary.VpnClient.N2n.csproj" />
+  </ItemGroup>
+
+</Project>

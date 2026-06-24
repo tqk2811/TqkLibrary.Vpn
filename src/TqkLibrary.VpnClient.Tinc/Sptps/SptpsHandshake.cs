@@ -73,6 +73,21 @@ namespace TqkLibrary.VpnClient.Tinc.Sptps
             return withNul; // trailing NUL already zero
         }
 
+        /// <summary>
+        /// Convenience: builds the data-plane (UDP) label <c>"tinc UDP key expansion {init} {resp}\0"</c>. tinc's
+        /// <c>send_req_key</c>/<c>req_key_ext_h</c> build it with <c>snprintf(label, 25+strlen(a)+strlen(b), "tinc UDP
+        /// key expansion %s %s", a, b)</c> where <c>a</c> is the SPTPS initiator and <c>b</c> the responder, and pass the
+        /// whole length (including the trailing NUL) to <c>sptps_start</c>.
+        /// </summary>
+        public static byte[] BuildUdpLabel(string initiatorName, string responderName)
+        {
+            string text = $"tinc UDP key expansion {initiatorName} {responderName}";
+            byte[] body = Encoding.ASCII.GetBytes(text);
+            byte[] withNul = new byte[body.Length + 1];
+            Array.Copy(body, withNul, body.Length);
+            return withNul; // trailing NUL already zero
+        }
+
         /// <summary>Generates this side's ephemeral keypair and returns the KEX message to send (65 bytes).</summary>
         public byte[] CreateKex()
         {

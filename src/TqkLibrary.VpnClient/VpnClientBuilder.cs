@@ -13,6 +13,8 @@ using TqkLibrary.VpnClient.Drivers.OpenVpn;
 using TqkLibrary.VpnClient.Drivers.Pptp;
 using TqkLibrary.VpnClient.Drivers.SoftEther;
 using TqkLibrary.VpnClient.Drivers.Sstp;
+using TqkLibrary.VpnClient.Drivers.Tinc;
+using TqkLibrary.VpnClient.Drivers.Tinc.Config;
 using TqkLibrary.VpnClient.Drivers.WireGuard;
 using TqkLibrary.VpnClient.OpenVpn.Config;
 using TqkLibrary.VpnClient.SoftEther.Models;
@@ -143,6 +145,19 @@ namespace TqkLibrary.VpnClient
         /// <summary>Registers the Nebula driver with explicit auto-reconnect options (e.g. to disable it).</summary>
         public VpnClientBuilder UseNebula(NebulaConfig config, NebulaReconnectOptions reconnectOptions)
             => AddDriver(new NebulaDriver(config, reconnectOptions));
+
+        /// <summary>
+        /// Registers the tinc 1.1 (SPTPS) driver: a TCP meta-connection (ID + Curve25519/Ed25519/ChaCha-Poly1305 SPTPS
+        /// handshake, ACK, ADD_SUBNET/ADD_EDGE), a per-tunnel data-plane SPTPS session (REQ_KEY/ANS_KEY over the meta-
+        /// connection) and a bare-IP (router-mode) data plane over UDP datagrams behind a stable L3 packet channel. The
+        /// static <see cref="TincConfig"/> (this node's Ed25519 key + name, the peer host file, the overlay IP/CIDR, MTU)
+        /// maps straight to a <c>TunnelConfig</c> (no IPCP/DHCP). Point-to-point to one peer. Auto-reconnect on by default.
+        /// </summary>
+        public VpnClientBuilder UseTinc(TincConfig config) => AddDriver(new TincDriver(config));
+
+        /// <summary>Registers the tinc driver with explicit auto-reconnect options (e.g. to disable it).</summary>
+        public VpnClientBuilder UseTinc(TincConfig config, TincReconnectOptions reconnectOptions)
+            => AddDriver(new TincDriver(config, reconnectOptions));
 
         /// <summary>
         /// Registers the OpenConnect (Cisco AnyConnect / ocserv) driver: HTTPS config-auth then CSTP, in-band

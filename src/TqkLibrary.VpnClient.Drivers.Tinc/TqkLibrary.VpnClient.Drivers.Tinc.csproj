@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>tinc 1.1 (SPTPS) protocol driver: a TCP meta-connection (ID, SPTPS handshake, ACK, ADD_SUBNET/ADD_EDGE) plus a per-tunnel data-plane SPTPS session (REQ_KEY/ANS_KEY over the meta-connection) carrying bare IP packets over UDP datagrams behind a stable L3 packet channel. Static config (this node's Ed25519 key, the peer host file: Ed25519 public key, address, port, subnet) maps to a point-to-point TunnelConfig; the supervisor handles teardown and auto-reconnect.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Abstractions\TqkLibrary.VpnClient.Abstractions.csproj" />
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Crypto\TqkLibrary.VpnClient.Crypto.csproj" />
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Drivers.Core\TqkLibrary.VpnClient.Drivers.Core.csproj" />
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Tinc\TqkLibrary.VpnClient.Tinc.csproj" />
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Transport.Tcp\TqkLibrary.VpnClient.Transport.Tcp.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,10 @@
+# Nebula CA + host certs/keys sinh bởi nebula-cert (credential lab) — KHÔNG commit.
+*.crt
+*.key
+# nebula / nebula-cert binary (tải từ GitHub releases) — KHÔNG commit.
+nebula
+nebula-cert
+*.tar.gz
+# Binary publish của harness handshake (self-contained linux-x64, ~70MB) — KHÔNG commit.
+harness
+harness-bin/

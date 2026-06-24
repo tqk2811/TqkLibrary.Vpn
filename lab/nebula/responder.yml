@@ -1,0 +1,37 @@
+# Cấu hình nebula THẬT làm responder/lighthouse cho lab handshake-interop V.7.1.
+# tun disabled ⇒ KHÔNG cần root/CAP_NET_ADMIN; nebula vẫn listen UDP 4242 + thực hiện Noise IX handshake.
+# Đường dẫn pki trỏ thư mục lab (script gen-certs.sh sinh ca.crt/lighthouse.* cùng chỗ).
+pki:
+  ca: /lab/ca.crt
+  cert: /lab/lighthouse.crt
+  key: /lab/lighthouse.key
+static_host_map: {}
+lighthouse:
+  am_lighthouse: true
+  interval: 60
+listen:
+  host: 0.0.0.0
+  port: 4242
+punchy:
+  punch: true
+tun:
+  disabled: true
+  dev: nebula1
+logging:
+  level: debug
+  format: text
+firewall:
+  outbound_action: drop
+  inbound_action: drop
+  conntrack:
+    tcp_timeout: 12m
+    udp_timeout: 3m
+    default_timeout: 10m
+  outbound:
+    - port: any
+      proto: any
+      host: any
+  inbound:
+    - port: any
+      proto: any
+      host: any

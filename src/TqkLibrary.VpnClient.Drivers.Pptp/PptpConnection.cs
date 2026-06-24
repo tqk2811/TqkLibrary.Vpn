@@ -143,15 +143,18 @@ namespace TqkLibrary.VpnClient.Drivers.Pptp
             // 2) GRE data plane over a raw IP proto-47 socket, keyed by the negotiated Call-IDs.
             IPAddress serverIp = await _hostResolver.ResolveAsync(_host, _addressFamilyPreference, cancellationToken).ConfigureAwait(false);
             IPAddress localIp = GetLocalAddress(serverIp);
-            Logger.LogHandshake(DriverName, "PPTP GRE data plane (raw IP proto-47)");
+            Logger.LogHandshake(DriverName, $"PPTP GRE data plane (raw IP proto-47, localCallId={control.LocalCallId}, peerCallId={control.PeerCallId})");
             IDatagramTransport greTransport = _rawIpFactory.Create(serverIp, GreIpProtocol, localBind: localIp);
-            var gre = new PptpGreChannel(greTransport, control.LocalCallId, control.PeerCallId);
+            var gre = new PptpGreChannel(greTransport, control.LocalCallId, control.PeerCallId, Logger);
             _gre = gre;
 
             // 3) MS-CHAPv2 over CHAP; MPPE decorator (CCP) below PPP; PPP engine drives LCP/auth/IPCP above MPPE.
+            // The engine defers IPCP/IPV6CP until CCP/MPPE is open: once MPPE is active every non-LCP packet (IPCP
+            // included) must be encrypted, so a network-layer Configure-Request sent before CCP opens goes out in the
+            // clear, the server Protocol-Rejects it, and the stray cleartext frame desyncs the server's MPPE state.
             var auth = new MsChapV2Authenticator(user, password);
             var mppe = new MppePppFrameChannel(gre, () => (password, auth.NtResponse!));
-            var ppp = new PppEngine(mppe, _magic, IPAddress.Any, authenticator: auth);
+            var ppp = new PppEngine(mppe, _magic, IPAddress.Any, authenticator: auth, deferNetworkLayer: true);
             _ppp = ppp;
 
             // CCP/MPPE starts only after MS-CHAPv2 succeeds (the NT-Response is the MPPE key material).
@@ -159,6 +162,13 @@ namespace TqkLibrary.VpnClient.Drivers.Pptp
             {
                 Logger.LogHandshake(DriverName, "PPP MS-CHAPv2 authentication succeeded; starting CCP/MPPE");
                 mppe.StartCcp();
+            };
+
+            // Release the deferred network layer once CCP/MPPE is open, so IPCP/IPV6CP run encrypted from their first packet.
+            mppe.CcpOpened += () =>
+            {
+                Logger.LogHandshake(DriverName, "CCP/MPPE opened; starting the network layer (IPCP) encrypted");
+                ppp.StartNetworkLayer();
             };
 
             var linkUp = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);

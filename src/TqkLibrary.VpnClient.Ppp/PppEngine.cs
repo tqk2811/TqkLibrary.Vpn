@@ -20,6 +20,10 @@ namespace TqkLibrary.VpnClient.Ppp
         readonly PppPacketChannel _packetChannel;
         readonly IPppAuthenticator? _authenticator;
         readonly object _sync = new();
+        readonly bool _deferNetworkLayer;
+        bool _networkLayerStarted;
+        bool _readyForNetworkLayer; // LCP up + auth done; waiting only on the deferral gate (CCP/MPPE)
+        bool _gateReleased;         // the caller opened CCP/MPPE (StartNetworkLayer); releases the deferral
         bool _disposed;
 
         /// <summary>
@@ -30,6 +34,13 @@ namespace TqkLibrary.VpnClient.Ppp
         /// affecting the IPv4 link-up (IPCP stays the trigger for <see cref="LinkUp"/>). <paramref name="interfaceId"/>
         /// is the 8-byte identifier we request (default: derived from <paramref name="magic"/>);
         /// <paramref name="assignPeerInterfaceId"/> forces one onto the peer when acting as a server.
+        /// <para>
+        /// <paramref name="deferNetworkLayer"/> holds IPCP/IPV6CP back even after LCP + auth complete, until the
+        /// caller invokes <see cref="StartNetworkLayer"/>. PPTP needs this: once CCP negotiates MPPE, every non-LCP
+        /// packet (IPCP included) must be MPPE-encrypted, so the network layer must not start until CCP/MPPE is open —
+        /// otherwise the first IPCP Configure-Request goes out in the clear and the peer Protocol-Rejects it (and the
+        /// stray cleartext packet can desync the peer's MPPE state). L2TP/SSTP leave this false (no CCP).
+        /// </para>
         /// </summary>
         public PppEngine(
             IPppFrameChannel channel,
@@ -41,11 +52,13 @@ namespace TqkLibrary.VpnClient.Ppp
             int mtu = 1400,
             bool enableIpv6 = false,
             byte[]? interfaceId = null,
-            byte[]? assignPeerInterfaceId = null)
+            byte[]? assignPeerInterfaceId = null,
+            bool deferNetworkLayer = false)
         {
             _channel = channel;
             _channel.FrameReceived += OnFrame;
             _authenticator = authenticator;
+            _deferNetworkLayer = deferNetworkLayer;
             _lcp = new LcpNegotiator(p => SendControl(PppProtocol.Lcp, p), magic);
             _ipcp = new IpcpNegotiator(p => SendControl(PppProtocol.Ipcp, p), localAddress, assignPeerAddress, assignPeerDns);
             _packetChannel = new PppPacketChannel(SendIpAsync, mtu);
@@ -103,12 +116,38 @@ namespace TqkLibrary.VpnClient.Ppp
                 return; // wait for the server's CHAP Challenge; the network layer starts after auth succeeds.
 
             IsAuthenticated = true; // no auth required
-            StartNetworkLayer();
+            ReadyForNetworkLayer();
         }
 
-        // Starts the network-control protocols once the link (and any auth) is up: IPCP always, IPV6CP when enabled.
-        void StartNetworkLayer()
+        /// <summary>
+        /// Releases a deferred network layer (PPTP after CCP/MPPE opens). When <c>deferNetworkLayer</c> was set, the
+        /// engine reaches the ready state (LCP + auth done) but holds IPCP/IPV6CP back until this is called; calling it
+        /// before the engine is ready arms the start so it fires the moment auth completes. No-op when not deferred or
+        /// already started. Invoked under the engine lock so it composes with frame handling.
+        /// </summary>
+        public void StartNetworkLayer()
         {
+            lock (_sync)
+            {
+                if (_disposed || _networkLayerStarted) return;
+                _gateReleased = true;
+                if (_readyForNetworkLayer) StartNetworkLayerLocked();
+            }
+        }
+
+        // LCP is up and auth (if any) succeeded: start the network layer now, or wait for the deferral gate to release.
+        void ReadyForNetworkLayer()
+        {
+            _readyForNetworkLayer = true;
+            if (_deferNetworkLayer && !_gateReleased) return; // hold IPCP until the caller opens CCP/MPPE
+            StartNetworkLayerLocked();
+        }
+
+        // Starts the network-control protocols once the link (and any auth + deferral gate) is up: IPCP always, IPV6CP when enabled.
+        void StartNetworkLayerLocked()
+        {
+            if (_networkLayerStarted) return;
+            _networkLayerStarted = true;
             _ipcp.Start();
             _ipv6cp?.Start();
         }
@@ -135,8 +174,8 @@ namespace TqkLibrary.VpnClient.Ppp
             {
                 case PppAuthStatus.Success:
                     IsAuthenticated = true;
-                    AuthSucceeded?.Invoke();
-                    StartNetworkLayer();
+                    AuthSucceeded?.Invoke();   // PPTP hooks this to start CCP; the network layer then waits for the gate
+                    ReadyForNetworkLayer();
                     break;
                 case PppAuthStatus.Failure:
                     AuthFailed?.Invoke();

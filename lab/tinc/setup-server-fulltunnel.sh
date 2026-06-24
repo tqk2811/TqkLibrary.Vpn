@@ -26,6 +26,10 @@ cat > "$CFG/tinc-up" <<'EOF'
 ip link set $INTERFACE up
 ip addr add 10.99.0.1/32 dev $INTERFACE
 ip route add 10.99.0.2/32 dev $INTERFACE 2>/dev/null || true
+# Disable reverse-path filtering on the tun (created at runtime) so the kernel does not drop the asymmetric reply
+# coming back in on the same interface it sent the request out (which otherwise yields a net-unreachable).
+sysctl -w net.ipv4.conf.$INTERFACE.rp_filter=0 2>/dev/null || true
+sysctl -w net.ipv4.conf.$INTERFACE.accept_local=1 2>/dev/null || true
 EOF
 chmod +x "$CFG/tinc-up"
 

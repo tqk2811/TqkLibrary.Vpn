@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>tinc 1.1 protocol layer: SPTPS (Simple Peer-to-Peer Security) handshake — Curve25519 ECDH + Ed25519 signatures + HMAC-SHA-512 TLS-PRF key expansion + the tinc ChaCha-Poly1305 record cipher — plus the meta-connection request codec and tinc host-config / Ed25519 key parsing.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Crypto\TqkLibrary.VpnClient.Crypto.csproj" />
+  </ItemGroup>
+
+</Project>

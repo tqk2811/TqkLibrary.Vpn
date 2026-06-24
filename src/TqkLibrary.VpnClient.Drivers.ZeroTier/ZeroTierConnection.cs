@@ -49,7 +49,9 @@ namespace TqkLibrary.VpnClient.Drivers.ZeroTier
         readonly HelloMessageCodec _helloCodec = new();
         readonly OkMessageCodec _okCodec = new();
         readonly NetworkConfigCodec _networkConfigCodec = new();
+        readonly NetworkCredentialsCodec _credentialsCodec = new();
         readonly Vl2FrameCodec _frameCodec = new();
+        byte[]? _certificateOfMembership;
         readonly byte[] _sessionKey;          // 64-byte VL1 shared key (first 32 = Salsa20 key)
         readonly ZeroTierAddress _localAddress;
         readonly ZeroTierAddress _peerAddress;
@@ -162,12 +164,15 @@ namespace TqkLibrary.VpnClient.Drivers.ZeroTier
             }
 
             _tunnelConfig = _config.ToTunnelConfig(overlay, prefix);
+            _certificateOfMembership = com;
 
             // --- L2 data plane: the VL2 session as an Ethernet channel, bridged to L3 via ARP + VirtualHost ---
             byte[] localMac = _frameCodec.DeriveMac(_localAddress, _config.NetworkId);
             var mac = MacAddress.FromBytes(localMac);
+            // The COM is presented out-of-band via NETWORK_CREDENTIALS (PushNetworkCredentials), not attached to each
+            // EXT_FRAME (that flag is deprecated), so the channel sends bare EXT_FRAMEs.
             var channel = new ZeroTierEthernetChannel(_packetCodec, _sessionKey, _config.NetworkId,
-                _localAddress, _peerAddress, localMac, com,
+                _localAddress, _peerAddress, localMac, certificateOfMembership: null,
                 (wire, ct) => SendAsync(wire, ct), NextPacketId, _config.Mtu);
             _channel = channel;
 
@@ -182,6 +187,9 @@ namespace TqkLibrary.VpnClient.Drivers.ZeroTier
             Facade.SetInner(virtualHost);
 
             StartKeepAlive();
+            // Proactively present our certificate of membership to the peer so it accepts our L2 frames (otherwise the
+            // first frames draw ERROR NEED_MEMBERSHIP_CERTIFICATE until the COM is pushed).
+            PushNetworkCredentials();
             Logger.LogHandshake(DriverName, $"overlay {overlay}/{prefix}; L2<->L3 bridge bound");
             Logger.LogHandshakeCompleted(DriverName);
             MarkConnected();
@@ -423,11 +431,32 @@ namespace TqkLibrary.VpnClient.Drivers.ZeroTier
             _ = SendAsync(datagram);
         }
 
+        // ZeroTier error codes (Packet::ErrorCode).
+        const byte ErrorNeedMembershipCertificate = 6;
+
         void OnError(byte[] payload)
         {
             byte inReVerb = payload.Length > 0 ? payload[0] : (byte)0;
             byte errorCode = payload.Length > OkMessageCodec.CommonHeaderLength ? payload[OkMessageCodec.CommonHeaderLength] : (byte)0;
+            if (errorCode == ErrorNeedMembershipCertificate)
+            {
+                // The peer wants our certificate of membership before it will accept our frames — push it.
+                Logger.LogProtocolStep(DriverName, $"peer requested membership certificate (ERROR code 6, in-re 0x{inReVerb:x2}); pushing NETWORK_CREDENTIALS");
+                PushNetworkCredentials();
+                return;
+            }
             Logger.LogPacketDropped(DriverName, VpnDropReason.Unexpected, $"ERROR in-re verb 0x{inReVerb:x2}, code {errorCode}");
+        }
+
+        // Present our certificate of membership to the peer via NETWORK_CREDENTIALS (the non-deprecated path) so it
+        // accepts our L2 frames. No-op when the network is public / no COM was issued.
+        void PushNetworkCredentials()
+        {
+            byte[]? com = _certificateOfMembership;
+            if (com is null || com.Length == 0) return;
+            byte[] body = _credentialsCodec.EncodeMembershipOnly(com);
+            byte[] datagram = SealControl(Vl1Verb.NetworkCredentials, body);
+            _ = SendAsync(datagram);
         }
 
         // ---- send helpers ----

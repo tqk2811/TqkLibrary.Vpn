@@ -102,9 +102,10 @@ namespace TqkLibrary.VpnClient.Drivers.ZeroTier.DataChannel
             ushort etherType = (ushort)((span[12] << 8) | span[13]);
             byte[] payload = span.Slice(EthernetHeaderLength).ToArray();
 
-            // Attach the COM on the first frame (proves membership); afterwards send bare EXT_FRAMEs.
-            bool attachCom = _certificateOfMembership is { Length: > 0 }
-                             && System.Threading.Interlocked.CompareExchange(ref _comSent, 1, 0) == 0;
+            // Attach the certificate of membership so the peer accepts our frames. ZeroTier expects the COM presented to
+            // each peer that asks (ERROR NEED_MEMBERSHIP_CERTIFICATE); attaching it on every EXT_FRAME until the peer has
+            // it is the simplest interoperable behaviour (the COM is small relative to a data frame).
+            bool attachCom = _certificateOfMembership is { Length: > 0 } && System.Threading.Volatile.Read(ref _comSent) == 0;
 
             var ext = new Vl2ExtFrame
             {

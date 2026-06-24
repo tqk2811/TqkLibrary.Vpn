@@ -24,6 +24,7 @@ namespace TqkLibrary.VpnClient.ZeroTier.Tests
             PacketId = 0x0123456789ABCDEFUL,
             Destination = ZeroTierAddress.Parse("8056c2e21c"),
             Source = ZeroTierAddress.Parse("deadbeef99"),
+            Cipher = Vl1CipherSuite.Salsa2012Poly1305, // data path: encrypt + authenticate
             Verb = verb,
         };
 
@@ -36,8 +37,8 @@ namespace TqkLibrary.VpnClient.ZeroTier.Tests
             byte[] payload = System.Text.Encoding.ASCII.GetBytes("VL1 frame body over Salsa20/12");
             byte[] packet = _codec.Seal(NewHeader(Vl1Verb.Frame), key, payload);
 
-            // The cipher field must record Salsa2012Poly1305, and the payload must not appear in the clear.
-            Assert.Equal((int)Vl1CipherSuite.Salsa2012Poly1305, packet[18] & 0x07);
+            // The cipher field (middle 3 bits of byte 18, FFCCCHHH) must record Salsa2012Poly1305.
+            Assert.Equal((int)Vl1CipherSuite.Salsa2012Poly1305, (packet[18] >> 3) & 0x07);
             Assert.True(_codec.Open(packet, key, out var header, out byte[] recovered));
 
             Assert.Equal(0x0123456789ABCDEFUL, header.PacketId);

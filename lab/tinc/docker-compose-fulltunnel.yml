@@ -1,0 +1,40 @@
+# Lab FULL-TUNNEL V.7.2 phase b: tincd 1.1pre18 THẬT (ExperimentalProtocol=SPTPS, Mode=router, tun overlay 10.99.0.1)
+# + client .NET (driver Drivers.Tinc, overlay 10.99.0.2 qua userspace TcpIpStack) trên cùng bridge labnet.
+# Client: TCP meta handshake -> data-plane SPTPS (REQ_KEY/ANS_KEY) -> UDP data -> ICMP 10.99.0.2 -> 10.99.0.1.
+#
+# Chuẩn bị (trên VM ~/tinc-lab/): build image lab-tinc11 (Dockerfile.tinc11). Chạy `harness gen-key` TRƯỚC để sinh
+# seed client + client.pub vào ./shared, ghi client.tinc + seed cho client demo. Rồi docker compose up -d. Xem README.
+services:
+  tinc-server:
+    image: lab-tinc11:latest
+    container_name: tinc-server
+    networks: [labnet]
+    cap_add: [NET_ADMIN]
+    devices: ["/dev/net/tun:/dev/net/tun"]
+    # Let the server kernel forward/route the tun reply back to the client overlay (and disable reverse-path filtering
+    # so the asymmetric tun path is not dropped). Without these the kernel emits a net-unreachable for the echo reply.
+    sysctls:
+      - net.ipv4.ip_forward=1
+      - net.ipv4.conf.all.rp_filter=0
+    volumes:
+      - ./:/lab:ro
+      - ./shared:/shared
+    working_dir: /lab
+    command: sh -c "cp /lab/setup-server-fulltunnel.sh /tmp/s.sh && chmod +x /tmp/s.sh && exec /tmp/s.sh"
+
+  client:
+    image: mcr.microsoft.com/dotnet/runtime-deps:8.0
+    container_name: tinc-client
+    depends_on: [tinc-server]
+    networks: [labnet]
+    volumes:
+      - ./:/lab:ro
+      - ./shared:/shared
+      - ./client-bin:/app:ro
+    working_dir: /app
+    # Giữ container sống để docker exec chạy client demo thủ công (xem README).
+    command: sleep infinity
+
+networks:
+  labnet:
+    driver: bridge

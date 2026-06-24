@@ -122,12 +122,21 @@ namespace Vpn2ProxyDemo
 
             try
             {
-                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                cts.CancelAfter(TimeSpan.FromSeconds(3));
-                PingReply reply = await tunnel.Stack.PingAsync(gateway, cancellationToken: cts.Token).ConfigureAwait(false);
+                // Retry a few times: some transports (e.g. tinc) only switch to the UDP data path after a probe
+                // handshake, so the first ICMP round-trip can take a couple of seconds while UDP is being confirmed.
+                PingReply? reply = null;
+                for (int attempt = 0; attempt < 4 && reply is null; attempt++)
+                {
+                    using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    cts.CancelAfter(TimeSpan.FromSeconds(3));
+                    try { reply = await tunnel.Stack.PingAsync(gateway, cancellationToken: cts.Token).ConfigureAwait(false); }
+                    catch (OperationCanceledException) when (!ct.IsCancellationRequested) { /* retry */ }
+                }
+                if (reply is null) throw new OperationCanceledException();
+                PingReply got = reply.Value;
                 return (new VpnCapability(name, CapabilityStatus.Likely,
-                        $"host nội bộ {gateway} trả lời ICMP (RTT {reply.RoundTripTime.TotalMilliseconds:F0} ms) trong {subnet} — có hub/LAN nội bộ"),
-                    gateway, $"ICMP reachable, RTT {reply.RoundTripTime.TotalMilliseconds:F0} ms");
+                        $"host nội bộ {gateway} trả lời ICMP (RTT {got.RoundTripTime.TotalMilliseconds:F0} ms) trong {subnet} — có hub/LAN nội bộ"),
+                    gateway, $"ICMP reachable, RTT {got.RoundTripTime.TotalMilliseconds:F0} ms");
             }
             catch (IcmpUnreachableException)
             {

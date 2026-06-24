@@ -1,0 +1,4 @@
+# Binary publish của demo client (self-contained linux-x64, ~80MB) — tạo theo README §3, KHÔNG commit.
+client-bin/
+# chap-secrets chứa credential lab (kể cả test) — KHÔNG commit (theo ràng buộc phiên).
+chap-secrets

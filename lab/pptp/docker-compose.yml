@@ -1,0 +1,61 @@
+# =====================================================================
+# lab/pptp — compose RIÊNG, topology AN TOÀN cho V.6 (PPTP, GRE proto-47, no-NAT).
+#
+# 2 container trên CÙNG một Docker bridge tùy biến 'labnet':
+#   - pptp-server  : accel-ppp (PPTP control TCP/1723 + GRE proto-47 + pppd MS-CHAPv2 + MPPE)
+#   - dotnet-client: chạy binary demo .NET self-contained đã publish, CAP_NET_RAW
+#
+# Vì sao AN TOÀN (giống lab/l2tp-nonat — KHÔNG host-net, KHÔNG privileged):
+#   - KHÔNG network_mode: host  -> accel-ppp mở GRE socket CHỈ trong netns container,
+#     KHÔNG phá mạng VM (lab host-net từng làm SẬP cả SSH+ping của VM).
+#   - KHÔNG privileged-trên-host -> chỉ NET_ADMIN + NET_RAW trong netns riêng.
+#   - 2 container cùng bridge -> gói GRE proto-47 đi L2 THẲNG, KHÔNG NAT -> raw socket
+#     proto-47 của client + server gặp nhau trực tiếp (giống native-ESP proto-50 P0.8c).
+#   - KHÔNG publish cổng ra ngoài: test hoàn toàn nội bộ bridge.
+# =====================================================================
+services:
+  pptp-server:
+    build:
+      context: ../accel-ppp        # tái dùng image lab-accel-ppp (đã có pptp module, MS-CHAPv2, MPPE)
+    image: lab-accel-ppp:24.04
+    container_name: lab-pptp-server
+    restart: "no"
+    cap_add:
+      - NET_ADMIN          # tạo ppp interface + route trong netns container (KHÔNG đụng VM)
+      - NET_RAW            # accel-ppp PPTP nhận/gửi GRE proto-47 qua raw socket userspace
+    # KHÔNG privileged, KHÔNG network_mode: host (đó là phần nguy hiểm của lab host-net).
+    devices:
+      - /dev/ppp:/dev/ppp  # pppd cần /dev/ppp; host VM phải 'modprobe ppp_generic' TRƯỚC
+    sysctls:
+      - net.ipv4.ip_forward=1
+    networks:
+      - labnet
+    # accel-ppp.conf trỏ /etc/accel-ppp.conf — override bằng config PPTP-only của lab này.
+    volumes:
+      - ./accel-ppp.conf:/etc/accel-ppp.conf:ro
+      - ./chap-secrets:/etc/ppp/chap-secrets:ro
+    # KHÔNG 'ports:' — không cần publish; client nối nội bộ bridge qua tên service.
+
+  dotnet-client:
+    # runtime-deps đủ chạy binary self-contained publish (linux-x64). KHÔNG cần SDK.
+    image: mcr.microsoft.com/dotnet/runtime-deps:8.0
+    container_name: lab-pptp-client
+    restart: "no"
+    cap_add:
+      - NET_RAW            # V.6: raw socket gửi/nhận GRE proto-47 native (PptpGreChannel)
+    networks:
+      - labnet
+    volumes:
+      # Mount thư mục publish của VM (đặt binary demo vào ./client-bin trên VM trước).
+      - ./client-bin:/opt/client:ro
+    working_dir: /opt/client
+    # TẠM chạy thủ công: container đứng yên, runbook 'docker exec' chạy demo với pptp://.
+    entrypoint: ["sleep", "infinity"]
+    depends_on:
+      - pptp-server
+
+networks:
+  # bridge tùy biến: intra-bridge mặc định KHÔNG NAT giữa các container cùng mạng
+  # (NAT chỉ áp cho traffic RA NGOÀI host) -> proto-47 đi thẳng -> no-NAT cho V.6.
+  labnet:
+    driver: bridge

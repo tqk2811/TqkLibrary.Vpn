@@ -1,0 +1,21 @@
+# Build tinc 1.1 (1.1pre, SPTPS / Ed25519 ExperimentalProtocol) from source.
+# apt only ships tinc 1.0.x which has no SPTPS, so we compile the 1.1 branch.
+FROM debian:bookworm-slim AS build
+RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+    build-essential autoconf automake libtool pkg-config \
+    libssl-dev zlib1g-dev liblzo2-dev libncurses-dev libreadline-dev \
+    libcurl4-openssl-dev libvncserver-dev git ca-certificates >/dev/null
+WORKDIR /src
+# Pin a 1.1pre release tag for reproducibility.
+RUN git clone --depth 1 --branch release-1.1pre18 https://github.com/gsliepen/tinc.git . \
+    || git clone --depth 1 --branch 1.1 https://github.com/gsliepen/tinc.git .
+RUN autoreconf -fsi && ./configure --enable-vde=no --with-systemd=no >/dev/null && make -j"$(nproc)" >/dev/null
+RUN cp src/tincd /tincd && cp src/tinc /tinc
+
+FROM debian:bookworm-slim
+RUN apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+    libssl3 zlib1g liblzo2-2 libncurses6 libreadline8 iproute2 iputils-ping tcpdump >/dev/null \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=build /tincd /usr/sbin/tincd
+COPY --from=build /tinc /usr/sbin/tinc
+RUN /usr/sbin/tincd --version || true

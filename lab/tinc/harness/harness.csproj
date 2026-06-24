@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Harness handshake-interop V.7.2: publish self-contained linux-x64 rồi scp vào VM lab, bắt tay SPTPS
+    tới tincd 1.1 THẬT (ExperimentalProtocol). KHÔNG nằm trong solution (chỉ kiểm chứng protocol layer).
+    Publish:  dotnet publish -c Release -r linux-x64 -o publish
+    Chạy:     ./harness <hostsDir> <myName> <peerName> <serverIp:port>
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RuntimeIdentifier>linux-x64</RuntimeIdentifier>
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\TqkLibrary.VpnClient.Tinc\TqkLibrary.VpnClient.Tinc.csproj" />
+    <ProjectReference Include="..\..\..\src\TqkLibrary.VpnClient.Crypto\TqkLibrary.VpnClient.Crypto.csproj" />
+  </ItemGroup>
+</Project>

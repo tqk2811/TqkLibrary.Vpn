@@ -1,0 +1,7 @@
+# Lab artifacts — KHÔNG commit (binary publish, key/host-config sinh runtime, pcap).
+client-bin/
+shared/
+*.priv
+*.host
+*.pcap
+publish/

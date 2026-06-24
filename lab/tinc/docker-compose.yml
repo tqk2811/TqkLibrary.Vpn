@@ -1,0 +1,40 @@
+# Lab SPTPS-handshake-interop V.7.2: tincd 1.1 THẬT (ExperimentalProtocol = SPTPS, Ed25519/Curve25519) +
+# client .NET harness thực hiện SPTPS handshake (initiator) qua TCP meta-connection.
+#
+# Chuẩn bị (trên VM, thư mục ~/tinc-lab/): build image tinc 1.1 từ Dockerfile.tinc11; copy lab files + client-bin
+# (harness publish linux-x64) vào ~/tinc-lab/. Chạy: docker compose up -d ; xem README.
+#
+# Mục tiêu: tincd chấp nhận SPTPS handshake của harness (log "Connection ... activated" / SIG OK, KHÔNG
+# "Invalid packet"/"Signature verification failed").
+services:
+  tinc-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.tinc11
+    image: lab-tinc11:latest
+    container_name: tinc-server
+    networks: [labnet]
+    cap_add: [NET_ADMIN]
+    devices: ["/dev/net/tun:/dev/net/tun"]
+    volumes:
+      - ./:/lab:ro
+      - ./shared:/shared
+    working_dir: /lab
+    command: sh -c "cp /lab/setup-server.sh /tmp/s.sh && chmod +x /tmp/s.sh && exec /tmp/s.sh"
+
+  client:
+    image: mcr.microsoft.com/dotnet/runtime-deps:8.0
+    container_name: tinc-client
+    depends_on: [tinc-server]
+    networks: [labnet]
+    volumes:
+      - ./:/lab:ro
+      - ./shared:/shared:ro
+      - ./client-bin:/app:ro
+    working_dir: /app
+    # Giữ container sống để docker exec chạy harness thủ công (xem README).
+    command: sleep infinity
+
+networks:
+  labnet:
+    driver: bridge

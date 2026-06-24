@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>n2n v3 (ntop) protocol layer: the on-wire codec for the supernode/edge control messages (REGISTER_SUPER / REGISTER_SUPER_ACK / PEER_INFO / REGISTER / REGISTER_ACK / PACKET over the 24-byte common header, community 20B, big-endian) plus the AES-CBC PACKET transform (random 16-byte preamble + AES-CBC, null IV — reusing Crypto). Protocol/codec only; the UDP transport, supernode discovery, edge hole-punching and the L2 Ethernet fabric are the driver's job.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Crypto\TqkLibrary.VpnClient.Crypto.csproj" />
+  </ItemGroup>
+
+</Project>

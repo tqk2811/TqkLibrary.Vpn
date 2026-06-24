@@ -30,6 +30,18 @@ namespace TqkLibrary.VpnClient.ZeroTier.Vl1.Enums
         /// <summary>A VL2 Ethernet frame with extended addressing / per-frame metadata.</summary>
         ExtFrame = 0x07,
 
+        /// <summary>Liveness check echoed back by the peer (keepalive).</summary>
+        Echo = 0x08,
+
+        /// <summary>Attach network credentials (certificate of membership, capabilities, tags) to a peer.</summary>
+        NetworkCredentials = 0x0A,
+
+        /// <summary>Ask the network controller for this node's configuration on a network (VL2 join).</summary>
+        NetworkConfigRequest = 0x0B,
+
+        /// <summary>A network configuration pushed by the controller (the controller's reply to a request).</summary>
+        NetworkConfig = 0x0C,
+
         /// <summary>Multicast frame.</summary>
         MulticastFrame = 0x0E,
     }

@@ -26,7 +26,6 @@ namespace TqkLibrary.VpnClient.ZeroTier.Tests
             var frame = new Vl2Frame
             {
                 Network = NetworkId.Parse("8056c2e21c000001"),
-                Flags = 0,
                 EtherType = 0x0800, // IPv4
                 FrameData = new byte[] { 0x45, 0x00, 0x00, 0x14, 0xDE, 0xAD },
             };

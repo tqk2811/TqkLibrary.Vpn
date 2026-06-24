@@ -6,17 +6,13 @@ namespace TqkLibrary.VpnClient.ZeroTier.Vl2
 {
     /// <summary>
     /// Encodes and decodes the body of a VL1 <c>FRAME</c> verb — a VL2 Ethernet frame carried over VL1. The body is
-    /// <c>networkId(8) || flags(1) || etherType(2) || frameData</c>. This codec also derives the per-network Ethernet
-    /// MAC of a node, which is how the driver rebuilds the L2 header for the Ethernet fabric.
-    /// <para>
-    /// <b>UNVERIFIED interop:</b> the FRAME body layout and the MAC derivation are clean-room from the protocol
-    /// description and have not been cross-checked against a real ZeroTier peer (VM lab down). Staged for live
-    /// validation.
-    /// </para>
+    /// <c>networkId(8) || etherType(2) || frameData</c> (no flags byte). This codec also derives the per-network
+    /// Ethernet MAC of a node, which is how the driver rebuilds the L2 header for the Ethernet fabric. The fuller
+    /// <c>EXT_FRAME</c> form (explicit dst/src MAC + optional COM) is handled by <see cref="Vl2ExtFrameCodec"/>.
     /// </summary>
     public sealed class Vl2FrameCodec
     {
-        const int FixedPrefix = NetworkId.SizeInBytes + 1 + 2; // 11
+        const int FixedPrefix = NetworkId.SizeInBytes + 2; // 10
 
         /// <summary>Serialises the FRAME body (the bytes after the verb byte).</summary>
         public byte[] Encode(Vl2Frame frame)
@@ -26,14 +22,13 @@ namespace TqkLibrary.VpnClient.ZeroTier.Vl2
             int o = 0;
             frame.Network.Write(body.AsSpan(o, NetworkId.SizeInBytes));
             o += NetworkId.SizeInBytes;
-            body[o++] = frame.Flags;
             BinaryPrimitives.WriteUInt16BigEndian(body.AsSpan(o, 2), frame.EtherType);
             o += 2;
             frame.FrameData.CopyTo(body.AsSpan(o));
             return body;
         }
 
-        /// <summary>Parses a FRAME body. Returns false if shorter than the 11-byte fixed prefix.</summary>
+        /// <summary>Parses a FRAME body. Returns false if shorter than the 10-byte fixed prefix.</summary>
         public bool TryDecode(ReadOnlySpan<byte> body, out Vl2Frame frame)
         {
             frame = new Vl2Frame();
@@ -41,7 +36,6 @@ namespace TqkLibrary.VpnClient.ZeroTier.Vl2
             int o = 0;
             frame.Network = NetworkId.Read(body.Slice(o, NetworkId.SizeInBytes));
             o += NetworkId.SizeInBytes;
-            frame.Flags = body[o++];
             frame.EtherType = BinaryPrimitives.ReadUInt16BigEndian(body.Slice(o, 2));
             o += 2;
             frame.FrameData = body.Slice(o).ToArray();

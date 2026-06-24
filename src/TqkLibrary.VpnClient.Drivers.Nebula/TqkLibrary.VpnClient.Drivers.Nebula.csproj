@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Nebula (Slack mesh VPN) protocol driver: a UDP transport plus the Noise_IX_25519_AESGCM_SHA256 handshake driving a type-1 (Message) data plane behind a stable L3 packet channel. Static config (CA cert, client cert + X25519 key, static_host_map peer endpoint, overlay tunnel IP/CIDR, MTU) maps straight to a TunnelConfig (no IPCP/DHCP); a timer loop runs liveness keepalive and a make-before-break re-handshake, with teardown and auto-reconnect.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Abstractions\TqkLibrary.VpnClient.Abstractions.csproj" />
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Crypto\TqkLibrary.VpnClient.Crypto.csproj" />
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Drivers.Core\TqkLibrary.VpnClient.Drivers.Core.csproj" />
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Nebula\TqkLibrary.VpnClient.Nebula.csproj" />
+  </ItemGroup>
+
+</Project>

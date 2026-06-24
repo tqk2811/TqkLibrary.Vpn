@@ -273,6 +273,8 @@ namespace Vpn2ProxyDemo.CommandModules
                 VpnProtocol.ZeroTier => VpnTunnel.ConnectZeroTierAsync(target.ConfigPath!, ct),
                 // vtun (V.11): TCP challenge-response (MD5+Blowfish) → length-prefix frame → bare IP (type tun). Host-config name = HubName, password = Pass, IP tĩnh từ ?addr/?peer.
                 VpnProtocol.Vtun => VpnTunnel.ConnectVtunAsync(target.Host, target.Port, target.HubName, target.Pass, target.TunnelAddress!, target.TunnelPeerAddress, ct),
+                // Tailscale (V.7.5): server/authkey đọc từ file .tailscale (configPath); control ts2021 (Noise IK + register + netmap) → WireGuard data plane tái dùng.
+                VpnProtocol.Tailscale => VpnTunnel.ConnectTailscaleAsync(target.ConfigPath!, ct),
                 _ => throw new ArgumentOutOfRangeException(nameof(target), target.Protocol, "Giao thức VPN không hỗ trợ."),
             };
 

@@ -132,6 +132,14 @@ namespace Vpn2ProxyDemo.CommandModules.Models
                 return true;
             }
 
+            // Dạng Tailscale (V.7.5): --vpn trỏ tới một file .tailscale (ini: server=<headscale url> + authkey=<preauth> + mtu=).
+            // Control plane ts2021 sinh netmap -> WireGuard data plane tái dùng. Keys sinh tại runtime (Generate).
+            if (value.Trim().EndsWith(".tailscale", StringComparison.OrdinalIgnoreCase))
+            {
+                target = new VpnTarget(VpnProtocol.Tailscale, host: value.Trim(), port: 0, user: "", pass: "", configPath: value.Trim());
+                return true;
+            }
+
             if (!Uri.TryCreate(value, UriKind.Absolute, out Uri? uri))
             {
                 error = $"--vpn '{value}' không phải URI hợp lệ. Cần scheme://user:pass@host[:port] hoặc đường dẫn .ovpn.";

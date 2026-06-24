@@ -25,6 +25,7 @@
     <ProjectReference Include="..\..\src\TqkLibrary.VpnClient.Drivers.N2n\TqkLibrary.VpnClient.Drivers.N2n.csproj" />
     <ProjectReference Include="..\..\src\TqkLibrary.VpnClient.Drivers.Vtun\TqkLibrary.VpnClient.Drivers.Vtun.csproj" />
     <ProjectReference Include="..\..\src\TqkLibrary.VpnClient.Drivers.ZeroTier\TqkLibrary.VpnClient.Drivers.ZeroTier.csproj" />
+    <ProjectReference Include="..\..\src\TqkLibrary.VpnClient.Drivers.Tailscale\TqkLibrary.VpnClient.Drivers.Tailscale.csproj" />
     <!-- Socket API trên tunnel: VpnTcpClient + TcpIpStack (dùng bởi VpnProxySource cục bộ). -->
     <ProjectReference Include="..\..\src\TqkLibrary.VpnClient.Sockets\TqkLibrary.VpnClient.Sockets.csproj" />
     <!-- Raw-IP transport (ESP proto-50 native, no-NAT) cho cờ native-esp (P0.8c) — cần CAP_NET_RAW/Administrator. -->

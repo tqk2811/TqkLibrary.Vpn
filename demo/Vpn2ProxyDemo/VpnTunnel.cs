@@ -26,6 +26,8 @@ using TqkLibrary.VpnClient.Drivers.OpenVpn;
 using TqkLibrary.VpnClient.Drivers.Pptp;
 using TqkLibrary.VpnClient.Drivers.SoftEther;
 using TqkLibrary.VpnClient.Drivers.Sstp;
+using TqkLibrary.VpnClient.Drivers.Tailscale;
+using TqkLibrary.VpnClient.Drivers.Tailscale.Config;
 using TqkLibrary.VpnClient.Drivers.Tinc;
 using TqkLibrary.VpnClient.Drivers.Tinc.Config;
 using TqkLibrary.VpnClient.Drivers.WireGuard;
@@ -591,6 +593,70 @@ namespace Vpn2ProxyDemo
                 loggerFactory.Dispose();
                 throw;
             }
+        }
+
+        /// <summary>
+        /// Kết nối Tailscale (V.7.5) từ một file <c>.tailscale</c> (ini: <c>server=&lt;headscale url&gt;</c> +
+        /// <c>authkey=&lt;preauth&gt;</c> + <c>mtu=</c> tùy chọn). Chạy control plane ts2021 (Noise IK → đăng nhập
+        /// Headscale bằng preauth key → register node → netmap) rồi nạp netmap vào data plane WireGuard tái dùng
+        /// nguyên (<see cref="TailscaleConnection"/>). Keys (machine/node X25519) sinh ngẫu nhiên tại runtime.
+        /// </summary>
+        public static async Task<VpnTunnel> ConnectTailscaleAsync(string configPath, CancellationToken ct)
+        {
+            Console.WriteLine("=== [Tailscale] ===");
+            string path = ResolveConfigPath(configPath);
+            TailscaleConfig config = ParseTailscaleConf(File.ReadAllText(path));
+            ILoggerFactory loggerFactory = CreateDriverLoggerFactory();
+            var vpn = new TailscaleConnection(config, loggerFactory: loggerFactory);
+            try
+            {
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                cts.CancelAfter(TimeSpan.FromSeconds(90));
+
+                Console.WriteLine($"[tailscale] control login to {config.ServerUrl} (ts2021 Noise IK + preauth) ...");
+                await vpn.ConnectAsync(cts.Token);
+                IPAddress assigned = vpn.Config.AssignedAddress ?? IPAddress.Any;
+                IPAddress? dns = vpn.Config.DnsServers.Count > 0 ? vpn.Config.DnsServers[0] : null;
+                Console.WriteLine($"[tailscale] tunnel up. overlay IP = {assigned}, dns = {dns?.ToString() ?? "(none)"}, mtu = {vpn.PacketChannel.Mtu}");
+
+                var stack = new TcpIpStack(vpn.PacketChannel, assigned, null);
+                var driver = new TailscaleDriver(config);
+                return new VpnTunnel(stack, async () => { await vpn.DisposeAsync(); loggerFactory.Dispose(); },
+                    assigned, vpn.PacketChannel.Mtu, driver.Capabilities, driver.Name, dns);
+            }
+            catch
+            {
+                await vpn.DisposeAsync();
+                loggerFactory.Dispose();
+                throw;
+            }
+        }
+
+        // Parse một file .tailscale tối giản (ini key=value): server=<headscale base url>, authkey=<preauth key>, mtu=<int>.
+        // Keys machine/node sinh ngẫu nhiên tại runtime (TailscaleConfig.Generate). Pure helper.
+        static TailscaleConfig ParseTailscaleConf(string text)
+        {
+            string? server = null, authkey = null, hostname = null;
+            int mtu = 1280;
+            foreach (string raw in text.Split('\n'))
+            {
+                string line = raw.Trim();
+                if (line.Length == 0 || line.StartsWith("#") || line.StartsWith(";")) continue;
+                int eq = line.IndexOf('=');
+                if (eq <= 0) continue;
+                string key = line.Substring(0, eq).Trim().ToLowerInvariant();
+                string val = line.Substring(eq + 1).Trim();
+                switch (key)
+                {
+                    case "server": case "serverurl": case "url": server = val; break;
+                    case "authkey": case "preauthkey": case "key": authkey = val; break;
+                    case "hostname": hostname = val; break;
+                    case "mtu": int.TryParse(val, out mtu); break;
+                }
+            }
+            if (string.IsNullOrEmpty(server)) throw new InvalidOperationException("File .tailscale cần server=<headscale base url>.");
+            if (string.IsNullOrEmpty(authkey)) throw new InvalidOperationException("File .tailscale cần authkey=<preauth key>.");
+            return TailscaleConfig.Generate(new Uri(server!), authkey!, hostname, mtu <= 0 ? 1280 : mtu);
         }
 
         /// <summary>

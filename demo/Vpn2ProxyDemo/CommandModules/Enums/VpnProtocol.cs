@@ -47,5 +47,8 @@ namespace Vpn2ProxyDemo.CommandModules.Enums
 
         /// <summary>vtun (legacy tunnel daemon): TCP control+data, challenge-response (MD5+Blowfish-ECB) → length-prefix frame → bare IP (type tun, encrypt no, compress no). Scheme <c>vtun://pass@host[:port]/hostName?addr=&lt;ip&gt;/&lt;prefix&gt;&amp;peer=&lt;ip&gt;</c> (V.11).</summary>
         Vtun,
+
+        /// <summary>Tailscale: control plane ts2021 (Noise IK + đăng nhập Headscale bằng preauth key + netmap) ghép vào data plane WireGuard tái dùng. Cấu hình từ một file <c>.tailscale</c> (ini: server/authkey/mtu); <c>--vpn</c> trỏ thẳng tới file (V.7.5).</summary>
+        Tailscale,
     }
 }

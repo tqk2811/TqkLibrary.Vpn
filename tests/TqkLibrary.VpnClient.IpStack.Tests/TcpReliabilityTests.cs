@@ -110,6 +110,136 @@ namespace TqkLibrary.VpnClient.IpStack.Tests
             Assert.Equal("abc", h.AssembleData());
         }
 
+        [Fact]
+        public async Task ZeroWindow_WithWindowScaling_ReopenByPureWindowUpdate_DoesNotStayStuck()
+        {
+            // Reproduces the live V.2/V.4 stall (HTTP upload through the tunnel): the peer negotiates RFC 7323 window
+            // scaling, fills its receive buffer and advertises a zero window so the client enters zero-window persist.
+            // The peer then ACKs the persist probe but keeps advertising zero (still full). Finally the peer's app drains
+            // its buffer and it sends a PURE WINDOW UPDATE — a bare ACK with the SAME ack number (no new data was sent so
+            // its seq is unchanged, and the client sent nothing new so the ack does not advance) but a non-zero scaled
+            // window. The client must apply that reopened window and resume sending; the bug left _sndWnd stuck at 0 and
+            // the connection dribbled one byte per persist tick forever.
+            var opts = new TcpRetransmitOptions(
+                initialRto: TimeSpan.FromSeconds(30), minRto: TimeSpan.FromSeconds(30),       // no RTO interference
+                persistMin: TimeSpan.FromMilliseconds(20), persistMax: TimeSpan.FromMilliseconds(40));
+            using var h = new ClientHarness(opts);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await h.HandshakeAsync(window: 0, windowScale: 7, cts.Token); // peer scales its window by 2^7 = 128
+
+            byte[] message = new byte[8000];
+            for (int i = 0; i < message.Length; i++) message[i] = (byte)i;
+            h.Conn.Send(message);
+            Assert.Equal(0, h.DataBytesSent()); // zero window blocks the initial send
+
+            // Persist probes with a single byte; ACK that probe but keep the window shut (peer still full).
+            await h.WaitUntilAsync(() => h.DataBytesSent() >= 1, cts.Token);
+            uint probeSeq = h.FirstDataSeq();
+            h.Inject(seq: h.ServerNxt, ack: probeSeq + 1, TcpFlags.Ack, window: 0); // probe acked, still zero window
+
+            // Let persist run a few more ticks (the connection is now idle-but-blocked behind the zero window).
+            await Task.Delay(80, cts.Token);
+
+            // PURE WINDOW UPDATE: same seq (peer sent no data), same ack (probeSeq+1 — we sent nothing new), window now
+            // non-zero (raw 200 << 7 = 25600). This must reopen the send window and unblock the transfer.
+            h.Inject(seq: h.ServerNxt, ack: probeSeq + 1, TcpFlags.Ack, window: 200);
+
+            // Drive the rest of the transfer, ACKing each burst so congestion control opens; the message must complete.
+            uint ackNo = probeSeq + 1;
+            for (int round = 0; round < 30; round++)
+            {
+                if (h.DataBytesSent() >= message.Length) break;
+                await Task.Delay(15, cts.Token);
+                uint highest = h.HighestDataSeqEnd();
+                if (highest > ackNo) { ackNo = highest; h.Inject(seq: h.ServerNxt, ack: ackNo, TcpFlags.Ack, window: 200); }
+            }
+            Assert.Equal(message.Length, h.DataBytesSent());
+        }
+
+        [Fact]
+        public async Task ZeroWindow_PeerDataThenReopen_DownloadConcurrentWithUpload_DoesNotStayStuck()
+        {
+            // Bidirectional HTTP (upload body while the server streams a response): while the client is sending, the peer
+            // sends a DATA segment (download) that ALSO advertises window 0 (its receive buffer momentarily full). Later
+            // the peer reopens with a pure window update whose seq sits AFTER that data. The window-update sequencing
+            // (RFC 793 WL1/WL2) must still accept the reopened window and unblock the upload.
+            var opts = new TcpRetransmitOptions(
+                initialRto: TimeSpan.FromSeconds(30), minRto: TimeSpan.FromSeconds(30),
+                persistMin: TimeSpan.FromMilliseconds(20), persistMax: TimeSpan.FromMilliseconds(40));
+            using var h = new ClientHarness(opts);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await h.HandshakeAsync(window: 0, windowScale: 7, cts.Token);
+
+            byte[] message = new byte[8000];
+            for (int i = 0; i < message.Length; i++) message[i] = (byte)i;
+            h.Conn.Send(message);
+
+            await h.WaitUntilAsync(() => h.DataBytesSent() >= 1, cts.Token);
+            uint probeSeq = h.FirstDataSeq();
+
+            // Peer sends us a chunk of download data, advertising window 0 in the same segment.
+            byte[] download = Encoding.ASCII.GetBytes("HELLO");
+            h.Inject(seq: h.ServerNxt, ack: probeSeq + 1, TcpFlags.Psh | TcpFlags.Ack, window: 0, payload: download);
+            uint serverAfterData = h.ServerNxt + (uint)download.Length;
+
+            await Task.Delay(60, cts.Token);
+
+            // Pure window update with the post-data seq and a non-zero scaled window → must reopen the send window.
+            h.Inject(seq: serverAfterData, ack: probeSeq + 1, TcpFlags.Ack, window: 200);
+
+            uint ackNo = probeSeq + 1;
+            for (int round = 0; round < 30; round++)
+            {
+                if (h.DataBytesSent() >= message.Length) break;
+                await Task.Delay(15, cts.Token);
+                uint highest = h.HighestDataSeqEnd();
+                if (highest > ackNo) { ackNo = highest; h.Inject(seq: serverAfterData, ack: ackNo, TcpFlags.Ack, window: 200); }
+            }
+            Assert.Equal(message.Length, h.DataBytesSent());
+        }
+
+        [Fact]
+        public async Task SmallWindow_SenderSwsAvoidance_DoesNotDribbleTinySegments()
+        {
+            // Reproduces the live V.2/V.4 "1 byte/segment" stall. The peer's receiver opens its window only a few bytes
+            // at a time (a slow-reading app), so each ACK exposes a tiny `usable = window − inflight`. Without sender-side
+            // Silly Window Syndrome avoidance (RFC 9293 §3.8.6.2.1 / RFC 1122 §4.2.3.4) the stack emits one tiny segment
+            // per ACK — the silly-window dribble seen on the wire. With SWS avoidance the stack must hold back until it can
+            // send a full-size (MSS) segment (or the buffer empties / a sizeable fraction of the window opens), so the data
+            // travels in a few large segments instead of thousands of byte-sized ones.
+            var opts = new TcpRetransmitOptions(
+                initialRto: TimeSpan.FromSeconds(30), minRto: TimeSpan.FromSeconds(30),   // no RTO interference
+                persistMin: TimeSpan.FromSeconds(30));                                    // no persist (window never zero)
+            using var h = new ClientHarness(opts);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            // Peer negotiates window scaling and first advertises a large window (as a real server does), then shrinks it
+            // to a trickle — exactly the live shape (server seen at win 502 wscale 7, opening only crumbs as its app reads).
+            await h.HandshakeAsync(window: 502, windowScale: 7, cts.Token); // 502 << 7 ≈ 64 KB max window ever seen
+
+            byte[] message = new byte[40000]; // larger than the initial cwnd (~13.6 KB) so a tail remains after the first burst
+            for (int i = 0; i < message.Length; i++) message[i] = (byte)i;
+            h.Conn.Send(message);
+            await h.WaitUntilAsync(() => h.DataBytesSent() > 0, cts.Token);
+            int afterFirstBurst = h.SegmentCount(); // the (legitimate) full-size segments sent while the window was large
+
+            // Now the peer's window collapses to a trickle: each ACK advances by what it consumed but re-advertises only a
+            // crumb of room (raw 1 << 7 = 128, still « MSS 1360). SWS avoidance must refuse to emit sub-MSS segments for it.
+            uint ackNo = h.HighestDataSeqEnd();
+            for (int round = 0; round < 200; round++)
+            {
+                await Task.Delay(5, cts.Token);
+                uint highest = h.HighestDataSeqEnd();
+                if (highest > ackNo) ackNo = highest;
+                h.Inject(seq: h.ServerNxt, ack: ackNo, TcpFlags.Ack, window: 1); // dangling crumb, far below MSS
+                if (h.SegmentCount() - afterFirstBurst > 60) break;
+            }
+
+            // Count the segments emitted AFTER the window collapsed. SWS avoidance holds the tail back (no sub-MSS sends),
+            // so this stays ~0; the bug ships ~one segment per crumb, exploding the count.
+            int dribbleSegs = h.SegmentCount() - afterFirstBurst;
+            Assert.True(dribbleSegs < 10, $"sender SWS avoidance failed: emitted {dribbleSegs} tiny segments after the window shrank (silly-window dribble), max tail payload {h.MaxSegmentPayload()}");
+        }
+
         // ---- SendAsync backpressure + fault propagation (P0.3) ---------------------------------------------
 
         [Fact]
@@ -323,15 +453,25 @@ namespace TqkLibrary.VpnClient.IpStack.Tests
                 Conn.OnSegment(tcp);
             }
 
-            public async Task HandshakeAsync(ushort window, CancellationToken cancellationToken)
+            public Task HandshakeAsync(ushort window, CancellationToken cancellationToken)
+                => HandshakeAsync(window, TcpSegment.NoWindowScale, cancellationToken);
+
+            public async Task HandshakeAsync(ushort window, byte windowScale, CancellationToken cancellationToken)
             {
                 Conn.StartConnect();
                 Seg syn = await WaitForAsync(s => (s.Flags & TcpFlags.Syn) != 0, cancellationToken);
                 ClientIss = syn.Seq;
                 const uint serverIss = 7000;
-                Inject(serverIss, syn.Seq + 1, TcpFlags.Syn | TcpFlags.Ack, window, mss: 1360);
+                InjectWithOptions(serverIss, syn.Seq + 1, TcpFlags.Syn | TcpFlags.Ack, window, mss: 1360, windowScale: windowScale);
                 ServerNxt = serverIss + 1;
                 await Conn.Connected.ConfigureAwait(false);
+            }
+
+            // Injects a segment carrying SYN-time options (MSS + Window Scale), so the test peer can negotiate RFC 7323 scaling.
+            public void InjectWithOptions(uint seq, uint ack, TcpFlags flags, ushort window, ushort mss, byte windowScale)
+            {
+                byte[] tcp = TcpSegment.Build(ServerIp, ClientIp, ServerPort, ClientPort, seq, ack, flags, window, ReadOnlySpan<byte>.Empty, mss, windowScale);
+                Conn.OnSegment(tcp);
             }
 
             public async Task<Seg> WaitForAsync(Func<Seg, bool> predicate, CancellationToken cancellationToken)
@@ -370,7 +510,34 @@ namespace TqkLibrary.VpnClient.IpStack.Tests
             /// <summary>Total distinct data bytes sent (deduped by sequence number, so retransmits don't double-count).</summary>
             public int DataBytesSent() => DataBySeq().Values.Sum(p => p.Length);
 
+            /// <summary>The largest single data-segment payload captured (1 while persist-dribbling, MSS-sized once the window is open).</summary>
+            public int MaxSegmentPayload()
+            {
+                int max = 0;
+                foreach (Seg s in Snapshot())
+                    if (s.HasData) max = Math.Max(max, s.Payload.Length);
+                return max;
+            }
+
+            /// <summary>How many data-carrying segments were emitted on the wire (counts every emission, incl. tiny ones).</summary>
+            public int SegmentCount()
+            {
+                int count = 0;
+                foreach (Seg s in Snapshot())
+                    if (s.HasData) count++;
+                return count;
+            }
+
             public uint FirstDataSeq() => DataBySeq().Keys.Min();
+
+            /// <summary>The right edge (seq + length) of the highest-sequence data segment captured — what the peer can cumulatively ACK.</summary>
+            public uint HighestDataSeqEnd()
+            {
+                SortedDictionary<uint, byte[]> map = DataBySeq();
+                if (map.Count == 0) return 0;
+                uint key = map.Keys.Max();
+                return key + (uint)map[key].Length;
+            }
 
             public string AssembleData()
             {

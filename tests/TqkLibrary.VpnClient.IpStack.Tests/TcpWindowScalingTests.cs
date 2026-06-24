@@ -38,7 +38,7 @@ namespace TqkLibrary.VpnClient.IpStack.Tests
 
             // Congestion control caps the first burst at the initial cwnd (≪ 64 KB). Drive send/ACK rounds — ACKing
             // each segment so slow start opens cwnd — until a burst plateaus at the peer's (scaled) window. That a burst
-            // reaches 80000 (5000 ≪ 4) proves the negotiated send window exceeds the 65535 unscaled ceiling.
+            // exceeds the 65535 unscaled ceiling proves the negotiated send window is the scaled 80000 (5000 ≪ 4).
             conn.Send(new byte[400000]);
             uint ackNo = clientIss + 1;
             int maxBurst = 0;
@@ -55,7 +55,12 @@ namespace TqkLibrary.VpnClient.IpStack.Tests
                     conn.OnSegment(Peer(seq: 9001, ack: ackNo, TcpFlags.Ack, window: 5000));
                 }
             }
-            Assert.Equal(80000, maxBurst); // send window capped at the scaled 80000, well above the 64 KB ceiling
+            // Sender SWS avoidance holds back the sub-MSS runt at the top of the window, so the burst plateaus at the
+            // largest whole-MSS multiple ≤ 80000 = 58 × 1360 = 78880 (the trailing 1120 bytes wait for the window to open
+            // a full segment). That this is well above 65535 proves the scaled window took effect (without scaling the
+            // burst could never pass the 16-bit ceiling).
+            Assert.True(maxBurst > 65535, $"scaled send window did not exceed the 16-bit ceiling (maxBurst={maxBurst})");
+            Assert.Equal(78880, maxBurst);
         }
 
         [Fact]
@@ -70,7 +75,10 @@ namespace TqkLibrary.VpnClient.IpStack.Tests
             sent.Clear();
 
             conn.Send(new byte[100000]);
-            Assert.Equal(5000, sent.Sum(PayloadLength)); // window field used as-is, no shift
+            // Window field used as-is, no shift. Sender SWS avoidance holds back the sub-MSS runt at the top of the
+            // 5000-byte window, so the in-flight bytes plateau at the largest whole-MSS multiple ≤ 5000 = 3 × 1360 = 4080
+            // (the trailing 920 bytes wait for the window to free a full segment) — never above the unscaled 5000.
+            Assert.Equal(4080, sent.Sum(PayloadLength));
         }
 
         [Fact]

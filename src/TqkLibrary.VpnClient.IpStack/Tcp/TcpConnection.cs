@@ -70,6 +70,11 @@ namespace TqkLibrary.VpnClient.IpStack.Tcp
         uint _sndWnd;
         uint _sndWl1;
         uint _sndWl2;
+        // Largest send window the peer has ever advertised — the SWS-avoidance reference (RFC 1122 §4.2.3.4 / RFC 9293
+        // §3.8.6.2.1). A segment is held back unless it is full-size, drains the buffer, or fills a sizeable fraction of
+        // this max window; using the *max* (not the current, shrinking) window is what stops a slow-reading peer that
+        // dribbles 1-byte window openings from coaxing the sender into silly-window 1-byte-per-segment transmission.
+        uint _maxSndWnd;
 
         // MSS negotiation: _localMss (advertised, derived from the link MTU) caps what the peer may send us; _sendMss
         // (= min(_localMss, peer's advertised MSS)) caps what we send. Both keep TCP segments within the link MTU so
@@ -519,6 +524,7 @@ namespace TqkLibrary.VpnClient.IpStack.Tcp
                     long usable = window - InFlight();                // minus the bytes still in flight (SACKed holes excluded)
                     if (usable <= 0) break;
                     int chunk = (int)Math.Min(Math.Min((long)_sendMss, usable), _sndBufferedBytes);
+                    if (!ShouldSendNow(usable, chunk)) break;          // SWS avoidance: hold a runt back rather than dribble it
                     EmitData(_sndNxt, DequeueUpTo(chunk));
                 }
 
@@ -531,6 +537,22 @@ namespace TqkLibrary.VpnClient.IpStack.Tcp
 
             ArmRtoTimer();
             SignalSendable();   // the send above may have drained the buffer below the high-water mark
+        }
+
+        // Sender-side Silly Window Syndrome avoidance (RFC 9293 §3.8.6.2.1 / RFC 1122 §4.2.3.4): decide whether the next
+        // <paramref name="chunk"/> (already clamped to MSS, the usable window, and the buffer) is worth putting on the wire,
+        // or should be held back so a slow-reading peer's trickle of tiny window openings can't drag us into transmitting
+        // one runt segment per ACK. Emit only when at least one of:
+        //   • the chunk is a full-size segment (a maximum-sized send is always allowed); or
+        //   • the chunk fills a sizeable fraction (≥ ½) of the largest window the peer has ever advertised; or
+        //   • it drains the send buffer (the PUSH override — there is no more application data to coalesce a runt with, so
+        //     holding the final bytes back would just stall the transfer; the persist timer covers a literally-zero window).
+        // The zero-window persist probe bypasses this entirely (it emits via OnPersistTimer, not this loop).
+        bool ShouldSendNow(long usable, int chunk)
+        {
+            if (chunk >= _sendMss) return true;                          // a full segment is always sendable
+            if (_maxSndWnd != 0 && usable >= _maxSndWnd / 2) return true; // fills ≥ half the peer's largest-ever window
+            return chunk >= _sndBufferedBytes;                          // nothing left to coalesce with → push it out
         }
 
         void ProcessAck(uint ack, uint segSeq, ushort segWnd, int payloadLen, TcpFlags flags, ReadOnlySpan<byte> segSpan)
@@ -590,6 +612,7 @@ namespace TqkLibrary.VpnClient.IpStack.Tcp
             {
                 if (_sndWnd == 0 && segWnd > 0) _persistMs = _opts.PersistMin.TotalMilliseconds; // window reopened
                 _sndWnd = advertised;               // apply the peer's negotiated window scale (RFC 7323)
+                if (advertised > _maxSndWnd) _maxSndWnd = advertised; // track the largest-ever window for SWS avoidance
                 _sndWl1 = segSeq;
                 _sndWl2 = ack;
             }

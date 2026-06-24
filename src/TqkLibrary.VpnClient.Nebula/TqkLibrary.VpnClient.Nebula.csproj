@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Nebula (Slack mesh VPN) protocol: Noise_IX_25519_AESGCM_SHA256 handshake, Nebula certificate codec (protobuf v1 + Ed25519 signature verification) and the 16-byte UDP packet header codec.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Crypto\TqkLibrary.VpnClient.Crypto.csproj" />
+  </ItemGroup>
+
+</Project>

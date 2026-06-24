@@ -38,7 +38,8 @@ namespace Vpn2ProxyDemo.CommandModules
                 Description = "VPN target. URI scheme://user:pass@host[:port]: scheme = sstp (MS-SSTP/TLS, port 443), "
                     + "l2tp (L2TP/IPsec IKEv1 PSK \"vpn\", NAT-T 500/4500), ikev2 (IKEv2-native RFC 7296, PSK từ ?psk=, "
                     + "ESP tunnel — V.1; thêm --ikev2-eap để EAP-MSCHAPv2 với user:pass), softether|ssl (SoftEther SSL-VPN/TLS 443, "
-                    + "?hub= mặc định VPNGATE). Hoặc trỏ thẳng tới một file .ovpn cho OpenVPN, hoặc một file .conf wg-quick "
+                    + "?hub= mặc định VPNGATE), pptp (PPTP RFC 2637, control TCP/1723 + GRE proto-47 raw socket, PPP MS-CHAPv2/MPPE — "
+                    + "cần CAP_NET_RAW/Administrator — V.6). Hoặc trỏ thẳng tới một file .ovpn cho OpenVPN, hoặc một file .conf wg-quick "
                     + "cho WireGuard (Noise_IKpsk2/UDP — V.3). Thiếu user:pass ⇒ vpn:vpn.",
                 DefaultValueFactory = _ => "sstp://vpn:vpn@public-vpn-226.opengw.net",
             };
@@ -252,6 +253,8 @@ namespace Vpn2ProxyDemo.CommandModules
                 VpnProtocol.WireGuard => VpnTunnel.ConnectWireGuardAsync(target.ConfigPath!, ct),
                 // OpenConnect (V.5): HTTPS config-auth → CSTP-over-TLS (+DTLS với --openconnect-dtls), bare IP — no PPP.
                 VpnProtocol.OpenConnect => VpnTunnel.ConnectOpenConnectAsync(target.Host, target.Port, target.User, target.Pass, openConnectDtls, ct),
+                // PPTP (V.6): control TCP/1723 → GRE proto-47 (raw socket, cần CAP_NET_RAW) → PPP MS-CHAPv2 → CCP/MPPE → IPCP.
+                VpnProtocol.Pptp => VpnTunnel.ConnectPptpAsync(target.Host, target.User, target.Pass, ct),
                 _ => throw new ArgumentOutOfRangeException(nameof(target), target.Protocol, "Giao thức VPN không hỗ trợ."),
             };
 

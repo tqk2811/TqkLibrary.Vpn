@@ -11,6 +11,7 @@ using TqkLibrary.VpnClient.Drivers.L2tpIpsec;
 using TqkLibrary.VpnClient.Drivers.L2tpIpsec.Enums;
 using TqkLibrary.VpnClient.Drivers.OpenConnect;
 using TqkLibrary.VpnClient.Drivers.OpenVpn;
+using TqkLibrary.VpnClient.Drivers.Pptp;
 using TqkLibrary.VpnClient.Drivers.SoftEther;
 using TqkLibrary.VpnClient.Drivers.Sstp;
 using TqkLibrary.VpnClient.Drivers.WireGuard;
@@ -396,6 +397,42 @@ namespace Vpn2ProxyDemo
             catch
             {
                 await connection.DisposeAsync();
+                loggerFactory.Dispose();
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Connect tới một server PPTP (RFC 2637) bằng host/user/pass (V.6): driver mở control TCP/1723 (SCCRQ/SCCRP →
+        /// OCRQ/OCRP lấy Call-IDs) rồi dựng data plane GRE proto-47 trên <b>raw IP socket</b> (cần CAP_NET_RAW/Administrator),
+        /// chạy PPP MS-CHAPv2 → CCP/MPPE (RC4) → IPCP lấy IP, gói IP thẳng vào <see cref="TcpIpStack"/>. Trả tunnel đã lên
+        /// (đang sống). ⚠️ MS-CHAPv2+MPPE/RC4 đã bị phá — chỉ để tương thích server PPTP legacy.
+        /// </summary>
+        public static async Task<VpnTunnel> ConnectPptpAsync(string host, string user, string pass, CancellationToken ct)
+        {
+            Console.WriteLine("=== [PPTP] ===");
+            ILoggerFactory loggerFactory = CreateDriverLoggerFactory();
+            // GRE proto-47 đi trên raw IP socket (probe quyền dùng GRE thay vì ESP mặc định). Cần CAP_NET_RAW/Administrator.
+            var rawIpFactory = new TqkLibrary.VpnClient.Transport.RawIp.RawIpTransportFactory(
+                probeProtocol: TqkLibrary.VpnClient.Transport.RawIp.RawIpProtocols.Gre);
+            var vpn = new PptpConnection(host, rawIpFactory, loggerFactory: loggerFactory);
+            try
+            {
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                cts.CancelAfter(TimeSpan.FromSeconds(90));
+
+                Console.WriteLine($"[pptp] connecting to {host} (control TCP/1723 → GRE proto-47 raw socket) ...");
+                await vpn.ConnectAsync(user, pass, cts.Token);
+                Console.WriteLine($"[pptp] tunnel up. assigned IP = {vpn.AssignedAddress}, dns = {vpn.AssignedDns?.ToString() ?? "(none)"}");
+
+                var stack = new TcpIpStack(vpn.PacketChannel, vpn.AssignedAddress, null);
+                var driver = new PptpDriver(rawIpFactory);
+                return new VpnTunnel(stack, async () => { await vpn.DisposeAsync(); loggerFactory.Dispose(); },
+                    vpn.AssignedAddress, vpn.PacketChannel.Mtu, driver.Capabilities, driver.Name, vpn.AssignedDns);
+            }
+            catch
+            {
+                await vpn.DisposeAsync();
                 loggerFactory.Dispose();
                 throw;
             }

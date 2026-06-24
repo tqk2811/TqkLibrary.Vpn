@@ -95,7 +95,7 @@ namespace Vpn2ProxyDemo.CommandModules.Models
                 protocol = VpnProtocol.OpenConnect;
             else if (!Enum.TryParse(uri.Scheme, ignoreCase: true, out protocol) || protocol == VpnProtocol.OpenVpn || protocol == VpnProtocol.WireGuard)
             {
-                error = $"--vpn scheme '{uri.Scheme}' không hỗ trợ. Dùng 'sstp', 'l2tp', 'ikev2', 'softether'/'ssl', 'openconnect'/'anyconnect', "
+                error = $"--vpn scheme '{uri.Scheme}' không hỗ trợ. Dùng 'sstp', 'l2tp', 'ikev2', 'softether'/'ssl', 'openconnect'/'anyconnect', 'pptp', "
                     + "hoặc trỏ tới một file .ovpn (OpenVPN) / .conf (WireGuard).";
                 return false;
             }

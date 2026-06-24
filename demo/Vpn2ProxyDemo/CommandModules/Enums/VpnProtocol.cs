@@ -23,5 +23,8 @@ namespace Vpn2ProxyDemo.CommandModules.Enums
 
         /// <summary>OpenConnect (Cisco AnyConnect/ocserv): HTTPS config-auth → CSTP-over-TLS (+DTLS data path), bare IP — no PPP (scheme <c>openconnect</c>/<c>anyconnect</c>) (V.5).</summary>
         OpenConnect,
+
+        /// <summary>PPTP (RFC 2637): control TCP/1723 + GRE proto-47 (raw socket) carrying PPP/MS-CHAPv2/MPPE (scheme <c>pptp</c>) — needs CAP_NET_RAW/Administrator (V.6).</summary>
+        Pptp,
     }
 }

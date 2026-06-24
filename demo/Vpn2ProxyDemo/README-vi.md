@@ -39,7 +39,7 @@ Vpn2ProxyDemo/
 ├── OvpnConfigureFiles/              4 file .ovpn mẫu (copy sang output qua csproj) cho --vpn <file>.ovpn
 └── CommandModules/
     ├── Interfaces/ICommandModule.cs          hợp đồng: Command Command { get; }
-    ├── Enums/VpnProtocol.cs                  enum giao thức: Sstp / L2tp / Ikev2 / SoftEther / OpenVpn / WireGuard (map từ scheme của --vpn, hoặc đuôi .ovpn/.conf)
+    ├── Enums/VpnProtocol.cs                  enum giao thức: Sstp / L2tp / Ikev2 / SoftEther / OpenVpn / WireGuard / OpenConnect / Pptp (map từ scheme của --vpn, hoặc đuôi .ovpn/.conf)
     ├── Models/VpnTarget.cs                   parse --vpn: URI scheme://user:pass@host[:port][?psk=][?hub=] (ssl=alias SoftEther) HOẶC đường dẫn .ovpn (OpenVPN) / .conf wg-quick (WireGuard) -> Protocol/Host/Port/User/Pass/PreSharedKey/HubName/ConfigPath; TryParse + thông báo lỗi
     ├── CommandModuleBase.cs                  base abstract: option chung --vpn + --watermark (chỉ SoftEther) + --ipv6 + --outer-ipv6 + --native-esp (chỉ L2TP/IPsec native ESP proto-50, P0.8c) + --l2tp-extra-sessions (P1.7) + --ikev2-eap (chỉ IKEv2 EAP-MSCHAPv2, V.1); scheme khác ⇒ cảnh báo + bỏ qua; parse target + header (Protocol) + connect VPN (giữ vòng đời) -> PrintCapabilitiesAsync (panel khả năng) -> RunAsync (abstract); ConnectAsync dispatch theo VpnTarget.Protocol (5 nhánh, truyền enableIpv6/useNativeEsp cho L2TP, ikev2Eap cho IKEv2); ValidateOptions (virtual, fail-fast option riêng)
     ├── ProbeUdpDnsCommandModule.cs           subcommand "dns": +--dns-server/--resolve; RunAsync -> ProbeUdpDnsAsync (probe UDP + phân giải domain qua tunnel)

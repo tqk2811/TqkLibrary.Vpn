@@ -9,7 +9,8 @@ namespace TqkLibrary.VpnClient.ZeroTier.Vl1.Models
     ///   <item><description>[0..8)  packet ID — a random 64-bit value that doubles as the Salsa20 nonce/IV base.</description></item>
     ///   <item><description>[8..13) destination address (40-bit).</description></item>
     ///   <item><description>[13..18) source address (40-bit).</description></item>
-    ///   <item><description>[18] flags + cipher — high 5 bits flags, low 3 bits <see cref="Vl1CipherSuite"/>.</description></item>
+    ///   <item><description>[18] flags/cipher/hops byte — <c>FFCCCHHH</c>: high 2 bits <see cref="Flags"/>, middle 3
+    ///   bits <see cref="Vl1CipherSuite"/>, low 3 bits <see cref="Hops"/> (forwarding hop count).</description></item>
     ///   <item><description>[19..27) MAC — 8-byte truncated Poly1305 tag over the encrypted section.</description></item>
     ///   <item><description>[27] verb byte — high 3 bits flags (hops/fragment), low 5 bits <see cref="Vl1Verb"/>.</description></item>
     /// </list>
@@ -29,6 +30,9 @@ namespace TqkLibrary.VpnClient.ZeroTier.Vl1.Models
         /// <summary>Offset of the first encrypted/authenticated byte (the verb byte); also the clear-header length.</summary>
         public const int EncryptedSectionOffset = 27;
 
+        /// <summary>Offset of the flags/cipher/hops byte (<c>FFCCCHHH</c>).</summary>
+        public const int FlagsOffset = 18;
+
         /// <summary>Offset of the 8-byte MAC field.</summary>
         public const int MacOffset = 19;
 
@@ -44,11 +48,17 @@ namespace TqkLibrary.VpnClient.ZeroTier.Vl1.Models
         /// <summary>Source node address (40-bit).</summary>
         public ZeroTierAddress Source { get; set; }
 
-        /// <summary>Flags carried in the high 5 bits of byte 18 (hop count etc.); usually 0 on send.</summary>
+        /// <summary>Outer-envelope flags carried in the high 2 bits of byte 18; usually 0 on send.</summary>
         public byte Flags { get; set; }
 
-        /// <summary>Cipher suite (low 3 bits of byte 18).</summary>
+        /// <summary>Cipher suite (middle 3 bits of byte 18).</summary>
         public Vl1CipherSuite Cipher { get; set; }
+
+        /// <summary>
+        /// Forwarding hop count (low 3 bits of byte 18, max 7). Set by relays as a packet is forwarded; it is the one
+        /// header field a node without the key may alter, so it is masked out of the MAC key derivation.
+        /// </summary>
+        public byte Hops { get; set; }
 
         /// <summary>Verb-byte flags (high 3 bits of byte 27 — fragment/hops); usually 0 on send.</summary>
         public byte VerbFlags { get; set; }

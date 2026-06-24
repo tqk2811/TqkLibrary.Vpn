@@ -13,36 +13,42 @@ using ParametersWithIV = Org.BouncyCastle.Crypto.Parameters.ParametersWithIV;
 namespace TqkLibrary.VpnClient.ZeroTier.Vl1
 {
     /// <summary>
-    /// Seals and opens VL1 packets (the ZeroTier <c>Salsa2012Poly1305</c> cipher suite). A sealed packet is
-    /// <c>header(28) || encrypted(verb + payload)</c> where:
+    /// Seals and opens VL1 packets, matching ZeroTier's <c>Packet::armor</c>/<c>dearmor</c> for the two Curve25519
+    /// cipher suites:
     /// <list type="bullet">
-    ///   <item><description>The Salsa20/12 nonce is the 8-byte packet ID (header bytes [0..8)).</description></item>
-    ///   <item><description>Key-stream block 0 (first 32 bytes) is the one-time Poly1305 key; the key-stream then
-    ///   continues to encrypt the verb byte and payload (offset 27 onward).</description></item>
-    ///   <item><description>Poly1305 authenticates the ciphertext; its 16-byte tag is truncated to 8 bytes and stored
-    ///   in the MAC field (header bytes [19..27)).</description></item>
+    ///   <item><description><see cref="Vl1CipherSuite.Poly1305None"/> (0) — payload is NOT encrypted, only
+    ///   Poly1305-authenticated. HELLO uses this, since the receiver must read the sender's identity before any session
+    ///   key exists.</description></item>
+    ///   <item><description><see cref="Vl1CipherSuite.Salsa2012Poly1305"/> (1) — payload encrypted with Salsa20/12 and
+    ///   Poly1305-authenticated (the normal data cipher suite).</description></item>
     /// </list>
-    /// <para>
-    /// <b>UNVERIFIED interop:</b> the seal/open pair is self-consistent and tamper-detecting offline, but the exact
-    /// key-stream split, MAC truncation half and field offsets have not yet been cross-checked against a real
-    /// <c>zerotier-one</c> peer (VM lab down). Staged for live validation.
-    /// </para>
+    /// Both derive the per-packet keystream from a <b>mangled</b> key (see <see cref="MangleKey"/>): the shared key is
+    /// XORed with the packet ID, the source/destination addresses, the flags byte (hops masked off) and the packet size,
+    /// so the key space is bound to the packet header and split per direction. The Salsa20/12 IV is the 8-byte packet ID;
+    /// keystream block 0 (first 32 bytes) is the one-time Poly1305 key and — for cipher 1 — the keystream continues to
+    /// encrypt the verb byte and payload. Poly1305 covers the encrypted section (verb byte onward); its 16-byte tag is
+    /// truncated to the first 8 bytes and stored in the MAC field (header bytes [19..27)).
     /// </summary>
     public sealed class Vl1PacketCodec
     {
         const int Poly1305KeyBytes = 32;
 
         /// <summary>
-        /// Builds a sealed VL1 packet from <paramref name="header"/> (cipher forced to Salsa2012Poly1305), the
-        /// <paramref name="key"/> (≥ 32 bytes, the Salsa20 key) and the plaintext <paramref name="payload"/> (the
-        /// bytes that follow the verb). The verb itself comes from <c>header.Verb</c>.
+        /// Builds a sealed VL1 packet from <paramref name="header"/> (its <c>Cipher</c> selects the suite — default
+        /// <see cref="Vl1CipherSuite.Salsa2012Poly1305"/> if left unset), the <paramref name="key"/> (≥ 32 bytes shared
+        /// key) and the plaintext <paramref name="payload"/> (the bytes that follow the verb). The verb itself comes from
+        /// <c>header.Verb</c>.
         /// </summary>
         public byte[] Seal(Vl1Header header, ReadOnlySpan<byte> key, ReadOnlySpan<byte> payload)
         {
             if (header is null) throw new ArgumentNullException(nameof(header));
             if (key.Length < 32) throw new ArgumentException("key must be >= 32 bytes", nameof(key));
 
-            header.Cipher = Vl1CipherSuite.Salsa2012Poly1305;
+            // The caller selects the suite via header.Cipher. Poly1305None (0) keeps the payload in the clear (HELLO);
+            // any other value is treated as the encrypting Salsa2012Poly1305 suite.
+            bool encrypt = header.Cipher != Vl1CipherSuite.Poly1305None;
+            header.Cipher = encrypt ? Vl1CipherSuite.Salsa2012Poly1305 : Vl1CipherSuite.Poly1305None;
+
             int plainLen = 1 + payload.Length; // verb byte + payload
             // The verb byte sits at EncryptedSectionOffset (27), so the packet is the 27-byte clear header followed by
             // the plainLen-byte encrypted section — NOT Size(28)+plainLen (that double-counts the verb byte).
@@ -50,24 +56,28 @@ namespace TqkLibrary.VpnClient.ZeroTier.Vl1
 
             WriteHeaderClear(header, packet);
 
-            // Plaintext encrypted section: verb byte then payload.
+            // Encrypted/authenticated section: verb byte then payload.
             Span<byte> enc = packet.AsSpan(Vl1Header.EncryptedSectionOffset, plainLen);
             enc[0] = (byte)(((header.VerbFlags & 0x07) << 5) | ((int)header.Verb & 0x1F));
             payload.CopyTo(enc.Slice(1));
 
+            // Mangle the key against this packet's header + size, then key Salsa20/12 with it (IV = packet ID).
+            byte[] mangled = MangleKey(key, packet);
             byte[] nonce = NonceFromPacketId(header.PacketId);
-            var engine = NewEngine(key, nonce);
+            var engine = NewEngine(mangled, nonce);
 
             // Block 0 -> Poly1305 one-time key.
             byte[] polyKey = NextKeystream(engine, Poly1305KeyBytes);
 
-            // Encrypt the section in place with the continuing key-stream.
-            byte[] cipherSection = new byte[plainLen];
-            engine.ProcessBytes(enc.ToArray(), 0, plainLen, cipherSection, 0);
-            cipherSection.CopyTo(enc);
+            if (encrypt)
+            {
+                byte[] cipherSection = new byte[plainLen];
+                engine.ProcessBytes(enc.ToArray(), 0, plainLen, cipherSection, 0);
+                cipherSection.CopyTo(enc);
+            }
 
-            // Poly1305 over the ciphertext; truncate tag to 8 bytes.
-            byte[] tag = ComputeMac(polyKey, cipherSection);
+            // Poly1305 over the (possibly still-plaintext) encrypted section; truncate tag to 8 bytes.
+            byte[] tag = ComputeMac(polyKey, enc);
             tag.AsSpan(0, Vl1Header.MacSize).CopyTo(packet.AsSpan(Vl1Header.MacOffset, Vl1Header.MacSize));
 
             return packet;
@@ -75,8 +85,8 @@ namespace TqkLibrary.VpnClient.ZeroTier.Vl1
 
         /// <summary>
         /// Verifies and decrypts a sealed VL1 packet. On success returns true and yields the parsed header (with verb)
-        /// and the decrypted payload (the bytes after the verb). Returns false without writing payload on a malformed
-        /// packet, an unsupported cipher suite or a MAC mismatch.
+        /// and the payload (the bytes after the verb — already decrypted for cipher 1, verbatim for cipher 0). Returns
+        /// false without writing payload on a malformed packet, an unsupported cipher suite or a MAC mismatch.
         /// </summary>
         public bool Open(ReadOnlySpan<byte> packet, ReadOnlySpan<byte> key, out Vl1Header header, out byte[] payload)
         {
@@ -87,28 +97,67 @@ namespace TqkLibrary.VpnClient.ZeroTier.Vl1
             if (key.Length < 32) return false;
 
             ReadHeaderClear(packet, header);
-            if (header.Cipher != Vl1CipherSuite.Salsa2012Poly1305) return false;
+            bool encrypt;
+            switch (header.Cipher)
+            {
+                case Vl1CipherSuite.Poly1305None: encrypt = false; break;
+                case Vl1CipherSuite.Salsa2012Poly1305: encrypt = true; break;
+                default: return false;
+            }
 
-            int cipherLen = packet.Length - Vl1Header.EncryptedSectionOffset; // verb + payload, encrypted
-            ReadOnlySpan<byte> cipherSection = packet.Slice(Vl1Header.EncryptedSectionOffset, cipherLen);
+            int cipherLen = packet.Length - Vl1Header.EncryptedSectionOffset; // verb + payload
+            ReadOnlySpan<byte> section = packet.Slice(Vl1Header.EncryptedSectionOffset, cipherLen);
 
+            byte[] mangled = MangleKey(key, packet);
             byte[] nonce = NonceFromPacketId(header.PacketId);
-            var engine = NewEngine(key, nonce);
+            var engine = NewEngine(mangled, nonce);
 
             byte[] polyKey = NextKeystream(engine, Poly1305KeyBytes);
 
-            // Constant-time-ish MAC check before touching the plaintext.
-            byte[] expected = ComputeMac(polyKey, cipherSection);
+            // Constant-time-ish MAC check (over the on-wire section) before touching the plaintext.
+            byte[] expected = ComputeMac(polyKey, section);
             ReadOnlySpan<byte> got = packet.Slice(Vl1Header.MacOffset, Vl1Header.MacSize);
             if (!FixedTimeEquals(expected.AsSpan(0, Vl1Header.MacSize), got)) return false;
 
-            byte[] plain = new byte[cipherLen];
-            engine.ProcessBytes(cipherSection.ToArray(), 0, cipherLen, plain, 0);
+            byte[] plain;
+            if (encrypt)
+            {
+                plain = new byte[cipherLen];
+                engine.ProcessBytes(section.ToArray(), 0, cipherLen, plain, 0);
+            }
+            else
+            {
+                plain = section.ToArray();
+            }
 
             header.VerbFlags = (byte)((plain[0] >> 5) & 0x07);
             header.Verb = (Vl1Verb)(plain[0] & 0x1F);
             payload = plain.AsSpan(1).ToArray();
             return true;
+        }
+
+        // ---- key mangling -----------------------------------------------------------------------------------
+
+        /// <summary>
+        /// Derives the per-packet Salsa20 key from the shared <paramref name="key"/> by XORing its leading bytes with
+        /// the packet header (ZeroTier <c>_salsa20MangleKey</c>): bytes [0..18) with the IV + dest + source, byte 18 with
+        /// the flags (hop count masked off, since relays change it), bytes 19/20 with the little-endian packet size, and
+        /// the rest unchanged. Binding the key to the header makes every packet a fresh key space and splits A→B from B→A.
+        /// </summary>
+        public static byte[] MangleKey(ReadOnlySpan<byte> key, ReadOnlySpan<byte> packet)
+        {
+            byte[] m = new byte[32];
+            // [0..18) = IV(8) + dest(5) + source(5)
+            for (int i = 0; i < 18; i++) m[i] = (byte)(key[i] ^ packet[i]);
+            // [18] = flags, with the low 3 hop-count bits masked off
+            m[18] = (byte)(key[18] ^ (packet[Vl1Header.FlagsOffset] & 0xf8));
+            // [19],[20] = packet size, little-endian
+            int size = packet.Length;
+            m[19] = (byte)(key[19] ^ (byte)(size & 0xff));
+            m[20] = (byte)(key[20] ^ (byte)((size >> 8) & 0xff));
+            // rest unchanged
+            for (int i = 21; i < 32; i++) m[i] = key[i];
+            return m;
         }
 
         // ---- header (clear portion) -------------------------------------------------------------------------
@@ -118,7 +167,8 @@ namespace TqkLibrary.VpnClient.ZeroTier.Vl1
             BinaryPrimitives.WriteUInt64BigEndian(packet.Slice(0, 8), header.PacketId);
             header.Destination.Write(packet.Slice(8, ZeroTierAddress.SizeInBytes));
             header.Source.Write(packet.Slice(13, ZeroTierAddress.SizeInBytes));
-            packet[18] = (byte)(((header.Flags & 0x1F) << 3) | ((int)header.Cipher & 0x07));
+            // FFCCCHHH: flags (bits 6-7) | cipher (bits 3-5) | hops (bits 0-2)
+            packet[Vl1Header.FlagsOffset] = (byte)(((header.Flags & 0x03) << 6) | (((int)header.Cipher & 0x07) << 3) | (header.Hops & 0x07));
             // MAC field [19..27) is filled by the caller after the tag is computed.
         }
 
@@ -127,8 +177,10 @@ namespace TqkLibrary.VpnClient.ZeroTier.Vl1
             header.PacketId = BinaryPrimitives.ReadUInt64BigEndian(packet.Slice(0, 8));
             header.Destination = ZeroTierAddress.Read(packet.Slice(8, ZeroTierAddress.SizeInBytes));
             header.Source = ZeroTierAddress.Read(packet.Slice(13, ZeroTierAddress.SizeInBytes));
-            header.Flags = (byte)((packet[18] >> 3) & 0x1F);
-            header.Cipher = (Vl1CipherSuite)(packet[18] & 0x07);
+            byte b = packet[Vl1Header.FlagsOffset];
+            header.Flags = (byte)((b >> 6) & 0x03);
+            header.Cipher = (Vl1CipherSuite)((b >> 3) & 0x07);
+            header.Hops = (byte)(b & 0x07);
         }
 
         // ---- crypto helpers ---------------------------------------------------------------------------------

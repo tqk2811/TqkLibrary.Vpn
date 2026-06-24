@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>ZeroTier (VL1/VL2) L2 mesh protocol driver: a UDP transport to a ZeroTier node/controller that runs the VL1 HELLO ⇄ OK handshake (Curve25519 identity agreement → Salsa20/12 + Poly1305 session), keeps the session alive (ECHO/NOP), and joins a VL2 virtual network by asking the controller for its configuration (NETWORK_CONFIG_REQUEST → network config dictionary: assigned IP, routes, certificate of membership). The data session is an L2 IEthernetChannel carrying VL2 EXT_FRAME messages that plugs into the userspace Ethernet fabric (ARP + VirtualHost), bridged down to a stable L3 packet channel. Static config (node/controller endpoint + identity, this node's identity, network id, static overlay IP) maps to a TunnelConfig; teardown and auto-reconnect run on the shared supervisor.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Abstractions\TqkLibrary.VpnClient.Abstractions.csproj" />
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Crypto\TqkLibrary.VpnClient.Crypto.csproj" />
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Drivers.Core\TqkLibrary.VpnClient.Drivers.Core.csproj" />
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Ethernet\TqkLibrary.VpnClient.Ethernet.csproj" />
+    <ProjectReference Include="..\TqkLibrary.VpnClient.ZeroTier\TqkLibrary.VpnClient.ZeroTier.csproj" />
+  </ItemGroup>
+
+</Project>

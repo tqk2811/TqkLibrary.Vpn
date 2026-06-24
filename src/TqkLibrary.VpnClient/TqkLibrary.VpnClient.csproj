@@ -19,6 +19,7 @@
     <ProjectReference Include="..\TqkLibrary.VpnClient.Drivers.Nebula\TqkLibrary.VpnClient.Drivers.Nebula.csproj" />
     <ProjectReference Include="..\TqkLibrary.VpnClient.Drivers.Tinc\TqkLibrary.VpnClient.Drivers.Tinc.csproj" />
     <ProjectReference Include="..\TqkLibrary.VpnClient.Drivers.N2n\TqkLibrary.VpnClient.Drivers.N2n.csproj" />
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Drivers.ZeroTier\TqkLibrary.VpnClient.Drivers.ZeroTier.csproj" />
   </ItemGroup>
 
 </Project>

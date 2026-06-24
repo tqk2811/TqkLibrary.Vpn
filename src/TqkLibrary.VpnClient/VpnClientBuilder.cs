@@ -19,6 +19,8 @@ using TqkLibrary.VpnClient.Drivers.Sstp;
 using TqkLibrary.VpnClient.Drivers.Tinc;
 using TqkLibrary.VpnClient.Drivers.Tinc.Config;
 using TqkLibrary.VpnClient.Drivers.WireGuard;
+using TqkLibrary.VpnClient.Drivers.ZeroTier;
+using TqkLibrary.VpnClient.Drivers.ZeroTier.Config;
 using TqkLibrary.VpnClient.OpenVpn.Config;
 using TqkLibrary.VpnClient.SoftEther.Models;
 using TqkLibrary.VpnClient.WireGuard.Config;
@@ -187,6 +189,23 @@ namespace TqkLibrary.VpnClient
         /// <summary>Registers the n2n driver with explicit auto-reconnect options (e.g. to disable it).</summary>
         public VpnClientBuilder UseN2n(N2nConfig config, N2nReconnectOptions reconnectOptions)
             => AddDriver(new N2nDriver(config, reconnectOptions));
+
+        /// <summary>
+        /// Registers the ZeroTier (VL1/VL2) driver: a UDP transport to a node/controller that runs the VL1
+        /// <c>HELLO ⇄ OK</c> handshake (Curve25519 identity agreement → Salsa20/12 + Poly1305 session), joins a VL2
+        /// network by asking the controller for its configuration (<c>NETWORK_CONFIG_REQUEST</c> → assigned IP +
+        /// certificate of membership), then carries full Ethernet frames as VL2 <c>EXT_FRAME</c> messages behind an L2
+        /// channel bridged into the Ethernet fabric (ARP + VirtualHost) down to a stable L3 packet channel. The static
+        /// <see cref="ZeroTierConfig"/> (this node's identity, the peer node/controller's identity, the network id, the
+        /// optional static overlay IP) maps to a <c>TunnelConfig</c> (controller-assigned or pinned address); an ECHO
+        /// keepalive holds the path open. Planet/moon root discovery is bypassed (peer with the node/controller directly).
+        /// Auto-reconnect is enabled by default.
+        /// </summary>
+        public VpnClientBuilder UseZeroTier(ZeroTierConfig config) => AddDriver(new ZeroTierDriver(config));
+
+        /// <summary>Registers the ZeroTier driver with explicit auto-reconnect options (e.g. to disable it).</summary>
+        public VpnClientBuilder UseZeroTier(ZeroTierConfig config, ZeroTierReconnectOptions reconnectOptions)
+            => AddDriver(new ZeroTierDriver(config, reconnectOptions));
 
         /// <summary>
         /// Registers the OpenConnect (Cisco AnyConnect / ocserv) driver: HTTPS config-auth then CSTP, in-band

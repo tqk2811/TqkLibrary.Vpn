@@ -6,6 +6,7 @@ using TqkLibrary.VpnClient.Abstractions.Drivers.Interfaces;
 using TqkLibrary.VpnClient.Abstractions.Drivers.Models;
 using TqkLibrary.VpnClient.Abstractions.Net;
 using TqkLibrary.VpnClient.Abstractions.Transport.Interfaces;
+using TqkLibrary.VpnClient.Drivers.CiscoIpsec;
 using TqkLibrary.VpnClient.Drivers.Ikev2;
 using TqkLibrary.VpnClient.Drivers.IpEncap;
 using TqkLibrary.VpnClient.Drivers.IpEncap.Enums;
@@ -209,6 +210,48 @@ namespace Vpn2ProxyDemo
             catch
             {
                 await vpn.DisposeAsync();
+                loggerFactory.Dispose();
+                throw;
+            }
+        }
+
+        /// <summary>Connect tới gateway Cisco IPsec / EzVPN bằng host + group name + group PSK + XAUTH user/pass; trả tunnel đã lên (V.12).
+        /// Driver chạy IKEv1 Aggressive Mode (group PSK, forced NAT-T UDP 500→4500) → XAUTH (user/pass) → Mode-Config
+        /// (virtual IP/DNS) → ESP tunnel mode → <see cref="TcpIpStack"/> trực tiếp (KHÔNG PPP/L2TP). ⚠️ Aggressive Mode +
+        /// group PSK là Phase 1 yếu (dictionary attack offline trên group PSK) — chỉ interop gateway Cisco-compatible legacy.</summary>
+        public static async Task<VpnTunnel> ConnectCiscoIpsecAsync(string host, string groupName, string groupPreSharedKey, string user, string pass, CancellationToken ct)
+        {
+            Console.WriteLine("=== [Cisco IPsec / EzVPN] ===");
+            Console.WriteLine("[cisco] CẢNH BÁO: IKEv1 Aggressive Mode + group PSK là Phase 1 YẾU (dictionary attack offline) — chỉ interop gateway legacy.");
+            ILoggerFactory loggerFactory = CreateDriverLoggerFactory();
+            var driver = new CiscoIpsecDriver(groupName, loggerFactory: loggerFactory);
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(TimeSpan.FromSeconds(90));
+
+            Console.WriteLine($"[cisco] connecting to {host} (IKEv1 Aggressive Mode group '{groupName}' → XAUTH '{user}' → Mode-Config → ESP tunnel, forced NAT-T UDP 500->4500) ...");
+            IVpnConnection connection;
+            try
+            {
+                connection = await driver.ConnectAsync(
+                    new VpnEndpoint(host, 500),
+                    new VpnCredentials { PreSharedKey = Encoding.ASCII.GetBytes(groupPreSharedKey), Username = user, Password = pass },
+                    cts.Token);
+            }
+            catch { loggerFactory.Dispose(); throw; }
+            try
+            {
+                IVpnSession session = connection.Sessions[0];
+                IPAddress assigned = session.Config.AssignedAddress ?? IPAddress.Any;
+                IPAddress? dns = session.Config.DnsServers.Count > 0 ? session.Config.DnsServers[0] : null;
+                Console.WriteLine($"[cisco] tunnel up. assigned IP = {assigned}, dns = {dns?.ToString() ?? "(none)"}");
+
+                var stack = new TcpIpStack(session.PacketChannel, assigned, null);
+                return new VpnTunnel(stack, async () => { await connection.DisposeAsync(); loggerFactory.Dispose(); },
+                    assigned, session.PacketChannel.Mtu, driver.Capabilities, driver.Name, dns);
+            }
+            catch
+            {
+                await connection.DisposeAsync();
                 loggerFactory.Dispose();
                 throw;
             }

@@ -37,7 +37,9 @@ namespace Vpn2ProxyDemo.CommandModules
             {
                 Description = "VPN target. URI scheme://user:pass@host[:port]: scheme = sstp (MS-SSTP/TLS, port 443), "
                     + "l2tp (L2TP/IPsec IKEv1 PSK \"vpn\", NAT-T 500/4500), ikev2 (IKEv2-native RFC 7296, PSK từ ?psk=, "
-                    + "ESP tunnel — V.1; thêm --ikev2-eap để EAP-MSCHAPv2 với user:pass), softether|ssl (SoftEther SSL-VPN/TLS 443, "
+                    + "ESP tunnel — V.1; thêm --ikev2-eap để EAP-MSCHAPv2 với user:pass), cisco (Cisco IPsec/EzVPN IKEv1 Aggressive "
+                    + "Mode group PSK từ ?psk= + group name từ ?group= + XAUTH user:pass + Mode-Config, ESP tunnel — V.12), "
+                    + "softether|ssl (SoftEther SSL-VPN/TLS 443, "
                     + "?hub= mặc định VPNGATE), pptp (PPTP RFC 2637, control TCP/1723 + GRE proto-47 raw socket, PPP MS-CHAPv2/MPPE — "
                     + "cần CAP_NET_RAW/Administrator — V.6), gre|ipip|sit (plain IP-encap V.8: GRE proto-47 / IPIP proto-4 / "
                     + "SIT proto-41 trên raw IP socket — connectionless, IP tĩnh ?addr=<v4>/<prefix>&peer=<v4> hoặc "
@@ -249,6 +251,8 @@ namespace Vpn2ProxyDemo.CommandModules
                 // IKEv2-native (V.1): PSK group từ ?psk= (như L2TP). --ikev2-eap ⇒ thêm EAP-MSCHAPv2 với user:pass của URI.
                 VpnProtocol.Ikev2 => VpnTunnel.ConnectIkev2Async(target.Host, target.PreSharedKey,
                     ikev2Eap ? target.User : null, ikev2Eap ? target.Pass : null, ct, preferOuterIpv6),
+                // Cisco IPsec/EzVPN (V.12): group name từ ?group= + group PSK từ ?psk= (Aggressive Mode) + XAUTH user:pass của URI.
+                VpnProtocol.CiscoIpsec => VpnTunnel.ConnectCiscoIpsecAsync(target.Host, target.GroupName, target.PreSharedKey, target.User, target.Pass, ct),
                 VpnProtocol.SoftEther => VpnTunnel.ConnectSoftEtherAsync(target.Host, target.Port, target.User, target.Pass, target.HubName, watermarkPath, ct),
                 VpnProtocol.OpenVpn => VpnTunnel.ConnectOpenVpnAsync(target.ConfigPath!, target.User, target.Pass, ct),
                 // WireGuard (V.3): keys/endpoint/address đọc từ file .conf wg-quick (configPath); driver chạy handshake UDP.

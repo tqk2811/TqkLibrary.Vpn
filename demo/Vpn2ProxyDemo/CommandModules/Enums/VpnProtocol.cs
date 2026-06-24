@@ -12,6 +12,9 @@ namespace Vpn2ProxyDemo.CommandModules.Enums
         /// <summary>IKEv2-native (RFC 7296 PSK/EAP over NAT-T, CP virtual IP, ESP tunnel mode — no PPP) (scheme <c>ikev2</c>).</summary>
         Ikev2,
 
+        /// <summary>Cisco IPsec / EzVPN (IKEv1 Aggressive Mode group PSK + XAUTH + Mode-Config over NAT-T, ESP tunnel mode — no PPP) (scheme <c>cisco</c>) (V.12).</summary>
+        CiscoIpsec,
+
         /// <summary>SoftEther SSL-VPN (Ethernet-over-TLS, DHCP SecureNAT, auth SHA-0) (scheme <c>softether</c>/<c>ssl</c>).</summary>
         SoftEther,
 

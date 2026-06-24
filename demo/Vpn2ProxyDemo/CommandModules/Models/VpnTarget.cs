@@ -21,7 +21,8 @@ namespace Vpn2ProxyDemo.CommandModules.Models
     {
         public VpnTarget(VpnProtocol protocol, string host, int port, string user, string pass,
             string preSharedKey = "vpn", string hubName = "VPNGATE", string? configPath = null,
-            IpEncapKind ipEncapKind = IpEncapKind.Gre, string? tunnelAddress = null, string? tunnelPeerAddress = null)
+            IpEncapKind ipEncapKind = IpEncapKind.Gre, string? tunnelAddress = null, string? tunnelPeerAddress = null,
+            string groupName = "vpngroup")
         {
             Protocol = protocol;
             Host = host;
@@ -34,6 +35,7 @@ namespace Vpn2ProxyDemo.CommandModules.Models
             IpEncapKind = ipEncapKind;
             TunnelAddress = tunnelAddress;
             TunnelPeerAddress = tunnelPeerAddress;
+            GroupName = groupName;
         }
 
         public VpnProtocol Protocol { get; }
@@ -64,6 +66,9 @@ namespace Vpn2ProxyDemo.CommandModules.Models
 
         /// <summary>Địa chỉ tunnel của PEER (gateway bên trong tunnel) — <c>?peer=10.80.0.1</c> hoặc <c>?peer6=fd00::1</c>. Đích mặc định cho probe ICMP/UDP. Chỉ <see cref="VpnProtocol.IpEncap"/> dùng.</summary>
         public string? TunnelPeerAddress { get; }
+
+        /// <summary>Tên group Aggressive Mode (Cisco IPsec/EzVPN) — gateway chọn group PSK theo tên này (gửi rõ ở message 1). Chỉ <see cref="VpnProtocol.CiscoIpsec"/> dùng; thiếu <c>?group=</c> ⇒ mặc định <c>vpngroup</c> (V.12).</summary>
+        public string GroupName { get; }
 
         /// <summary>
         /// Parse <c>--vpn</c>: một đường dẫn <c>.ovpn</c> (OpenVPN) hoặc URI <c>scheme://user:pass@host[:port][?psk=][?hub=]</c>.
@@ -127,6 +132,9 @@ namespace Vpn2ProxyDemo.CommandModules.Models
                 protocol = VpnProtocol.SoftEther;
             else if (string.Equals(uri.Scheme, "anyconnect", StringComparison.OrdinalIgnoreCase))
                 protocol = VpnProtocol.OpenConnect;
+            // "cisco" → Cisco IPsec/EzVPN (scheme ngắn gọn cho VpnProtocol.CiscoIpsec) (V.12).
+            else if (string.Equals(uri.Scheme, "cisco", StringComparison.OrdinalIgnoreCase))
+                protocol = VpnProtocol.CiscoIpsec;
             else if (string.Equals(uri.Scheme, "gre", StringComparison.OrdinalIgnoreCase))
             { protocol = VpnProtocol.IpEncap; ipEncapKind = IpEncapKind.Gre; isIpEncap = true; }
             else if (string.Equals(uri.Scheme, "ipip", StringComparison.OrdinalIgnoreCase))
@@ -135,7 +143,7 @@ namespace Vpn2ProxyDemo.CommandModules.Models
             { protocol = VpnProtocol.IpEncap; ipEncapKind = IpEncapKind.Sit; isIpEncap = true; }
             else if (!Enum.TryParse(uri.Scheme, ignoreCase: true, out protocol) || protocol == VpnProtocol.OpenVpn || protocol == VpnProtocol.WireGuard || protocol == VpnProtocol.IpEncap)
             {
-                error = $"--vpn scheme '{uri.Scheme}' không hỗ trợ. Dùng 'sstp', 'l2tp', 'ikev2', 'softether'/'ssl', 'openconnect'/'anyconnect', 'pptp', "
+                error = $"--vpn scheme '{uri.Scheme}' không hỗ trợ. Dùng 'sstp', 'l2tp', 'ikev2', 'cisco' (Cisco IPsec/EzVPN V.12), 'softether'/'ssl', 'openconnect'/'anyconnect', 'pptp', "
                     + "'gre'/'ipip'/'sit' (IP-encap V.8), hoặc trỏ tới một file .ovpn (OpenVPN) / .conf (WireGuard).";
                 return false;
             }
@@ -167,9 +175,11 @@ namespace Vpn2ProxyDemo.CommandModules.Models
             int port = uri.Port; // -1 nếu URI không ghi port
             if ((protocol == VpnProtocol.Sstp || protocol == VpnProtocol.SoftEther || protocol == VpnProtocol.OpenConnect) && port < 0) port = 443;
 
-            // PSK từ ?psk=... (L2TP) + Hub từ ?hub=... (SoftEther) — percent-decoded; thiếu ⇒ áp default trong ctor.
+            // PSK từ ?psk=... (L2TP/IKEv2/Cisco) + Hub từ ?hub=... (SoftEther) + Group từ ?group=... (Cisco IPsec V.12) —
+            // percent-decoded; thiếu ⇒ áp default trong ctor.
             string? psk = TryGetQueryValue(uri.Query, "psk");
             string? hub = TryGetQueryValue(uri.Query, "hub");
+            string? group = TryGetQueryValue(uri.Query, "group");
 
             // IpEncap (V.8): địa chỉ tunnel tĩnh từ ?addr/?peer (GRE/IPIP) hoặc ?addr6/?peer6 (SIT) — connectionless không có IPCP.
             string? tunnelAddr = null, tunnelPeer = null;
@@ -192,7 +202,8 @@ namespace Vpn2ProxyDemo.CommandModules.Models
                 hubName: string.IsNullOrEmpty(hub) ? "VPNGATE" : hub!,
                 ipEncapKind: ipEncapKind,
                 tunnelAddress: tunnelAddr,
-                tunnelPeerAddress: tunnelPeer);
+                tunnelPeerAddress: tunnelPeer,
+                groupName: string.IsNullOrEmpty(group) ? "vpngroup" : group!);
             return true;
         }
 

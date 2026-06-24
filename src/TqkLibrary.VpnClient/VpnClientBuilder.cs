@@ -18,6 +18,8 @@ using TqkLibrary.VpnClient.Drivers.SoftEther;
 using TqkLibrary.VpnClient.Drivers.Sstp;
 using TqkLibrary.VpnClient.Drivers.Tinc;
 using TqkLibrary.VpnClient.Drivers.Tinc.Config;
+using TqkLibrary.VpnClient.Drivers.Vtun;
+using TqkLibrary.VpnClient.Drivers.Vtun.Config;
 using TqkLibrary.VpnClient.Drivers.WireGuard;
 using TqkLibrary.VpnClient.Drivers.ZeroTier;
 using TqkLibrary.VpnClient.Drivers.ZeroTier.Config;
@@ -189,6 +191,21 @@ namespace TqkLibrary.VpnClient
         /// <summary>Registers the n2n driver with explicit auto-reconnect options (e.g. to disable it).</summary>
         public VpnClientBuilder UseN2n(N2nConfig config, N2nReconnectOptions reconnectOptions)
             => AddDriver(new N2nDriver(config, reconnectOptions));
+
+        /// <summary>
+        /// Registers the vtun (legacy tunnel daemon) driver: a single TCP connection to one vtund host that runs the
+        /// challenge-response authentication (50-byte ASCII message blocks, an MD5-keyed Blowfish-ECB challenge,
+        /// server-dictated host flags) and then carries bare IP packets as length-prefixed data frames behind a stable L3
+        /// packet channel, with a VTUN_ECHO keepalive. The static <see cref="VtunConfig"/> (host name + password, this
+        /// client's static tunnel IP + peer, MTU) maps straight to a <c>TunnelConfig</c> (vtun does no in-tunnel address
+        /// negotiation). Point-to-point, <c>type tun</c> over <c>proto tcp</c> with <c>encrypt no</c> + <c>compress no</c>.
+        /// Auto-reconnect is enabled by default. ⚠️ vtun's crypto is legacy/weak — interop only.
+        /// </summary>
+        public VpnClientBuilder UseVtun(VtunConfig config) => AddDriver(new VtunDriver(config));
+
+        /// <summary>Registers the vtun driver with explicit auto-reconnect options (e.g. to disable it).</summary>
+        public VpnClientBuilder UseVtun(VtunConfig config, VtunReconnectOptions reconnectOptions)
+            => AddDriver(new VtunDriver(config, reconnectOptions));
 
         /// <summary>
         /// Registers the ZeroTier (VL1/VL2) driver: a UDP transport to a node/controller that runs the VL1

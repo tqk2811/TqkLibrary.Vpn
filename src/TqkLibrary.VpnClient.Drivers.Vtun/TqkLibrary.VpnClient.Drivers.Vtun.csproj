@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>vtun (legacy tunnel daemon) protocol driver: a single TCP control+data connection — the challenge-response authentication (50-byte ASCII blocks, MD5+Blowfish-ECB challenge, server-dictated host flags) then a length-prefixed data plane carrying bare IP packets (tun mode) behind a stable L3 packet channel, with VTUN_ECHO keepalive and the shared supervisor for teardown / auto-reconnect. Static config (host/port/password, static tunnel IP) maps to a point-to-point TunnelConfig. ⚠️ vtun's auth/data crypto is legacy/weak (Blowfish-ECB/MD5) — interop only.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Abstractions\TqkLibrary.VpnClient.Abstractions.csproj" />
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Drivers.Core\TqkLibrary.VpnClient.Drivers.Core.csproj" />
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Vtun\TqkLibrary.VpnClient.Vtun.csproj" />
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Transport.Tcp\TqkLibrary.VpnClient.Transport.Tcp.csproj" />
+  </ItemGroup>
+
+</Project>

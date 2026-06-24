@@ -27,8 +27,9 @@ namespace TqkLibrary.VpnClient.Drivers.ZeroTier
     /// <c>HELLO ⇄ OK</c> handshake (Curve25519 identity agreement → Salsa20/12 + Poly1305 session), joins a VL2 network
     /// by asking the controller for its configuration (<c>NETWORK_CONFIG_REQUEST</c> → assigned IP + certificate of
     /// membership), then carries full Ethernet frames as VL2 <c>EXT_FRAME</c> messages behind an L2
-    /// <see cref="ZeroTierEthernetChannel"/>. That channel plugs into the userspace Ethernet fabric
-    /// (<see cref="ArpResolver"/> on the overlay IP + a <see cref="VirtualHost"/> bridge), which exposes the stable L3
+    /// <see cref="ZeroTierEthernetChannel"/>. That channel plugs into the userspace Ethernet fabric (a
+    /// <see cref="ZeroTierNeighborResolver"/> deriving peer MACs the ZeroTier way + a <see cref="VirtualHost"/> bridge),
+    /// which exposes the stable L3
     /// <see cref="ReconnectingVpnConnection{TState}.PacketChannel"/> the IP stack binds — mirroring the n2n / SoftEther
     /// drivers. An <c>ECHO</c> keepalive holds the VL1 path open and the shared supervisor / auto-reconnect (roadmap F.6)
     /// re-establishes a dead tunnel. Not a server / controller — those roles live only in tests. Planet/moon root
@@ -60,7 +61,6 @@ namespace TqkLibrary.VpnClient.Drivers.ZeroTier
         volatile bool _timerRunning;
 
         ZeroTierEthernetChannel? _channel;
-        ArpResolver? _arp;
         VirtualHost? _host2;
         TunnelConfig? _tunnelConfig;
 
@@ -171,11 +171,11 @@ namespace TqkLibrary.VpnClient.Drivers.ZeroTier
                 (wire, ct) => SendAsync(wire, ct), NextPacketId, _config.Mtu);
             _channel = channel;
 
-            var arp = new ArpResolver(mac, overlay, channel);
-            _arp = arp;
+            // ZeroTier computes peer MACs from ZT addresses (no ARP on the segment), so the next-hop resolver derives the
+            // peer's MAC deterministically rather than ARPing for it. All overlay frames ride to the connected peer.
+            var resolver = new ZeroTierNeighborResolver(_peerAddress, _config.NetworkId);
 
-            var virtualHost = new VirtualHost(mac, channel, arp);
-            virtualHost.InboundNonIpFrame += arp.HandleInboundFrame;
+            var virtualHost = new VirtualHost(mac, channel, resolver);
             _host2 = virtualHost;
 
             _tunnelConfig.Mtu = virtualHost.Mtu;     // link − 14: the bound stack clamps MSS for the Ethernet header
@@ -505,8 +505,6 @@ namespace TqkLibrary.VpnClient.Drivers.ZeroTier
 
             VirtualHost? host2 = _host2; _host2 = null;
             if (host2 != null) { try { await host2.DisposeAsync().ConfigureAwait(false); } catch { } }
-            ArpResolver? arp = _arp; _arp = null;
-            if (arp != null) { try { await arp.DisposeAsync().ConfigureAwait(false); } catch { } }
             ZeroTierEthernetChannel? channel = _channel; _channel = null;
             if (channel != null) { try { await channel.DisposeAsync().ConfigureAwait(false); } catch { } }
 

@@ -120,12 +120,13 @@ namespace TqkLibrary.VpnClient.Drivers.ZeroTier.Tests
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
             await connection.ConnectAsync(cts.Token);
 
-            // Client → node (ARP-resolve the gateway, then echo) → client: an IP packet survives the VL2 EXT_FRAME path both ways.
+            // Client → node → client: an IP packet survives the VL2 EXT_FRAME path both ways. ZeroTier derives the peer
+            // MAC (no ARP), so the very first frame is the ICMP/IP packet itself, echoed straight back.
             byte[] packet = BuildIpv4Packet(connection.AssignedAddress, Gateway, 0xAB);
             await connection.PacketChannel.WriteIpPacketAsync(packet, cts.Token);
             byte[] echoed = await inbound.Reader.ReadAsync(cts.Token);
             Assert.Equal(packet, echoed);
-            Assert.True(sim.ExtFrameCount >= 2, "the node must have relayed the ARP request and the IP packet as EXT_FRAMEs");
+            Assert.True(sim.ExtFrameCount >= 1, "the node must have received the IP packet as an EXT_FRAME");
         }
 
         [Fact]

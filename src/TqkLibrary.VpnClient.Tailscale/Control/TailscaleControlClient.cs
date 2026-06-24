@@ -46,6 +46,7 @@ namespace TqkLibrary.VpnClient.Tailscale.Control
         readonly byte[] _nodePublicKey;
         readonly byte[]? _discoPublicKey;
         readonly string? _hostname;
+        readonly IReadOnlyList<string>? _advertisedEndpoints;
 
         HttpClient? _http;
         Ts2021NoiseStream? _controlStream;
@@ -55,9 +56,13 @@ namespace TqkLibrary.VpnClient.Tailscale.Control
         /// <c>http://headscale:8080</c>). <paramref name="machinePrivateKey"/> / <paramref name="nodePrivateKey"/> are
         /// the 32-byte X25519 machine and node private keys; <paramref name="discoPublicKey"/> is an optional disco
         /// public key advertised in the map request. <paramref name="hostname"/> is reported in <c>Hostinfo</c>.
+        /// <paramref name="advertisedEndpoints"/> are this node's own <c>ip:port</c> WireGuard endpoints sent in the map
+        /// request so peers learn where to answer the handshake — a minimal stand-in for disco endpoint discovery (the
+        /// data-plane socket must be bound to that port). When null/empty, no endpoint is advertised (peers can only
+        /// reach this node if it initiates, which suffices for the client→peer direction).
         /// </summary>
         public TailscaleControlClient(Uri serverUrl, byte[] machinePrivateKey, byte[] nodePrivateKey,
-            byte[]? discoPublicKey = null, string? hostname = null)
+            byte[]? discoPublicKey = null, string? hostname = null, IReadOnlyList<string>? advertisedEndpoints = null)
         {
             _serverUrl = serverUrl ?? throw new ArgumentNullException(nameof(serverUrl));
             if (machinePrivateKey is null || machinePrivateKey.Length != 32) throw new ArgumentException("Machine private key must be 32 bytes.", nameof(machinePrivateKey));
@@ -69,6 +74,7 @@ namespace TqkLibrary.VpnClient.Tailscale.Control
             _nodePublicKey = dh.DerivePublicValue(_nodePrivateKey);
             _discoPublicKey = discoPublicKey is null ? null : (byte[])discoPublicKey.Clone();
             _hostname = hostname;
+            _advertisedEndpoints = advertisedEndpoints is { Count: > 0 } ? advertisedEndpoints : null;
         }
 
         /// <summary>This node's public key (<c>nodekey:&lt;hex&gt;</c>) — also the WireGuard public key.</summary>
@@ -161,30 +167,73 @@ namespace TqkLibrary.VpnClient.Tailscale.Control
 
         async Task<MapResponse> GetNetMapAsync(CancellationToken cancellationToken)
         {
+            // A streamed (long-poll) map request: the server keeps the response open and writes successive
+            // [4-byte LE length][JSON] blocks. We read just the first non-keepalive block to bring the tunnel up. A
+            // non-streamed request also gets the length-prefixed framing, but the server holds the HTTP/2 stream open
+            // (it does not end), so reading-to-end would hang — read the framed block off the response stream instead.
             var request = new MapRequest
             {
                 Version = TailscaleCapability.CapabilityVersion,
                 NodeKey = TailscaleKey.EncodeNodePublic(_nodePublicKey),
                 DiscoKey = _discoPublicKey is null ? null : TailscaleKey.EncodeDiscoPublic(_discoPublicKey),
-                Stream = false,        // one full netmap, not a long-poll (lab brings the tunnel up once)
+                Stream = true,           // long-poll; we take the first full map and stop
                 Compress = string.Empty, // plain JSON
+                Endpoints = _advertisedEndpoints, // our own ip:port so peers can answer the handshake (minimal disco)
                 Hostinfo = BuildHostinfo(),
                 ReadOnly = false,
             };
             byte[] body = JsonSerializer.SerializeToUtf8Bytes(request, JsonOptions);
-            byte[] respBytes = await PostAsync("/machine/map", body, stream: false, cancellationToken).ConfigureAwait(false);
-            byte[] json = StripMapLengthPrefix(respBytes);
-            MapResponse? resp = JsonSerializer.Deserialize<MapResponse>(json, JsonOptions);
-            return resp ?? throw new TailscaleControlException("Empty map response.");
+
+            HttpClient http = _http ?? throw new InvalidOperationException("Control channel is not open.");
+            using var content = new ByteArrayContent(body);
+            content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+            using var requestMessage = new HttpRequestMessage(HttpMethod.Post, "/machine/map") { Content = content };
+            requestMessage.Version = HttpVersion.Version20;
+            requestMessage.VersionPolicy = HttpVersionPolicy.RequestVersionExact;
+
+            using HttpResponseMessage response = await http.SendAsync(requestMessage,
+                HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            if (response.StatusCode != HttpStatusCode.OK)
+            {
+                string text = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+                throw new TailscaleControlException($"/machine/map returned HTTP {(int)response.StatusCode}: {Truncate(text)}");
+            }
+
+            using Stream stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+            // Read length-prefixed blocks until we get one that parses to a map with a Node (skip keepalives / empties).
+            for (int attempt = 0; attempt < 8; attempt++)
+            {
+                byte[] json = await ReadFramedBlockAsync(stream, cancellationToken).ConfigureAwait(false);
+                if (json.Length == 0) continue;
+                MapResponse? resp = JsonSerializer.Deserialize<MapResponse>(json, JsonOptions);
+                if (resp is null) continue;
+                if (resp.KeepAlive && resp.Node is null) continue; // keepalive heartbeat — wait for the real map
+                return resp;
+            }
+            throw new TailscaleControlException("No netmap received from the control server (only keepalives).");
         }
 
-        // The /machine/map body is framed as [4-byte little-endian length][JSON] (reservedResponseHeaderSize). Strip it.
-        static byte[] StripMapLengthPrefix(byte[] body)
+        // Read one [4-byte little-endian length][payload] block off the map response stream.
+        static async Task<byte[]> ReadFramedBlockAsync(Stream stream, CancellationToken cancellationToken)
         {
-            if (body.Length < 4) throw new TailscaleControlException("Map response too short for its length prefix.");
-            int length = (int)BinaryPrimitives.ReadUInt32LittleEndian(body.AsSpan(0, 4));
-            if (4 + length > body.Length) length = body.Length - 4; // be lenient if the server omitted/short-counted
-            return body.AsSpan(4, length).ToArray();
+            byte[] header = new byte[4];
+            await ReadExactAsync(stream, header, cancellationToken).ConfigureAwait(false);
+            int length = (int)BinaryPrimitives.ReadUInt32LittleEndian(header);
+            if (length < 0 || length > 64 * 1024 * 1024) throw new TailscaleControlException($"Implausible map block length {length}.");
+            byte[] payload = new byte[length];
+            if (length > 0) await ReadExactAsync(stream, payload, cancellationToken).ConfigureAwait(false);
+            return payload;
+        }
+
+        static async Task ReadExactAsync(Stream stream, byte[] destination, CancellationToken cancellationToken)
+        {
+            int read = 0;
+            while (read < destination.Length)
+            {
+                int n = await stream.ReadAsync(destination.AsMemory(read, destination.Length - read), cancellationToken).ConfigureAwait(false);
+                if (n == 0) throw new EndOfStreamException("Map response stream closed mid-block.");
+                read += n;
+            }
         }
 
         async Task<byte[]> PostAsync(string path, byte[] body, bool stream, CancellationToken cancellationToken)

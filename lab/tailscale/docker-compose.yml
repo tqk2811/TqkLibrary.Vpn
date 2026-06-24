@@ -1,0 +1,69 @@
+# V.7.5 Tailscale live lab: Headscale (control server) + a real tailscale node (peer) + a .NET client container.
+# All on one bridge so peers are directly reachable (DERP relay / disco NAT-traversal are future work).
+#
+#   headscale  100.64.0.x   control server (ts2021 + netmap)
+#   ts-peer    100.64.0.y   real tailscale node, advertises its CGNAT IP as a peer
+#   client     (runs the .NET demo, joins via preauth key, pings ts-peer over the overlay)
+#
+# Bring up: docker compose up -d headscale ts-peer ; then create a user + preauth keys (see README-vi.md).
+services:
+  headscale:
+    image: headscale/headscale:latest
+    container_name: ts-headscale
+    command: serve
+    volumes:
+      - ./config.yaml:/etc/headscale/config.yaml:ro
+      - hs-lib:/var/lib/headscale
+    networks:
+      tsnet:
+        ipv4_address: 172.30.0.2
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+
+  ts-peer:
+    image: tailscale/tailscale:latest
+    container_name: ts-peer
+    hostname: ts-peer
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    devices:
+      - /dev/net/tun
+    environment:
+      - TS_AUTHKEY=${TS_PEER_AUTHKEY:-}
+      - TS_EXTRA_ARGS=--login-server=http://172.30.0.2:8080 --hostname=ts-peer
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_USERSPACE=false
+    volumes:
+      - ts-peer-state:/var/lib/tailscale
+    networks:
+      tsnet:
+        ipv4_address: 172.30.0.3
+    depends_on:
+      - headscale
+    restart: unless-stopped
+
+  client:
+    image: debian:bookworm-slim
+    container_name: ts-client
+    command: ["sleep", "infinity"]
+    cap_add:
+      - NET_ADMIN
+    networks:
+      tsnet:
+        ipv4_address: 172.30.0.10
+    depends_on:
+      - headscale
+    restart: unless-stopped
+
+networks:
+  tsnet:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+volumes:
+  hs-lib:
+  ts-peer-state:

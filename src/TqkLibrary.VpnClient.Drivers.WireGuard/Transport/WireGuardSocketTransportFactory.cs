@@ -14,19 +14,28 @@ namespace TqkLibrary.VpnClient.Drivers.WireGuard.Transport
     public sealed class WireGuardSocketTransportFactory : IWireGuardTransportFactory
     {
         readonly int _receiveBufferSize;
+        readonly int _localPort;
 
-        /// <summary>Creates the factory. <paramref name="receiveBufferSize"/> bounds one datagram read (default 65535).</summary>
-        public WireGuardSocketTransportFactory(int receiveBufferSize = 65535)
+        /// <summary>
+        /// Creates the factory. <paramref name="receiveBufferSize"/> bounds one datagram read (default 65535).
+        /// <paramref name="localPort"/> binds the UDP socket to a fixed local port (0 = OS-assigned ephemeral, the
+        /// default and unchanged behaviour). A fixed port lets a coordinated control plane (Tailscale) advertise this
+        /// endpoint to peers so they can answer the handshake — every peer shares the one socket, so the same local
+        /// port serves them all.
+        /// </summary>
+        public WireGuardSocketTransportFactory(int receiveBufferSize = 65535, int localPort = 0)
         {
             if (receiveBufferSize < 1) throw new ArgumentOutOfRangeException(nameof(receiveBufferSize));
+            if (localPort < 0 || localPort > 65535) throw new ArgumentOutOfRangeException(nameof(localPort));
             _receiveBufferSize = receiveBufferSize;
+            _localPort = localPort;
         }
 
         /// <inheritdoc/>
         public async Task<WireGuardTransportHandle> ConnectAsync(IPEndPoint remote, CancellationToken cancellationToken)
         {
             if (remote is null) throw new ArgumentNullException(nameof(remote));
-            var socket = new UdpDatagramSocket(remote, _receiveBufferSize);
+            var socket = new UdpDatagramSocket(remote, _receiveBufferSize, _localPort);
             await socket.ConnectAsync(cancellationToken).ConfigureAwait(false);
             return new WireGuardTransportHandle(socket, socket.SetReceiver, socket.RunReceiveLoopAsync);
         }
@@ -39,11 +48,15 @@ namespace TqkLibrary.VpnClient.Drivers.WireGuard.Transport
             readonly int _receiveBufferSize;
             Action<ReadOnlyMemory<byte>>? _receiver;
 
-            public UdpDatagramSocket(IPEndPoint remote, int receiveBufferSize)
+            public UdpDatagramSocket(IPEndPoint remote, int receiveBufferSize, int localPort = 0)
             {
                 _remote = remote;
                 _receiveBufferSize = receiveBufferSize;
-                _client = new UdpClient(remote.AddressFamily);
+                // localPort 0 binds an ephemeral port (the default); a fixed port lets the control plane pre-advertise
+                // this endpoint. Bind to the same family as the remote so v4/v6 both work.
+                _client = localPort > 0
+                    ? new UdpClient(new IPEndPoint(remote.AddressFamily == AddressFamily.InterNetworkV6 ? IPAddress.IPv6Any : IPAddress.Any, localPort))
+                    : new UdpClient(remote.AddressFamily);
             }
 
             public void SetReceiver(Action<ReadOnlyMemory<byte>> receiver) => _receiver = receiver;

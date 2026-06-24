@@ -21,7 +21,8 @@ namespace TqkLibrary.VpnClient.Drivers.Tailscale
         public TailscaleControlClientAdapter(TailscaleConfig config)
         {
             _inner = new TailscaleControlClient(config.ServerUrl, config.MachinePrivateKey, config.NodePrivateKey,
-                discoPublicKey: null, hostname: config.Hostname);
+                discoPublicKey: null, hostname: config.Hostname,
+                advertisedEndpoints: config.AdvertisedEndpoints.Count > 0 ? config.AdvertisedEndpoints : null);
         }
 
         /// <inheritdoc/>

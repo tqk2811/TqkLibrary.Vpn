@@ -1,0 +1,56 @@
+# Minimal Headscale config for the V.7.5 Tailscale lab.
+# Self-hosted coordination server; the .NET client logs in over ts2021 with a preauth key.
+server_url: http://headscale:8080
+listen_addr: 0.0.0.0:8080
+metrics_listen_addr: 0.0.0.0:9090
+grpc_listen_addr: 0.0.0.0:50443
+grpc_allow_insecure: false
+
+noise:
+  private_key_path: /var/lib/headscale/noise_private.key
+
+prefixes:
+  v4: 100.64.0.0/10
+  v6: fd7a:115c:a1e0::/48
+  allocation: sequential
+
+derp:
+  # The embedded DERP server gives Headscale the one DERPMap entry it requires at startup. Peers in the lab are
+  # directly reachable on the bridge, so the client never actually relays through it (disco/DERP is future work).
+  server:
+    enabled: true
+    region_id: 999
+    region_code: lab
+    region_name: Lab DERP
+    stun_listen_addr: "0.0.0.0:3478"
+    private_key_path: /var/lib/headscale/derp_server_private.key
+    automatically_add_embedded_derp_region: true
+    ipv4: 172.30.0.2
+  urls: []
+  paths: []
+  auto_update_enabled: false
+
+disable_check_updates: true
+
+node:
+  ephemeral:
+    inactivity_timeout: 30m
+
+database:
+  type: sqlite
+  sqlite:
+    path: /var/lib/headscale/db.sqlite
+
+log:
+  level: info
+
+dns:
+  magic_dns: false
+  base_domain: lab.ts
+  override_local_dns: false
+  nameservers:
+    global: []
+
+policy:
+  mode: file
+  path: ""

@@ -108,8 +108,11 @@ namespace TqkLibrary.VpnClient.Drivers.Tailscale
             var first = wgConfig.Peers[0];
             string host = first.Endpoint?.Address.ToString() ?? "0.0.0.0";
             int port = first.Endpoint?.Port ?? 0;
-            var wg = new WireGuardConnection(host, port, wgConfig,
-                _wireGuardTransportFactory ?? new WireGuardSocketTransportFactory(),
+            // A fixed local WG port (when configured) matches the endpoint advertised to the control plane, so peers
+            // answer the handshake on the socket we bound. The in-process transport factory (tests) ignores it.
+            IWireGuardTransportFactory wgFactory = _wireGuardTransportFactory
+                ?? new WireGuardSocketTransportFactory(localPort: _config.WireGuardLocalPort);
+            var wg = new WireGuardConnection(host, port, wgConfig, wgFactory,
                 loggerFactory: _loggerFactory);
             _wireGuard = wg;
             MarkRunning();

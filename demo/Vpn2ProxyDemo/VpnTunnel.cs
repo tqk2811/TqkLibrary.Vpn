@@ -636,8 +636,8 @@ namespace Vpn2ProxyDemo
         // Keys machine/node sinh ngẫu nhiên tại runtime (TailscaleConfig.Generate). Pure helper.
         static TailscaleConfig ParseTailscaleConf(string text)
         {
-            string? server = null, authkey = null, hostname = null;
-            int mtu = 1280;
+            string? server = null, authkey = null, hostname = null, endpoint = null, machinekeyHex = null, nodekeyHex = null;
+            int mtu = 1280, wgport = 0;
             foreach (string raw in text.Split('\n'))
             {
                 string line = raw.Trim();
@@ -652,11 +652,49 @@ namespace Vpn2ProxyDemo
                     case "authkey": case "preauthkey": case "key": authkey = val; break;
                     case "hostname": hostname = val; break;
                     case "mtu": int.TryParse(val, out mtu); break;
+                    // wgport + endpoint advertise this node's own WireGuard endpoint so the peer can answer the
+                    // handshake (minimal disco stand-in; DERP/STUN is future work). endpoint = <client ip>:<wgport>.
+                    case "wgport": case "wireguardport": int.TryParse(val, out wgport); break;
+                    case "endpoint": case "advertise": endpoint = val; break;
+                    // Persisted 32-byte X25519 keys as 64-hex so re-runs are the SAME Headscale node (else each run
+                    // generates fresh keys → a new node → stale peers accumulate).
+                    case "machinekey": machinekeyHex = val; break;
+                    case "nodekey": nodekeyHex = val; break;
                 }
             }
             if (string.IsNullOrEmpty(server)) throw new InvalidOperationException("File .tailscale cần server=<headscale base url>.");
             if (string.IsNullOrEmpty(authkey)) throw new InvalidOperationException("File .tailscale cần authkey=<preauth key>.");
-            return TailscaleConfig.Generate(new Uri(server!), authkey!, hostname, mtu <= 0 ? 1280 : mtu);
+            byte[] machineKey = machinekeyHex is not null ? HexTo32(machinekeyHex) : NewKey();
+            byte[] nodeKey = nodekeyHex is not null ? HexTo32(nodekeyHex) : NewKey();
+            string[] endpoints = string.IsNullOrEmpty(endpoint) ? Array.Empty<string>() : new[] { endpoint! };
+            return new TailscaleConfig
+            {
+                ServerUrl = new Uri(server!),
+                PreauthKey = authkey!,
+                MachinePrivateKey = machineKey,
+                NodePrivateKey = nodeKey,
+                Hostname = hostname,
+                Mtu = mtu <= 0 ? 1280 : mtu,
+                WireGuardLocalPort = wgport,
+                AdvertisedEndpoints = endpoints,
+            };
+        }
+
+        static byte[] NewKey()
+        {
+            byte[] k = new byte[32];
+            using var rng = System.Security.Cryptography.RandomNumberGenerator.Create();
+            rng.GetBytes(k);
+            return k;
+        }
+
+        static byte[] HexTo32(string hex)
+        {
+            hex = hex.Trim();
+            if (hex.Length != 64) throw new InvalidOperationException("machinekey/nodekey phải là 64 ký tự hex (32 byte).");
+            byte[] b = new byte[32];
+            for (int i = 0; i < 32; i++) b[i] = Convert.ToByte(hex.Substring(i * 2, 2), 16);
+            return b;
         }
 
         /// <summary>

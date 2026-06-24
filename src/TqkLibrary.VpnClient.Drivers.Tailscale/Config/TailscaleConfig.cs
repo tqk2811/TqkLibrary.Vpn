@@ -36,6 +36,21 @@ namespace TqkLibrary.VpnClient.Drivers.Tailscale.Config
         public int Mtu { get; init; } = 1280;
 
         /// <summary>
+        /// The fixed local UDP port the WireGuard data plane binds to. 0 (default) lets the OS pick an ephemeral port.
+        /// A fixed port is required when <see cref="AdvertisedEndpoints"/> is set, so the advertised <c>ip:port</c>
+        /// matches the socket peers will answer on.
+        /// </summary>
+        public int WireGuardLocalPort { get; init; }
+
+        /// <summary>
+        /// This node's own WireGuard endpoints (<c>ip:port</c> strings) advertised to the control server so peers learn
+        /// where to answer the handshake — a minimal stand-in for disco endpoint discovery (DERP/STUN are future work).
+        /// In a flat lab this is the container's bridge IP plus <see cref="WireGuardLocalPort"/>. Empty when relying on
+        /// the client-initiated direction only.
+        /// </summary>
+        public IReadOnlyList<string> AdvertisedEndpoints { get; init; } = Array.Empty<string>();
+
+        /// <summary>
         /// Generates a config with fresh random machine and node keys. <paramref name="serverUrl"/> and
         /// <paramref name="preauthKey"/> are required; the rest take defaults. Use this for a first-time login where the
         /// node has no persisted keys.

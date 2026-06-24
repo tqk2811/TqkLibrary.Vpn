@@ -1,0 +1,27 @@
+# V.7.3 ZeroTier driver runtime LIVE-validation lab on zerotier-one 1.4.6 (pre-AES-GMAC-SIV).
+# A 1.4.6 controller keeps the VL1 session on Salsa20/12 + Poly1305 (cipher 1), the suite this client implements
+# byte-exact — so the full HELLO ⇄ OK + NETWORK_CONFIG + VL2 EXT_FRAME path can be validated live without AES-GMAC-SIV.
+#
+# Bring up:  docker compose -f lab/zerotier/docker-compose.live146.yml up -d --build
+# Setup:     docker compose -f lab/zerotier/docker-compose.live146.yml exec controller /lab/setup-controller.sh
+services:
+  controller:
+    build:
+      context: .
+      dockerfile: Dockerfile.zerotier146
+    container_name: zt-controller146
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun
+    volumes:
+      - ./:/lab:ro
+      - zt-controller146-data:/var/lib/zerotier-one
+      - shared146:/shared
+    ports:
+      - "9993:9993/udp"
+    command: ["-lc", "zerotier-one -p9993 & sleep 5 && tail -f /dev/null"]
+
+volumes:
+  zt-controller146-data:
+  shared146:

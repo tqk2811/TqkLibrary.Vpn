@@ -1,0 +1,13 @@
+# ZeroTier One 1.4.6 (pre-1.6 — VL1 default cipher is C25519/Salsa20-12/Poly1305, NOT AES-GMAC-SIV) for the V.7.3
+# live lab. ZeroTier 1.6.0+ negotiates AES-GMAC-SIV with other 1.6+ nodes; a 1.4.6 controller keeps the session on
+# Salsa20/12 + Poly1305 (cipher 1), which is what this client's VL1 codec implements byte-exact. Official ZeroTier deb.
+FROM ubuntu:18.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl ca-certificates iproute2 iputils-ping tcpdump jq libssl1.1 \
+    && curl -fsSL -o /tmp/zt.deb https://download.zerotier.com/debian/bionic/pool/main/z/zerotier-one/zerotier-one_1.4.6_amd64.deb \
+    && dpkg -i /tmp/zt.deb \
+    && rm -f /tmp/zt.deb \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+ENTRYPOINT ["/bin/bash"]

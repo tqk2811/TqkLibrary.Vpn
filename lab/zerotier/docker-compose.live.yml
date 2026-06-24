@@ -1,0 +1,31 @@
+# V.7.3 ZeroTier driver runtime LIVE-validation lab.
+#
+# One real zerotier-one 1.16.2 node running in CONTROLLER mode: it creates its own identity, hosts a private
+# network, and answers VL1 HELLO ⇄ OK + NETWORK_CONFIG_REQUEST. The .NET client peers with this node directly over
+# UDP/9993 (no planet/moon root discovery), joins the network, and round-trips ICMP over the VL2 L2 overlay.
+#
+# Bring up:  docker compose -f lab/zerotier/docker-compose.live.yml up -d --build
+# Setup:     docker compose -f lab/zerotier/docker-compose.live.yml exec controller /lab/setup-controller.sh
+# Client:    publish the .NET client self-contained linux-x64, scp into the controller's network namespace host,
+#            and run it against the controller's published UDP port.
+services:
+  controller:
+    build:
+      context: .
+      dockerfile: Dockerfile.zerotier
+    container_name: zt-controller
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun
+    volumes:
+      - ./:/lab:ro
+      - zt-controller-data:/var/lib/zerotier-one
+      - shared:/shared
+    ports:
+      - "9993:9993/udp"
+    command: ["-lc", "zerotier-one -p9993 & sleep 4 && tail -f /dev/null"]
+
+volumes:
+  zt-controller-data:
+  shared:

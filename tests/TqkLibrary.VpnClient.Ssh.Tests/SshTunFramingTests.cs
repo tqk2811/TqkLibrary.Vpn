@@ -5,23 +5,22 @@ using Xunit;
 namespace TqkLibrary.VpnClient.Ssh.Tests
 {
     /// <summary>
-    /// Tests for the tun@openssh.com layer-3 framing (PROTOCOL §2.3): a bare IP packet wraps to
-    /// <c>uint32 inner_length || uint32 address_family || ip</c> with <c>inner_length = 4 + ip.Length</c> and the
-    /// address family chosen from the IP version nibble (IPv4 = 2, IPv6 = 24). Decapsulation is the inverse, and rejects
-    /// truncated / inconsistent framing.
+    /// Tests for the tun@openssh.com layer-3 framing (PROTOCOL §2.3): inside the SSH channel-data string a bare IP packet
+    /// wraps to <c>uint32 address_family || ip</c> with the address family chosen from the IP version nibble
+    /// (IPv4 = 2, IPv6 = 24). Decapsulation is the inverse, and rejects framing too short to hold the 4-byte AF. (The
+    /// AF-only layout — no extra packet_length field — was confirmed live against OpenSSH on Linux.)
     /// </summary>
     public class SshTunFramingTests
     {
         [Fact]
-        public void Encapsulate_Ipv4_HasAfInetAndCorrectInnerLength()
+        public void Encapsulate_Ipv4_HasAfInet()
         {
             byte[] ip = new byte[20]; ip[0] = 0x45; // IPv4 version+IHL
             byte[] framed = SshTunFraming.Encapsulate(ip);
 
-            // inner length = 4 (AF field) + 20 (ip) = 24 = 0x18
-            Assert.Equal(new byte[] { 0, 0, 0, 24 }, framed.AsSpan(0, 4).ToArray());
-            Assert.Equal(new byte[] { 0, 0, 0, (byte)SshTunAddressFamily.Inet }, framed.AsSpan(4, 4).ToArray());
-            Assert.Equal(8 + 20, framed.Length);
+            // address family field = AF_INET (2), then the bare IP packet.
+            Assert.Equal(new byte[] { 0, 0, 0, (byte)SshTunAddressFamily.Inet }, framed.AsSpan(0, 4).ToArray());
+            Assert.Equal(4 + 20, framed.Length);
         }
 
         [Fact]
@@ -29,7 +28,7 @@ namespace TqkLibrary.VpnClient.Ssh.Tests
         {
             byte[] ip = new byte[40]; ip[0] = 0x60; // IPv6 version nibble
             byte[] framed = SshTunFraming.Encapsulate(ip);
-            Assert.Equal((byte)SshTunAddressFamily.Inet6, framed[7]);
+            Assert.Equal((byte)SshTunAddressFamily.Inet6, framed[3]);
         }
 
         [Fact]
@@ -47,8 +46,8 @@ namespace TqkLibrary.VpnClient.Ssh.Tests
 
         [Theory]
         [InlineData(0)]
-        [InlineData(4)]
-        [InlineData(7)]
+        [InlineData(1)]
+        [InlineData(3)]
         public void Decapsulate_TooShort_ReturnsFalse(int len)
         {
             byte[] tooShort = new byte[len];
@@ -56,13 +55,13 @@ namespace TqkLibrary.VpnClient.Ssh.Tests
         }
 
         [Fact]
-        public void Decapsulate_InnerLengthOverrun_ReturnsFalse()
+        public void Decapsulate_AfOnly_EmptyIpPacket()
         {
-            // inner length says 4 + 100 but only 8 bytes follow.
-            byte[] framed = new byte[8];
-            framed[3] = 104; // inner length = 104
-            framed[7] = (byte)SshTunAddressFamily.Inet;
-            Assert.False(SshTunFraming.TryDecapsulate(framed, out _, out _));
+            // exactly 4 bytes (AF only, no IP) → decapsulates to an empty IP packet.
+            byte[] framed = { 0, 0, 0, (byte)SshTunAddressFamily.Inet };
+            Assert.True(SshTunFraming.TryDecapsulate(framed, out var ip, out var af));
+            Assert.Equal(0, ip.Length);
+            Assert.Equal(SshTunAddressFamily.Inet, af);
         }
     }
 }

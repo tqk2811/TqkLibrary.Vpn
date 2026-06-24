@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>VPN-over-SSH (OpenSSH `-w` tun) protocol driver: one TCP connection to an OpenSSH server that runs the SSH-2 transport handshake (version exchange, curve25519-sha256 KEX, ed25519 host-key verification, chacha20-poly1305@openssh.com / aes256-gcm@openssh.com), authenticates (publickey ed25519 or password) and opens a tun@openssh.com point-to-point (layer-3) channel, then bridges that channel to a stable L3 packet channel (strip/add the 4-byte address-family header) with the shared supervisor for teardown / auto-reconnect. The static config (host/port/user, Ed25519 key or password, static tunnel IP) maps to a point-to-point TunnelConfig. The client needs no elevation; the server needs PermitTunnel + a tun device.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Abstractions\TqkLibrary.VpnClient.Abstractions.csproj" />
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Drivers.Core\TqkLibrary.VpnClient.Drivers.Core.csproj" />
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Ssh\TqkLibrary.VpnClient.Ssh.csproj" />
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Transport.Tcp\TqkLibrary.VpnClient.Transport.Tcp.csproj" />
+  </ItemGroup>
+
+</Project>

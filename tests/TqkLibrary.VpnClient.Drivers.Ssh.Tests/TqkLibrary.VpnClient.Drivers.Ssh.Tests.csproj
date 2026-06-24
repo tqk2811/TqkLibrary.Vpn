@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- The simulated SSH server uses SshReader (a ref struct) inside async methods — allowed from C# 13. -->
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\TqkLibrary.VpnClient.Drivers.Ssh\TqkLibrary.VpnClient.Drivers.Ssh.csproj" />
+  </ItemGroup>
+
+</Project>

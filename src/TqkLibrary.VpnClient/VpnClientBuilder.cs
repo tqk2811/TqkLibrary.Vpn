@@ -18,6 +18,8 @@ using TqkLibrary.VpnClient.Drivers.SoftEther;
 using TqkLibrary.VpnClient.Drivers.Sstp;
 using TqkLibrary.VpnClient.Drivers.Tailscale;
 using TqkLibrary.VpnClient.Drivers.Tailscale.Config;
+using TqkLibrary.VpnClient.Drivers.Ssh;
+using TqkLibrary.VpnClient.Drivers.Ssh.Config;
 using TqkLibrary.VpnClient.Drivers.Tinc;
 using TqkLibrary.VpnClient.Drivers.Tinc.Config;
 using TqkLibrary.VpnClient.Drivers.Vtun;
@@ -223,6 +225,22 @@ namespace TqkLibrary.VpnClient
         /// <summary>Registers the vtun driver with explicit auto-reconnect options (e.g. to disable it).</summary>
         public VpnClientBuilder UseVtun(VtunConfig config, VtunReconnectOptions reconnectOptions)
             => AddDriver(new VtunDriver(config, reconnectOptions));
+
+        /// <summary>
+        /// Registers the VPN-over-SSH (OpenSSH <c>-w</c> tun) driver: one TCP connection to an OpenSSH server that runs
+        /// the SSH-2 transport handshake (version exchange, curve25519-sha256 KEX, ed25519 host-key verification,
+        /// chacha20-poly1305@openssh.com / aes256-gcm@openssh.com), authenticates with the publickey (ed25519) or password
+        /// method and opens a <c>tun@openssh.com</c> point-to-point (layer-3) channel, then carries bare IP packets behind
+        /// a stable L3 packet channel. The static <see cref="SshConfig"/> (host/port/user, an Ed25519 key or password,
+        /// this client's static tunnel IP + peer, MTU) maps straight to a <c>TunnelConfig</c> (SSH does no in-tunnel
+        /// address negotiation). The client needs no elevation; the server needs <c>PermitTunnel</c> + a tun device.
+        /// Auto-reconnect is enabled by default.
+        /// </summary>
+        public VpnClientBuilder UseSsh(SshConfig config) => AddDriver(new SshDriver(config));
+
+        /// <summary>Registers the VPN-over-SSH driver with explicit auto-reconnect options (e.g. to disable it).</summary>
+        public VpnClientBuilder UseSsh(SshConfig config, SshReconnectOptions reconnectOptions)
+            => AddDriver(new SshDriver(config, reconnectOptions));
 
         /// <summary>
         /// Registers the ZeroTier (VL1/VL2) driver: a UDP transport to a node/controller that runs the VL1

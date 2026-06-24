@@ -30,6 +30,9 @@ NuGet `TqkLibrary.Proxy` 1.0.35 + `Microsoft.Extensions.Logging`/`.Console` 10.0
    => client (browser/curl) qua proxy: mọi traffic ra bằng IP công cộng của VPN server
 
 [http-request]  -> (kế thừa proxy-server) GET --url qua proxy -> in response body -> THOÁT luôn
+
+[http-post-upload] -> (kế thừa proxy-server) POST --size byte tới --url qua proxy -> in throughput -> THOÁT
+   (re-validate Q.4 sender-SWS: upload lớn qua tunnel phải đầy-MSS, không "1 byte/segment")
 ```
 
 **Panel "VPN này hỗ trợ gì"** (in tự động sau MỌI lần connect, trước hành động — [`CommandModuleBase.PrintCapabilitiesAsync` @ :107](../demo/Vpn2ProxyDemo/CommandModules/CommandModuleBase.cs#L107)
@@ -41,11 +44,13 @@ driver tĩnh** đọc thẳng từ `Capabilities` của driver tương ứng ([`
 IPv6 = No vì chưa có IPv6CP. Panel tự bao timeout (mỗi sub-probe ngắn + chặn-trên 20s) và **nuốt mọi lỗi** (trừ hủy của caller) nên
 không bao giờ làm hỏng hành động chính. Các khả năng thư viện chưa hỗ trợ ⇒ xem §6.
 
-Ba subcommand riêng (`dns` / `proxy-server` / `http-request`). Subcommand `dns` gọi [`ProbeUdpDnsAsync` @ :44](../demo/Vpn2ProxyDemo/CommandModules/ProbeUdpDnsCommandModule.cs#L44):
+Bốn subcommand riêng (`dns` / `proxy-server` / `http-request` / `http-post-upload`). Subcommand `dns` gọi [`ProbeUdpDnsAsync` @ :44](../demo/Vpn2ProxyDemo/CommandModules/ProbeUdpDnsCommandModule.cs#L44):
 gửi một truy vấn DNS (bản ghi A) qua **UDP xuyên tunnel** bằng [`UdpDnsProbe.ResolveAsync` @ :29](../demo/Vpn2ProxyDemo/UdpDnsProbe.cs#L29)
 (`VpnUdpClient` → `TcpIpStack.BindUdp`). Nhận được phản hồi ⇒ **VPN có định tuyến UDP**, đồng thời in IPv4 phân giải
 được. Đây là kênh data plane **độc lập** với proxy TCP (riêng với SOCKS5 UDP-ASSOCIATE — proxy đã `IsSupportUdp=true`).
 `http-request` kế thừa `proxy-server`: dựng cùng proxy rồi GET `--url` **qua proxy đó** (in body, thoát) thay vì giữ tới khi Enter.
+`http-post-upload` cũng kế thừa `proxy-server`: POST một payload `--size` byte tới `--url` **qua proxy đó** rồi in throughput + byte server xác nhận
+(re-validate Q.4 sender-SWS — upload lớn qua tunnel phải hoàn tất với segment đầy-MSS, không "1 byte/segment"; đường đi qua `VpnProxySource` → `TcpConnection`).
 
 Mỗi kết nối TCP qua proxy: `ProxyServer` gọi [`VpnProxySource.GetConnectSourceAsync` @ :40](../demo/Vpn2ProxyDemo/VpnProxySource.cs#L40)
 → [`VpnConnectSource.ConnectAsync` @ :36](../demo/Vpn2ProxyDemo/VpnProxySource.VpnConnectSource.cs#L36) resolve host ra IPv4 (host DNS) rồi
@@ -58,7 +63,7 @@ không routable từ internet ([VpnProxySource.cs:44-46](../demo/Vpn2ProxyDemo/V
 
 | File | Vai trò |
 |---|---|
-| [Program.cs:18](../demo/Vpn2ProxyDemo/Program.cs#L18) | `RootCommand { dns, proxy-server, http-request }` → `Parse(args).InvokeAsync()` (System.CommandLine 2.0.7) |
+| [Program.cs:18](../demo/Vpn2ProxyDemo/Program.cs#L18) | `RootCommand { dns, proxy-server, http-request, http-post-upload }` → `Parse(args).InvokeAsync()` (System.CommandLine 2.0.7) |
 | [VpnProxySource.cs:17](../demo/Vpn2ProxyDemo/VpnProxySource.cs#L17) | `IProxySource` (partial) bọc `TcpIpStack`; `IsSupportUdp=true`, `Ipv6/Bind=false`; ctor nhận **`ILoggerFactory?`** → sinh `ILogger` cho mỗi `IConnectSource`/`IUdpAssociateSource` |
 | [VpnProxySource.VpnConnectSource.cs:18](../demo/Vpn2ProxyDemo/VpnProxySource.VpnConnectSource.cs#L18) | `IConnectSource` (nested): mở `VpnTcpClient` qua tunnel, trả `Stream` (resolve IPv4 bằng host DNS); **log** resolve/connect/lỗi/đóng qua `ILogger?` |
 | [VpnProxySource.VpnUdpAssociateSource.cs:22](../demo/Vpn2ProxyDemo/VpnProxySource.VpnUdpAssociateSource.cs#L22) | `IUdpAssociateSource` (nested): egress UDP qua `UdpConnection` (`SendTo`/`ReceiveAsync` đa đích), `UnbindUdp` khi `Dispose`; **log** associate/send/receive/unbind qua `ILogger?` |
@@ -76,15 +81,16 @@ không routable từ internet ([VpnProxySource.cs:44-46](../demo/Vpn2ProxyDemo/V
 | [CommandModules/ProbeUdpDnsCommandModule.cs:11](../demo/Vpn2ProxyDemo/CommandModules/ProbeUdpDnsCommandModule.cs#L11) | Subcommand `dns`: thêm `--dns-server/--resolve`; [`RunAsync` → `ProbeUdpDnsAsync` @ :44](../demo/Vpn2ProxyDemo/CommandModules/ProbeUdpDnsCommandModule.cs#L44) probe UDP + phân giải domain qua tunnel (không dựng proxy) |
 | [CommandModules/ProxyServerCommandModule.cs:18](../demo/Vpn2ProxyDemo/CommandModules/ProxyServerCommandModule.cs#L18) | Subcommand `proxy-server` (NOT sealed): thêm `--proxy-host/--proxy-port` + [`ValidateOptions` @ :44](../demo/Vpn2ProxyDemo/CommandModules/ProxyServerCommandModule.cs#L44) (fail-fast bind); [`RunAsync` @ :55](../demo/Vpn2ProxyDemo/CommandModules/ProxyServerCommandModule.cs#L55) dựng `ILoggerFactory` console ([`CreateLoggerFactory` @ :96](../demo/Vpn2ProxyDemo/CommandModules/ProxyServerCommandModule.cs#L96)) + `VpnProxySource` + `ProxyServer` (cùng chia sẻ factory) rồi gọi [`OnProxyReadyAsync` @ :87](../demo/Vpn2ProxyDemo/CommandModules/ProxyServerCommandModule.cs#L87) (virtual, mặc định: giữ tới khi nhấn Enter) |
 | [CommandModules/HttpRequestProxyServerCommandModule.cs:12](../demo/Vpn2ProxyDemo/CommandModules/HttpRequestProxyServerCommandModule.cs#L12) | Subcommand `http-request` (kế thừa `ProxyServerCommandModule`): thêm `--url`, override [`OnProxyReadyAsync` @ :27](../demo/Vpn2ProxyDemo/CommandModules/HttpRequestProxyServerCommandModule.cs#L27) — GET `--url` qua proxy (WebProxy), in body rồi **thoát luôn** (không chờ Enter) |
+| [CommandModules/HttpPostUploadProxyServerCommandModule.cs:18](../demo/Vpn2ProxyDemo/CommandModules/HttpPostUploadProxyServerCommandModule.cs#L18) | Subcommand `http-post-upload` (kế thừa `ProxyServerCommandModule`): thêm `--url`/`--size`, override [`OnProxyReadyAsync` @ :52](../demo/Vpn2ProxyDemo/CommandModules/HttpPostUploadProxyServerCommandModule.cs#L52) — POST `--size` byte tới `--url` qua proxy (WebProxy), in throughput + byte server xác nhận rồi **thoát luôn**. Re-validate Q.4 (sender-SWS upload lớn qua `TcpConnection`) |
 
 Luồng điều phối chung nằm ở base [`CommandModuleBase.InvokeAsync` @ :50](../demo/Vpn2ProxyDemo/CommandModules/CommandModuleBase.cs#L50)
 (parse `--vpn` bằng `VpnTarget.TryParse` → `ValidateOptions` (subclass) → in header → `ConnectAsync` dispatch theo giao thức →
 gọi `RunAsync` của subclass). `dns` chạy [`ProbeUdpDnsAsync` @ :44](../demo/Vpn2ProxyDemo/CommandModules/ProbeUdpDnsCommandModule.cs#L44);
-`proxy-server`/`http-request` dùng chung [`RunAsync` @ :55](../demo/Vpn2ProxyDemo/CommandModules/ProxyServerCommandModule.cs#L55) (dựng proxy + `ILoggerFactory`) rồi phân nhánh ở
-[`OnProxyReadyAsync`](../demo/Vpn2ProxyDemo/CommandModules/ProxyServerCommandModule.cs#L87): giữ tới khi nhấn Enter (`proxy-server`)
-**hoặc** GET `--url` qua proxy rồi thoát (`http-request`).
+`proxy-server`/`http-request`/`http-post-upload` dùng chung [`RunAsync` @ :55](../demo/Vpn2ProxyDemo/CommandModules/ProxyServerCommandModule.cs#L55) (dựng proxy + `ILoggerFactory`) rồi phân nhánh ở
+[`OnProxyReadyAsync`](../demo/Vpn2ProxyDemo/CommandModules/ProxyServerCommandModule.cs#L87): giữ tới khi nhấn Enter (`proxy-server`),
+GET `--url` qua proxy rồi thoát (`http-request`), **hoặc** POST `--size` byte tới `--url` qua proxy rồi in throughput và thoát (`http-post-upload` — re-validate Q.4 sender-SWS).
 
-## 4. Tham số CLI (3 subcommand `dns` / `proxy-server` / `http-request`)
+## 4. Tham số CLI (4 subcommand `dns` / `proxy-server` / `http-request` / `http-post-upload`)
 
 **Option chung** (mọi subcommand — từ `CommandModuleBase`):
 
@@ -114,7 +120,14 @@ gọi `RunAsync` của subclass). `dns` chạy [`ProbeUdpDnsAsync` @ :44](../dem
 |---|---|---|
 | `--url` | `https://checkip.amazonaws.com/` | URL GET **qua proxy** (qua tunnel); in response body rồi thoát luôn |
 
-`proxy-server`/`http-request` validate `--proxy-host/--proxy-port` **trước** khi connect ([ProxyServerCommandModule.cs:44](../demo/Vpn2ProxyDemo/CommandModules/ProxyServerCommandModule.cs#L44)).
+**`http-post-upload`** (kế thừa `proxy-server` — có cả `--proxy-host/--proxy-port`) thêm:
+
+| Option | Mặc định | Ý nghĩa |
+|---|---|---|
+| `--url` | `http://10.60.0.1:8081/upload` | URL POST **qua proxy** (qua tunnel); server đếm byte body, in throughput rồi thoát luôn |
+| `--size` | `10485760` (10 MB) | số byte payload upload — đủ lớn để vượt cwnd ban đầu nhiều lần, phơi bày stall sender-SWS (Q.4) nếu còn |
+
+`proxy-server`/`http-request`/`http-post-upload` validate `--proxy-host/--proxy-port` **trước** khi connect ([ProxyServerCommandModule.cs:44](../demo/Vpn2ProxyDemo/CommandModules/ProxyServerCommandModule.cs#L44)).
 Bind `0.0.0.0` thì client vẫn nối qua `127.0.0.1`; bind IP cụ thể thì nối thẳng IP đó
 ([ProxyServerCommandModule.cs:72](../demo/Vpn2ProxyDemo/CommandModules/ProxyServerCommandModule.cs#L72)).
 

@@ -1,0 +1,24 @@
+# V.7.3 ZeroTier live-validation lab (STAGED — chạy khi VM lab lên).
+# Mục tiêu phiên đầu: (1) sinh identity thật bằng zerotier-idtool → KAT ZeroTierAddressDerivation offline;
+# (2) (mở rộng) dựng 1 node zerotier-one + 1 network controller để đối chiếu VL1 HELLO khi driver phase (b) có.
+#
+# Build:   docker compose -f lab/zerotier/docker-compose.yml build
+# Identity KAT:
+#   docker compose -f lab/zerotier/docker-compose.yml run --rm idtool /lab/gen-identity.sh /shared
+#   -> đọc /shared/identity.json, nạp publicKeyHex vào harness/test ZeroTierAddressDerivation, assert address khớp.
+services:
+  idtool:
+    build:
+      context: .
+      dockerfile: Dockerfile.zerotier
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun
+    volumes:
+      - ./:/lab:ro
+      - shared:/shared
+    command: ["-lc", "/lab/gen-identity.sh /shared && tail -f /dev/null"]
+
+volumes:
+  shared:

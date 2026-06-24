@@ -1,0 +1,8 @@
+# ZeroTier identity sinh bởi zerotier-idtool (credential lab) — KHÔNG commit.
+identity.secret
+identity.public
+identity.json
+# Binary publish của harness/test KAT (self-contained linux-x64) — KHÔNG commit.
+harness-bin/
+client-bin/
+*.tar.gz

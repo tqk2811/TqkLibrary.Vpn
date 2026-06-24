@@ -1,0 +1,11 @@
+# ZeroTier One (includes zerotier-idtool) for V.7.3 live validation.
+# Installs from the official ZeroTier apt repo so zerotier-idtool + zerotier-cli are available.
+FROM ubuntu:24.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl gnupg ca-certificates iproute2 iputils-ping tcpdump jq \
+    && curl -s https://install.zerotier.com | bash \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# zerotier-one needs /dev/net/tun + NET_ADMIN at runtime (compose grants them).
+ENTRYPOINT ["/bin/bash"]

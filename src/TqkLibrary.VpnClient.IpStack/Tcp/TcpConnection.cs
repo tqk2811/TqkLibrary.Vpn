@@ -6,6 +6,9 @@ using System.Net;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Threading;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+using TqkLibrary.VpnClient.Abstractions.Diagnostics.Extensions;
 using TqkLibrary.VpnClient.IpStack.Tcp.Enums;
 
 namespace TqkLibrary.VpnClient.IpStack.Tcp
@@ -48,7 +51,10 @@ namespace TqkLibrary.VpnClient.IpStack.Tcp
         readonly ushort _remotePort;
         readonly Action<byte[]> _sendIp;
         readonly TcpRetransmitOptions _opts;
+        readonly ILogger _logger;
         readonly object _sync = new();
+
+        const string Layer = "tcp";
         readonly TaskCompletionSource<bool> _connected = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         // Receive buffer (separate lock so reads don't contend with the send path).
@@ -154,10 +160,11 @@ namespace TqkLibrary.VpnClient.IpStack.Tcp
         /// <summary>Raised once when the connection reaches a terminal state — graceful CLOSED or a fault (RST / retransmission give-up); lets the stack drop and dispose it.</summary>
         public event Action? Closed;
 
-        /// <summary>Creates a connection from the local endpoint to the remote endpoint.</summary>
+        /// <summary>Creates a connection from the local endpoint to the remote endpoint. <paramref name="logger"/>
+        /// receives the TCP state-transition trace (Trace level, off by default); null logs to a no-op logger.</summary>
         public TcpConnection(
             IPAddress localIp, ushort localPort, IPAddress remoteIp, ushort remotePort, Action<byte[]> sendIp,
-            TcpRetransmitOptions? options = null, int linkMtu = DefaultLinkMtu)
+            TcpRetransmitOptions? options = null, int linkMtu = DefaultLinkMtu, ILogger? logger = null)
         {
             _localIp = localIp;
             _localPort = localPort;
@@ -165,6 +172,7 @@ namespace TqkLibrary.VpnClient.IpStack.Tcp
             _remotePort = remotePort;
             _sendIp = sendIp;
             _opts = options ?? TcpRetransmitOptions.Default;
+            _logger = logger ?? NullLogger.Instance;
             // MSS = link MTU − IP header − TCP(20); the IP header is 20 (IPv4) or 40 (IPv6). Floored so a tiny MTU
             // can't yield a useless segment size, and capped so an absurd MTU stays within the 16-bit option field.
             // Until the peer's SYN-ACK is seen we send at our own MSS.
@@ -205,7 +213,7 @@ namespace TqkLibrary.VpnClient.IpStack.Tcp
                 EmitSegment(iss, TcpFlags.Syn, ReadOnlySpan<byte>.Empty, mss: _localMss, windowScale: RcvWScale, sackPermitted: true);
                 EnqueueRetx(iss, TcpFlags.Syn, Array.Empty<byte>(), seqLen: 1);
                 _sndNxt = iss + 1;
-                _state = TcpState.SynSent;
+                TransitionTo(TcpState.SynSent);
                 ArmRtoTimer();
             }
         }
@@ -376,7 +384,7 @@ namespace TqkLibrary.VpnClient.IpStack.Tcp
                     _sackEnabled = TcpSegment.SackPermitted(span); // selective ACK is on only if the peer also offered it (RFC 2018)
                     _cwnd = InitialCwnd(_sendMss);             // RFC 6928 initial window — set after the SYN-ACK is processed
                     EmitSegment(_sndNxt, TcpFlags.Ack, ReadOnlySpan<byte>.Empty);
-                    _state = TcpState.Established;
+                    TransitionTo(TcpState.Established);
                     _connected.TrySetResult(true);
                     TrySendData();                             // flush anything queued before the handshake finished
                 }
@@ -474,12 +482,12 @@ namespace TqkLibrary.VpnClient.IpStack.Tcp
             switch (_state)
             {
                 case TcpState.Established:
-                    if (_peerFinReceived) _state = TcpState.CloseWait;       // passive close: peer closed first
+                    if (_peerFinReceived) TransitionTo(TcpState.CloseWait);  // passive close: peer closed first
                     break;
                 case TcpState.FinWait1:
                     if (_peerFinReceived && OurFinAcked) EnterTimeWait();    // peer FIN+ACK in one segment
-                    else if (_peerFinReceived) _state = TcpState.Closing;    // simultaneous close
-                    else if (OurFinAcked) _state = TcpState.FinWait2;        // our FIN acked, awaiting peer FIN
+                    else if (_peerFinReceived) TransitionTo(TcpState.Closing);   // simultaneous close
+                    else if (OurFinAcked) TransitionTo(TcpState.FinWait2);   // our FIN acked, awaiting peer FIN
                     break;
                 case TcpState.FinWait2:
                     if (_peerFinReceived) EnterTimeWait();
@@ -495,8 +503,18 @@ namespace TqkLibrary.VpnClient.IpStack.Tcp
 
         void EnterTimeWait()
         {
-            _state = TcpState.TimeWait;
+            TransitionTo(TcpState.TimeWait);
             ArmCloseTimer();
+        }
+
+        // Sets the TCP state and emits a Trace-level state-transition step. Additive: behaviour is identical to a bare
+        // assignment when the logger is the NullLogger / Trace is disabled (the format string carries no allocation).
+        void TransitionTo(TcpState next)
+        {
+            TcpState previous = _state;
+            _state = next;
+            if (previous != next && _logger.IsEnabled(LogLevel.Trace))
+                _logger.LogProtocolStep(Layer, $"{_localPort}->{_remotePort} state {previous} -> {next}");
         }
 
         void ArmCloseTimer() => _closeTimer.Change(_opts.TimeWait, Timeout.InfiniteTimeSpan);
@@ -828,7 +846,7 @@ namespace TqkLibrary.VpnClient.IpStack.Tcp
             _sndNxt += 1;
             _finSent = true;
             _finSeq = seq;
-            _state = _finState;
+            TransitionTo(_finState);
         }
 
         void EnqueueRetx(uint seq, TcpFlags flags, byte[] payload, int seqLen)
@@ -1038,7 +1056,7 @@ namespace TqkLibrary.VpnClient.IpStack.Tcp
             _persistTimer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
             _closeTimer.Change(Timeout.InfiniteTimeSpan, Timeout.InfiniteTimeSpan);
             _persistArmed = false;
-            _state = TcpState.Closed;
+            TransitionTo(TcpState.Closed);
             SignalSendable();       // wake any writer parked in SendAsync so it throws via ThrowIfFaulted
             if (error != null) _connected.TrySetException(error);
             CompleteReceive(error); // null = end-of-stream (idempotent if the FIN already completed it)

@@ -50,5 +50,8 @@ namespace Vpn2ProxyDemo.CommandModules.Enums
 
         /// <summary>Tailscale: control plane ts2021 (Noise IK + đăng nhập Headscale bằng preauth key + netmap) ghép vào data plane WireGuard tái dùng. Cấu hình từ một file <c>.tailscale</c> (ini: server/authkey/mtu); <c>--vpn</c> trỏ thẳng tới file (V.7.5).</summary>
         Tailscale,
+
+        /// <summary>VPN-over-SSH (OpenSSH <c>-w</c> tun): TCP/22 SSH-2 (curve25519-sha256 KEX + ed25519 hostkey + chacha20-poly1305@openssh.com) → publickey/password auth → tun@openssh.com point-to-point L3 → bare IP. Scheme <c>ssh://user[:password]@host[:port]?addr=&lt;ip&gt;/&lt;prefix&gt;&amp;peer=&lt;ip&gt;[&amp;key=&lt;ed25519-seed-path&gt;]</c> (V.10).</summary>
+        Ssh,
     }
 }

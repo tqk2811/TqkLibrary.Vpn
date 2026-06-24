@@ -14,6 +14,9 @@ using TqkLibrary.VpnClient.Drivers.L2tpIpsec;
 using TqkLibrary.VpnClient.Drivers.L2tpIpsec.Enums;
 using TqkLibrary.VpnClient.Drivers.N2n;
 using TqkLibrary.VpnClient.Drivers.N2n.Config;
+using TqkLibrary.VpnClient.Drivers.Ssh;
+using TqkLibrary.VpnClient.Drivers.Ssh.Config;
+using TqkLibrary.VpnClient.Drivers.Ssh.Transport;
 using TqkLibrary.VpnClient.Drivers.Vtun;
 using TqkLibrary.VpnClient.Drivers.Vtun.Config;
 using TqkLibrary.VpnClient.Drivers.Vtun.Transport;
@@ -812,6 +815,71 @@ namespace Vpn2ProxyDemo
 
                 var stack = new TcpIpStack(vpn.PacketChannel, assigned, null);
                 var driver = new VtunDriver(config);
+                return new VpnTunnel(stack, async () => { await vpn.DisposeAsync(); loggerFactory.Dispose(); },
+                    assigned, vpn.PacketChannel.Mtu, driver.Capabilities, driver.Name, dns);
+            }
+            catch
+            {
+                await vpn.DisposeAsync();
+                loggerFactory.Dispose();
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Kết nối VPN-over-SSH (OpenSSH <c>-w</c> tun, V.10): một TCP/22 chạy SSH-2 (version exchange → curve25519-sha256
+        /// KEX → ed25519 hostkey verify → chacha20-poly1305@openssh.com / aes256-gcm@openssh.com) → userauth (publickey
+        /// ed25519 nếu có <paramref name="keyPath"/>, else password) → channel <c>tun@openssh.com</c> point-to-point L3 →
+        /// gói IP trần vào <see cref="TcpIpStack"/>. SSH không thương lượng địa chỉ in-tunnel, nên IP tĩnh từ
+        /// <paramref name="tunnelAddress"/>/<paramref name="peerAddress"/> (server đặt qua <c>PermitTunnel</c>).
+        /// </summary>
+        public static async Task<VpnTunnel> ConnectSshAsync(string host, int port, string user, string password,
+            string? keyPath, string tunnelAddress, string? peerAddress, CancellationToken ct)
+        {
+            Console.WriteLine("=== [ssh] ===");
+            if (port <= 0) port = 22;
+            string[] addrParts = tunnelAddress.Split('/');
+            IPAddress tunnelAddr = IPAddress.Parse(addrParts[0]);
+            int prefix = addrParts.Length > 1 ? int.Parse(addrParts[1]) : 30;
+            IPAddress? peerAddr = string.IsNullOrEmpty(peerAddress) ? null : IPAddress.Parse(peerAddress);
+
+            byte[]? ed25519Seed = null;
+            if (!string.IsNullOrEmpty(keyPath))
+            {
+                byte[] raw = File.ReadAllBytes(keyPath!);
+                // Chấp nhận seed 32B trần (định dạng harness lab sinh ra). Khóa OpenSSH PEM đầy đủ ngoài phạm vi demo này.
+                if (raw.Length != 32)
+                    throw new ArgumentException($"SSH ?key phải là seed ed25519 32 byte trần (đọc được {raw.Length} byte ở '{keyPath}').");
+                ed25519Seed = raw;
+            }
+
+            var config = new SshConfig
+            {
+                Username = user,
+                PrivateKeyEd25519 = ed25519Seed,
+                Password = ed25519Seed is null ? password : null,
+                TunnelAddress = tunnelAddr,
+                PrefixLength = prefix,
+                PeerAddress = peerAddr,
+                Mtu = 1400,
+            };
+            ILoggerFactory loggerFactory = CreateDriverLoggerFactory();
+            var factory = new SshSocketTransportFactory();
+            var vpn = new SshConnection(host, port, config, factory, loggerFactory: loggerFactory);
+            try
+            {
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                cts.CancelAfter(TimeSpan.FromSeconds(90));
+
+                string authKind = ed25519Seed is null ? "password" : "publickey-ed25519";
+                Console.WriteLine($"[ssh] connecting to {host}:{port} as '{user}' (curve25519-sha256 + ed25519 + chacha20-poly1305@openssh.com, auth={authKind}) ...");
+                await vpn.ConnectAsync(cts.Token);
+                IPAddress assigned = vpn.AssignedAddress ?? IPAddress.Any;
+                IPAddress? dns = vpn.Config.DnsServers.Count > 0 ? vpn.Config.DnsServers[0] : null;
+                Console.WriteLine($"[ssh] tunnel up. tun@openssh.com point-to-point, tunnel IP = {assigned}, peer = {peerAddr?.ToString() ?? "(none)"}, mtu = {vpn.PacketChannel.Mtu}");
+
+                var stack = new TcpIpStack(vpn.PacketChannel, assigned, null);
+                var driver = new SshDriver(config);
                 return new VpnTunnel(stack, async () => { await vpn.DisposeAsync(); loggerFactory.Dispose(); },
                     assigned, vpn.PacketChannel.Mtu, driver.Capabilities, driver.Name, dns);
             }

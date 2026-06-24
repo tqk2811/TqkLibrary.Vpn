@@ -243,9 +243,32 @@ namespace Vpn2ProxyDemo.CommandModules.Models
                 }
             }
 
+            // SSH (V.10): VPN-over-SSH (OpenSSH -w tun). user[:password]@host:port; địa chỉ tunnel tĩnh ?addr/?peer
+            // (SSH không thương lượng địa chỉ in-tunnel); auth = publickey nếu có ?key=<đường dẫn seed ed25519 32B>, else password.
+            string? sshKeyPath = null;
+            if (protocol == VpnProtocol.Ssh)
+            {
+                if (port < 0) port = 22;
+                tunnelAddr = TryGetQueryValue(uri.Query, "addr");
+                tunnelPeer = TryGetQueryValue(uri.Query, "peer");
+                sshKeyPath = TryGetQueryValue(uri.Query, "key");
+                if (string.IsNullOrEmpty(tunnelAddr))
+                {
+                    error = "--vpn scheme 'ssh' cần địa chỉ tunnel tĩnh: thêm '?addr=<ipv4>/<prefix>&peer=<ipv4>' "
+                        + "(SSH không thương lượng địa chỉ in-tunnel — phải cấp out-of-band; server đặt qua PermitTunnel).";
+                    return false;
+                }
+                if (string.IsNullOrEmpty(sshKeyPath) && string.IsNullOrEmpty(uri.UserInfo))
+                {
+                    error = "--vpn scheme 'ssh' cần auth: 'ssh://user:password@host' (password) hoặc '?key=<đường dẫn ed25519 seed 32B>' (publickey).";
+                    return false;
+                }
+            }
+
             target = new VpnTarget(protocol, uri.Host, port, user, pass,
                 preSharedKey: string.IsNullOrEmpty(psk) ? "vpn" : psk!,
                 hubName: protocol == VpnProtocol.Vtun ? vtunHostName : (string.IsNullOrEmpty(hub) ? "VPNGATE" : hub!),
+                configPath: sshKeyPath,
                 ipEncapKind: ipEncapKind,
                 tunnelAddress: tunnelAddr,
                 tunnelPeerAddress: tunnelPeer,

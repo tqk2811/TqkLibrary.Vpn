@@ -275,6 +275,8 @@ namespace Vpn2ProxyDemo.CommandModules
                 VpnProtocol.Vtun => VpnTunnel.ConnectVtunAsync(target.Host, target.Port, target.HubName, target.Pass, target.TunnelAddress!, target.TunnelPeerAddress, ct),
                 // Tailscale (V.7.5): server/authkey đọc từ file .tailscale (configPath); control ts2021 (Noise IK + register + netmap) → WireGuard data plane tái dùng.
                 VpnProtocol.Tailscale => VpnTunnel.ConnectTailscaleAsync(target.ConfigPath!, ct),
+                // SSH (V.10): VPN-over-SSH (OpenSSH -w tun). curve25519-sha256 + ed25519 + chacha20-poly1305@openssh.com → tun@openssh.com L3. ?key=<seed> = publickey, else password. IP tĩnh từ ?addr/?peer.
+                VpnProtocol.Ssh => VpnTunnel.ConnectSshAsync(target.Host, target.Port, target.User, target.Pass, target.ConfigPath, target.TunnelAddress!, target.TunnelPeerAddress, ct),
                 _ => throw new ArgumentOutOfRangeException(nameof(target), target.Protocol, "Giao thức VPN không hỗ trợ."),
             };
 

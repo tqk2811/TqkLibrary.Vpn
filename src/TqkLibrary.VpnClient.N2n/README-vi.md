@@ -5,8 +5,9 @@ L2 n2n: **supernode** + **edge**. Mỗi gói = **common header 24B** (`version=3
 null-pad)`, packet-type nằm ở 5 bit thấp của `flags`) nối với body theo từng loại:
 **REGISTER_SUPER / REGISTER_SUPER_ACK / PEER_INFO / REGISTER / REGISTER_ACK / PACKET** — tất cả **big-endian**. Đây là
 project protocol-level cho driver **V.7.4** (xem [`.docs/11`](../../.docs/11-todo-roadmap.md) §V.7.4).
-Driver runtime (UDP transport, supernode/edge discovery, P2P hole-punching, `IEthernetChannel` ghép L2 fabric, supervisor
-F.6, `UseN2n`) là phase (b) — **chưa làm**.
+Driver runtime (UDP transport, REGISTER_SUPER lifecycle, `IEthernetChannel` ghép L2 fabric, supervisor F.6, `UseN2n`) là
+phase (b) — **XONG**, VALIDATE LIVE L2 full-tunnel ICMP 2 chiều ([`Drivers.N2n`](../TqkLibrary.VpnClient.Drivers.N2n)).
+P2P UDP hole-punching + header encryption (`-H`) còn lại (future).
 
 > **Trạng thái:** **phase (a) protocol XONG — REGISTER_SUPER VALIDATE LIVE** (2026-06-24) — 21 test offline xanh,
 > build xanh ns2.0 + net8. **Đối chiếu với `n2n` v3.1.1 thật** (lab [`lab/n2n`](../../lab/n2n)): supernode thật **CHẤP
@@ -31,7 +32,7 @@ PACKET** được transform (NULL/AES-CBC/ChaCha20/Speck) bảo vệ. Bản này
 | Hướng | Project | Lý do |
 |-------|---------|-------|
 | Dùng | [Crypto](../TqkLibrary.VpnClient.Crypto) | [`AesCbcCipher`](../TqkLibrary.VpnClient.Crypto/AesCbcCipher.cs#L10) cho transform AES (`N2nAesTransform`) |
-| Được dùng bởi | `Drivers.N2n` (V.7.4 phase b — chưa làm) | driver sẽ lắp UDP transport + supernode/edge discovery + P2P hole-punching quanh codec này, ghép L2 fabric |
+| Được dùng bởi | [`Drivers.N2n`](../TqkLibrary.VpnClient.Drivers.N2n) (V.7.4 phase b — XONG, VALIDATE LIVE L2 full-tunnel) | driver lắp UDP transport + REGISTER_SUPER lifecycle + keepalive quanh codec này, ghép L2 fabric (ARP + VirtualHost) → facade L3 |
 
 ## Cấu trúc thư mục
 
@@ -112,6 +113,8 @@ TqkLibrary.VpnClient.N2n/
   `header_encryption.c` (magic `n2__` + checksum Pearson-64 + SPECK-CTR từ offset 16).
 - **Transform key-derivation KHÔNG hiện thực**: `N2nAesTransform` nhận AES key sẵn (16/24/32B); n2n derive key bằng
   Pearson-256 của password (out of scope đợt này). Validate live dùng transform NULL.
-- **Driver runtime (phase b) chưa làm**: UDP transport, supernode/edge discovery, P2P UDP hole-punching (REGISTER edge↔
-  edge + QUERY_PEER/PEER_INFO), ghép `IEthernetChannel`, supervisor F.6, `UseN2n`, demo scheme.
+- **Driver runtime (phase b) XONG** ([`Drivers.N2n`](../TqkLibrary.VpnClient.Drivers.N2n)): UDP transport + REGISTER_SUPER
+  lifecycle + keepalive + ghép `IEthernetChannel` vào L2 fabric (ARP + VirtualHost static-IP) + supervisor F.6 + `UseN2n`
+  + demo scheme `.n2n` — **VALIDATE LIVE L2 full-tunnel ICMP 2 chiều** vs n2n v3.1.1 (2 bug interop keepalive-auth +
+  dev_addr-static sửa qua live). **Còn lại (future)**: P2P UDP hole-punching (QUERY_PEER/PEER_INFO) + header encryption (`-H`).
 - Mỗi type 1 file; instance method (codec/transform) sau interface (`IN2nTransform`). Codec stateless.

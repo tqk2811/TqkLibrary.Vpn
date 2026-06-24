@@ -1,6 +1,6 @@
 # TqkLibrary.VpnClient.Crypto
 
-> Managed crypto: primitive contracts (Interfaces/), MD4/DES/SHA-0/SHA-256/DH-MODP/AES-CBC/CTR/RC4/HMAC/RNG, AEAD (AES-GCM + ChaCha20-Poly1305: native trên net8.0, BouncyCastle trên netstandard2.0; cộng XChaCha20-Poly1305 = HChaCha20 + ChaCha20-Poly1305 cho WireGuard cookie-reply), PRF TLS 1.0 (`Tls1Prf`) + cửa sổ chống replay (`AntiReplayWindow`), MPPE/PPTP (RC4 + key schedule RFC 3078/3079), và Noise primitives (X25519/Ed25519/BLAKE2s/HMAC-BLAKE2s/Noise-KDF/SymmetricState qua BouncyCastle trên cả 2 TFM — nền cho WireGuard `Noise_IKpsk2` + Nebula `Noise_IX`).
+> Managed crypto: primitive contracts (Interfaces/), MD4/DES/SHA-0/SHA-256/DH-MODP/AES-CBC/CTR/RC4/Salsa20/HMAC/RNG, AEAD (AES-GCM + ChaCha20-Poly1305: native trên net8.0, BouncyCastle trên netstandard2.0; cộng XChaCha20-Poly1305 = HChaCha20 + ChaCha20-Poly1305 cho WireGuard cookie-reply), PRF TLS 1.0 (`Tls1Prf`) + cửa sổ chống replay (`AntiReplayWindow`), MPPE/PPTP (RC4 + key schedule RFC 3078/3079), Salsa20 (rounds tham số — Salsa20/20 chuẩn + Salsa20/12 ZeroTier, KAT ECRYPT), và Noise primitives (X25519/Ed25519/BLAKE2s/HMAC-BLAKE2s/Noise-KDF/SymmetricState qua BouncyCastle trên cả 2 TFM — nền cho WireGuard `Noise_IKpsk2` + Nebula `Noise_IX`).
 
 ## Mục đích
 
@@ -53,6 +53,7 @@ TqkLibrary.VpnClient.Crypto/
 ├── AesCbcCipher.cs        # AES-CBC no-padding (IBlockCipher)
 ├── AesCtr.cs              # AES-CTR (static, dựng từ AES-ECB)
 ├── Rc4.cs                 # RC4 stream cipher (KSA/PRGA) — MPPE/PPTP + SoftEther use_encrypt (BROKEN, RFC 7465)
+├── Salsa20.cs             # Salsa20 stream cipher (rounds tham số: /20 chuẩn + /12 ZeroTier) — KAT ECRYPT (V.7.3)
 ├── Md4.cs                 # MD4 (IHashAlgo) — NT hash cho MS-CHAPv2
 ├── Sha0.cs                # SHA-0 (IHashAlgo, FIPS 180 1993) — SoftEther auth password (V.4)
 ├── Des.cs                 # DES 1 block ECB-encrypt, không check weak key — MS-CHAPv2
@@ -91,6 +92,7 @@ TqkLibrary.VpnClient.Crypto/
 | `AesCbcCipher` | AES-CBC no-padding (`IBlockCipher`, block 16 byte) | [AesCbcCipher.cs:10](AesCbcCipher.cs#L10) |
 | `AesCtr` | AES-CTR `static Transform(...)` dựng từ AES-ECB, counter big-endian | [AesCtr.cs:9](AesCtr.cs#L9) |
 | `Rc4` | RC4 stream cipher (KSA/PRGA), `Process`/`GenerateKeystream` + `static Apply(key, data)`; key 1..256B; **broken** (RFC 7465) — chỉ MPPE/PPTP + SoftEther `use_encrypt` | [Rc4.cs:13](Rc4.cs#L13) |
+| `Salsa20` | Salsa20 stream cipher (Bernstein/eSTREAM), **rounds tham số** (Salsa20/20 chuẩn + **Salsa20/12** ZeroTier), key 32B / nonce 8B; `Transform`/`GenerateKeystream`; trên BouncyCastle `Salsa20Engine(rounds)` cả 2 TFM; **KAT ECRYPT byte-exact** (Set 1 vec 0 + all-zero, cả 12 & 20 rounds) — nền VL1 ZeroTier (V.7.3) + memory-hard identity hash | [Salsa20.cs:24](Salsa20.cs#L24) |
 | `AesGcmCipher` | AES-GCM (`IAeadCipher`), nonce 12B / tag 16B; native vs BouncyCastle | [Aead/AesGcmCipher.cs:18](Aead/AesGcmCipher.cs#L18) |
 | `ChaCha20Poly1305Cipher` | ChaCha20-Poly1305 (`IAeadCipher`, RFC 8439), key 32B / nonce 12B / tag 16B; native vs BouncyCastle | [Aead/ChaCha20Poly1305Cipher.cs:18](Aead/ChaCha20Poly1305Cipher.cs#L18) |
 | `XChaCha20Poly1305Cipher` | XChaCha20-Poly1305 (`IAeadCipher`, draft-irtf-cfrg-xchacha), key 32B / **nonce 24B** / tag 16B; `HChaCha20` (pure, public) suy subkey rồi ủy quyền `ChaCha20Poly1305Cipher` (WireGuard cookie-reply V3.c) | [Aead/XChaCha20Poly1305Cipher.cs:14](Aead/XChaCha20Poly1305Cipher.cs#L14) |

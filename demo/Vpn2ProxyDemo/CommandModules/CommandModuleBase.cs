@@ -269,6 +269,8 @@ namespace Vpn2ProxyDemo.CommandModules
                 VpnProtocol.Tinc => VpnTunnel.ConnectTincAsync(target.ConfigPath!, ct),
                 // n2n (V.7.4): community + supernode endpoint + static overlay + transform đọc từ file .n2n; UDP REGISTER_SUPER + PACKET L2.
                 VpnProtocol.N2n => VpnTunnel.ConnectN2nAsync(target.ConfigPath!, ct),
+                // ZeroTier (V.7.3): identity ta + node/controller + endpoint + network id + overlay đọc từ file .zerotier; VL1 HELLO/OK + NETWORK_CONFIG + VL2 EXT_FRAME L2.
+                VpnProtocol.ZeroTier => VpnTunnel.ConnectZeroTierAsync(target.ConfigPath!, ct),
                 _ => throw new ArgumentOutOfRangeException(nameof(target), target.Protocol, "Giao thức VPN không hỗ trợ."),
             };
 

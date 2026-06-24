@@ -125,6 +125,13 @@ namespace Vpn2ProxyDemo.CommandModules.Models
                 return true;
             }
 
+            // Dạng ZeroTier (V.7.3): --vpn trỏ tới một file .zerotier (ini: identity ta + identity node/controller + endpoint + network id + overlay).
+            if (value.Trim().EndsWith(".zerotier", StringComparison.OrdinalIgnoreCase))
+            {
+                target = new VpnTarget(VpnProtocol.ZeroTier, host: value.Trim(), port: 0, user: "", pass: "", configPath: value.Trim());
+                return true;
+            }
+
             if (!Uri.TryCreate(value, UriKind.Absolute, out Uri? uri))
             {
                 error = $"--vpn '{value}' không phải URI hợp lệ. Cần scheme://user:pass@host[:port] hoặc đường dẫn .ovpn.";

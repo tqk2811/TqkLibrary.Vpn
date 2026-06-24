@@ -41,5 +41,8 @@ namespace Vpn2ProxyDemo.CommandModules.Enums
 
         /// <summary>n2n v3 (ntop) L2 mesh (UDP, REGISTER_SUPER tới supernode + PACKET Ethernet-frame NULL/AES-CBC) cấu hình từ một file <c>.n2n</c> (ini trỏ tới community + supernode endpoint + static overlay + transform); supernode-relay (<c>--vpn</c> trỏ thẳng tới file) (V.7.4).</summary>
         N2n,
+
+        /// <summary>ZeroTier (VL1 Curve25519/Salsa20-12/Poly1305 + VL2 EXT_FRAME L2-over-UDP) cấu hình từ một file <c>.zerotier</c> (ini trỏ tới identity.secret ta + identity.public của node/controller + endpoint + network id + overlay); HELLO ⇄ OK + NETWORK_CONFIG_REQUEST (<c>--vpn</c> trỏ thẳng tới file) (V.7.3).</summary>
+        ZeroTier,
     }
 }

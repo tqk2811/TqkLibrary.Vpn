@@ -14,6 +14,8 @@ using TqkLibrary.VpnClient.Drivers.L2tpIpsec;
 using TqkLibrary.VpnClient.Drivers.L2tpIpsec.Enums;
 using TqkLibrary.VpnClient.Drivers.N2n;
 using TqkLibrary.VpnClient.Drivers.N2n.Config;
+using TqkLibrary.VpnClient.Drivers.ZeroTier;
+using TqkLibrary.VpnClient.Drivers.ZeroTier.Config;
 using TqkLibrary.VpnClient.Drivers.Nebula;
 using TqkLibrary.VpnClient.Drivers.Nebula.Config;
 using TqkLibrary.VpnClient.Drivers.OpenConnect;
@@ -660,6 +662,113 @@ namespace Vpn2ProxyDemo
                 throw;
             }
         }
+
+        /// <summary>
+        /// Kết nối ZeroTier (VL1/VL2) L2 mesh từ một file <c>.zerotier</c> (ini: identity ta + identity node/controller +
+        /// endpoint + network + overlay). Mở UDP transport tới node/controller → VL1 HELLO ⇄ OK (Curve25519 → Salsa20/12 +
+        /// Poly1305) → NETWORK_CONFIG_REQUEST (assigned IP + COM) → data-plane VL2 EXT_FRAME qua Ethernet fabric
+        /// (ARP + VirtualHost) → <see cref="TcpIpStack"/>. Tái dùng nguyên <see cref="ZeroTierConnection"/>.
+        /// </summary>
+        public static async Task<VpnTunnel> ConnectZeroTierAsync(string configPath, CancellationToken ct)
+        {
+            Console.WriteLine("=== [zerotier] ===");
+            string path = ResolveConfigPath(configPath);
+            (ZeroTierConfig config, string host, int port) = ParseZeroTierConf(File.ReadAllText(path), Path.GetDirectoryName(path) ?? ".");
+            ILoggerFactory loggerFactory = CreateDriverLoggerFactory();
+            var factory = new TqkLibrary.VpnClient.Drivers.ZeroTier.Transport.ZeroTierSocketTransportFactory();
+            var vpn = new ZeroTierConnection(host, port, config, factory, loggerFactory: loggerFactory);
+            try
+            {
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                cts.CancelAfter(TimeSpan.FromSeconds(90));
+
+                Console.WriteLine($"[zerotier] connecting to node/controller {host}:{port} (UDP, network {config.NetworkId}, HELLO/OK + NETWORK_CONFIG) ...");
+                await vpn.ConnectAsync(cts.Token);
+                IPAddress assigned = vpn.AssignedAddress;
+                IPAddress? dns = vpn.Config.DnsServers.Count > 0 ? vpn.Config.DnsServers[0] : null;
+                Console.WriteLine($"[zerotier] tunnel up. overlay IP = {assigned}, dns = {dns?.ToString() ?? "(none)"}, mtu = {vpn.PacketChannel.Mtu}");
+
+                var stack = new TcpIpStack(vpn.PacketChannel, assigned, null);
+                var driver = new ZeroTierDriver(config);
+                return new VpnTunnel(stack, async () => { await vpn.DisposeAsync(); loggerFactory.Dispose(); },
+                    assigned, vpn.PacketChannel.Mtu, driver.Capabilities, driver.Name, dns);
+            }
+            catch
+            {
+                await vpn.DisposeAsync();
+                loggerFactory.Dispose();
+                throw;
+            }
+        }
+
+        // Parse một file .zerotier tối giản (ini key=value): identity=<đường dẫn identity.secret ta (addr:0:pub:priv)>,
+        // peer=<đường dẫn identity.public của node/controller (addr:0:pub)>, endpoint=host:port (node/controller),
+        // network=<16 hex network id>, overlay=ip/prefix (tùy chọn — bỏ trống thì lấy IP controller gán), dns=ip[,ip].
+        // Pure helper. Tái dùng ZeroTierIdentityCodec + NetworkId của project ZeroTier.
+        static (ZeroTierConfig config, string host, int port) ParseZeroTierConf(string text, string baseDir)
+        {
+            string? identityPath = null, peerPath = null, endpoint = null, network = null, overlay = null;
+            var dnsServers = new List<IPAddress>();
+
+            foreach (string rawLine in text.Split('\n'))
+            {
+                string line = rawLine.Trim();
+                if (line.Length == 0 || line.StartsWith("#") || line.StartsWith(";")) continue;
+                int eq = line.IndexOf('=');
+                if (eq < 0) continue;
+                string key = line.Substring(0, eq).Trim().ToLowerInvariant();
+                string val = line.Substring(eq + 1).Trim();
+                switch (key)
+                {
+                    case "identity": identityPath = val; break;
+                    case "peer": peerPath = val; break;
+                    case "endpoint": endpoint = val; break;
+                    case "network": network = val; break;
+                    case "overlay": overlay = val; break;
+                    case "dns":
+                        foreach (string d in val.Split(','))
+                            if (IPAddress.TryParse(d.Trim(), out IPAddress? ip)) dnsServers.Add(ip);
+                        break;
+                }
+            }
+
+            if (string.IsNullOrEmpty(identityPath))
+                throw new InvalidOperationException("File .zerotier cần identity=<đường dẫn identity.secret ta>.");
+            if (string.IsNullOrEmpty(peerPath))
+                throw new InvalidOperationException("File .zerotier cần peer=<đường dẫn identity.public của node/controller>.");
+            if (string.IsNullOrEmpty(endpoint))
+                throw new InvalidOperationException("File .zerotier cần endpoint=<host>:<port> (node/controller).");
+            if (string.IsNullOrEmpty(network))
+                throw new InvalidOperationException("File .zerotier cần network=<16 hex network id>.");
+
+            var idCodec = new TqkLibrary.VpnClient.ZeroTier.Identity.ZeroTierIdentityCodec();
+            var identity = idCodec.ParseString(File.ReadAllText(ResolveRelative(identityPath!, baseDir)).Trim());
+            var peer = idCodec.ParseString(File.ReadAllText(ResolveRelative(peerPath!, baseDir)).Trim());
+
+            int colon = endpoint!.LastIndexOf(':');
+            string host = colon > 0 ? endpoint.Substring(0, colon) : endpoint;
+            int port = 9993;
+            if (colon > 0) int.TryParse(endpoint.Substring(colon + 1), out port);
+
+            IPAddress? overlayAddr = null;
+            int prefix = 24;
+            if (!string.IsNullOrEmpty(overlay)) (overlayAddr, prefix) = ParseCidr(overlay!);
+
+            var config = new ZeroTierConfig
+            {
+                Identity = identity,
+                PeerIdentity = peer,
+                NetworkId = TqkLibrary.VpnClient.ZeroTier.Vl2.Models.NetworkId.Parse(network!.Trim()),
+                OverlayAddress = overlayAddr,
+                PrefixLength = prefix,
+                DnsServers = dnsServers,
+            };
+            return (config, host, port);
+        }
+
+        // Resolve một đường dẫn tương đối so với thư mục chứa file config (đường dẫn tuyệt đối giữ nguyên).
+        static string ResolveRelative(string path, string baseDir)
+            => Path.IsPathRooted(path) ? path : Path.Combine(baseDir, path);
 
         // Parse một file .n2n tối giản (ini key=value): community=<tên community>, endpoint=host:port (supernode),
         // overlay=ip/prefix (static -a address của edge), mac=aa:bb:.. (tùy chọn, mặc định sinh ngẫu nhiên),

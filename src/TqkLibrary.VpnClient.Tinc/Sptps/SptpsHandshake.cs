@@ -7,7 +7,7 @@ namespace TqkLibrary.VpnClient.Tinc.Sptps
 {
     /// <summary>
     /// Drives one side of the tinc SPTPS handshake (the modern Ed25519/Curve25519 cipher suite) for a single session,
-    /// reusing <see cref="Curve25519DhGroup"/> for the ephemeral ECDH and <see cref="Ed25519Signer"/> for the
+    /// reusing <see cref="SptpsEcdh"/> for the ephemeral (Ed25519-keyed) ECDH and <see cref="Ed25519Signer"/> for the
     /// authentication signature — no crypto is reimplemented here. The class only sequences KEX → SIG, builds the
     /// signed transcript and the KDF seed exactly as tinc's <c>sptps.c</c>, and derives the directional record keys.
     /// <para>
@@ -48,7 +48,9 @@ namespace TqkLibrary.VpnClient.Tinc.Sptps
             ISignatureAlgo? signature = null)
         {
             _sig = signature ?? new Ed25519Signer();
-            _dh = dhGroup ?? new Curve25519DhGroup();
+            // SPTPS uses tinc's Ed25519-keyed ECDH (Edwards public on the wire, Montgomery-ladder shared), NOT plain
+            // X25519 — see SptpsEcdh. Curve25519DhGroup would derive a different shared secret and break the cipher.
+            _dh = dhGroup ?? new SptpsEcdh();
             if (myEd25519PrivateKey is null || myEd25519PrivateKey.Length != _sig.PrivateKeySizeInBytes)
                 throw new ArgumentException("Ed25519 private key size mismatch.", nameof(myEd25519PrivateKey));
             if (peerEd25519PublicKey is null || peerEd25519PublicKey.Length != _sig.PublicKeySizeInBytes)

@@ -68,20 +68,13 @@ namespace TqkLibrary.VpnClient.Tinc.Hosts
         }
 
         /// <summary>
-        /// Decodes a tinc base64 key. tinc emits unpadded base64 (e.g. 43 chars for a 32-byte key); pad it back so the
-        /// BCL decoder accepts it. Returns the first 32 bytes when the value also carries the appended public key.
+        /// Decodes a tinc base64 key using tinc's own (little-endian) Base64 codec — <b>not</b> RFC 4648. tinc keys are
+        /// written by <c>ecdsa_get_base64_public_key</c> with <see cref="TincBase64"/>, which packs each quad
+        /// little-endian; decoding them with the BCL codec yields a different key. See <see cref="TincBase64"/>.
         /// </summary>
-        public static byte[] DecodeBase64Key(string value)
-        {
-            string s = value.Trim();
-            int pad = (4 - (s.Length % 4)) % 4;
-            if (pad > 0) s += new string('=', pad);
-            byte[] decoded = Convert.FromBase64String(s);
-            return decoded;
-        }
+        public static byte[] DecodeBase64Key(string value) => TincBase64.Decode(value.Trim());
 
-        /// <summary>Encodes a key as tinc-style unpadded base64.</summary>
-        public static string EncodeBase64Key(ReadOnlySpan<byte> key)
-            => Convert.ToBase64String(key.ToArray()).TrimEnd('=');
+        /// <summary>Encodes a key as tinc-style unpadded (little-endian) base64. See <see cref="TincBase64"/>.</summary>
+        public static string EncodeBase64Key(ReadOnlySpan<byte> key) => TincBase64.Encode(key);
     }
 }

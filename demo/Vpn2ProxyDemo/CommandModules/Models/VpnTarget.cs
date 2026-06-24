@@ -118,6 +118,13 @@ namespace Vpn2ProxyDemo.CommandModules.Models
                 return true;
             }
 
+            // Dạng n2n (V.7.4): --vpn trỏ tới một file .n2n (ini: community + supernode endpoint + static overlay + transform).
+            if (value.Trim().EndsWith(".n2n", StringComparison.OrdinalIgnoreCase))
+            {
+                target = new VpnTarget(VpnProtocol.N2n, host: value.Trim(), port: 0, user: "", pass: "", configPath: value.Trim());
+                return true;
+            }
+
             if (!Uri.TryCreate(value, UriKind.Absolute, out Uri? uri))
             {
                 error = $"--vpn '{value}' không phải URI hợp lệ. Cần scheme://user:pass@host[:port] hoặc đường dẫn .ovpn.";

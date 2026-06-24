@@ -12,6 +12,8 @@ using TqkLibrary.VpnClient.Drivers.IpEncap;
 using TqkLibrary.VpnClient.Drivers.IpEncap.Enums;
 using TqkLibrary.VpnClient.Drivers.L2tpIpsec;
 using TqkLibrary.VpnClient.Drivers.L2tpIpsec.Enums;
+using TqkLibrary.VpnClient.Drivers.N2n;
+using TqkLibrary.VpnClient.Drivers.N2n.Config;
 using TqkLibrary.VpnClient.Drivers.Nebula;
 using TqkLibrary.VpnClient.Drivers.Nebula.Config;
 using TqkLibrary.VpnClient.Drivers.OpenConnect;
@@ -620,6 +622,125 @@ namespace Vpn2ProxyDemo
                 loggerFactory.Dispose();
                 throw;
             }
+        }
+
+        /// <summary>
+        /// Kết nối n2n v3 (ntop) L2 mesh từ một file <c>.n2n</c> (ini: community/endpoint/overlay/mac/transform/aeskey/dns).
+        /// Mở UDP transport tới supernode → REGISTER_SUPER → REGISTER_SUPER_ACK → data-plane PACKET (Ethernet frame NULL/AES)
+        /// qua Ethernet fabric (ARP + VirtualHost) → <see cref="TcpIpStack"/>. Tái dùng nguyên <see cref="N2nConnection"/>.
+        /// </summary>
+        public static async Task<VpnTunnel> ConnectN2nAsync(string configPath, CancellationToken ct)
+        {
+            Console.WriteLine("=== [n2n] ===");
+            string path = ResolveConfigPath(configPath);
+            (N2nConfig config, string host, int port) = ParseN2nConf(File.ReadAllText(path));
+            ILoggerFactory loggerFactory = CreateDriverLoggerFactory();
+            var factory = new TqkLibrary.VpnClient.Drivers.N2n.Transport.N2nSocketTransportFactory();
+            var vpn = new N2nConnection(host, port, config, factory, loggerFactory: loggerFactory);
+            try
+            {
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                cts.CancelAfter(TimeSpan.FromSeconds(90));
+
+                Console.WriteLine($"[n2n] connecting to supernode {host}:{port} (UDP, community '{config.Community}', REGISTER_SUPER) ...");
+                await vpn.ConnectAsync(cts.Token);
+                IPAddress assigned = vpn.AssignedAddress;
+                IPAddress? dns = vpn.Config.DnsServers.Count > 0 ? vpn.Config.DnsServers[0] : null;
+                Console.WriteLine($"[n2n] tunnel up. overlay IP = {assigned}, dns = {dns?.ToString() ?? "(none)"}, mtu = {vpn.PacketChannel.Mtu}");
+
+                var stack = new TcpIpStack(vpn.PacketChannel, assigned, null);
+                var driver = new N2nDriver(config);
+                return new VpnTunnel(stack, async () => { await vpn.DisposeAsync(); loggerFactory.Dispose(); },
+                    assigned, vpn.PacketChannel.Mtu, driver.Capabilities, driver.Name, dns);
+            }
+            catch
+            {
+                await vpn.DisposeAsync();
+                loggerFactory.Dispose();
+                throw;
+            }
+        }
+
+        // Parse một file .n2n tối giản (ini key=value): community=<tên community>, endpoint=host:port (supernode),
+        // overlay=ip/prefix (static -a address của edge), mac=aa:bb:.. (tùy chọn, mặc định sinh ngẫu nhiên),
+        // transform=null|aes (mặc định null), aeskey=<hex> (khi transform=aes), dns=ip[,ip]. Pure helper.
+        static (N2nConfig config, string host, int port) ParseN2nConf(string text)
+        {
+            string? community = null, endpoint = null, overlay = null, macStr = null, transform = null, aesKeyHex = null;
+            var dnsServers = new List<IPAddress>();
+
+            foreach (string rawLine in text.Split('\n'))
+            {
+                string line = rawLine.Trim();
+                if (line.Length == 0 || line.StartsWith("#") || line.StartsWith(";")) continue;
+                int eq = line.IndexOf('=');
+                if (eq < 0) continue;
+                string key = line.Substring(0, eq).Trim().ToLowerInvariant();
+                string val = line.Substring(eq + 1).Trim();
+                switch (key)
+                {
+                    case "community": community = val; break;
+                    case "endpoint": endpoint = val; break;
+                    case "overlay": overlay = val; break;
+                    case "mac": macStr = val; break;
+                    case "transform": transform = val.ToLowerInvariant(); break;
+                    case "aeskey": aesKeyHex = val; break;
+                    case "dns":
+                        foreach (string d in val.Split(','))
+                            if (IPAddress.TryParse(d.Trim(), out IPAddress? ip)) dnsServers.Add(ip);
+                        break;
+                }
+            }
+
+            if (string.IsNullOrEmpty(community))
+                throw new InvalidOperationException("File .n2n cần community=<tên community>.");
+            if (string.IsNullOrEmpty(endpoint))
+                throw new InvalidOperationException("File .n2n cần endpoint=<host>:<port> (supernode).");
+            if (string.IsNullOrEmpty(overlay))
+                throw new InvalidOperationException("File .n2n cần overlay=<ip>/<prefix> (địa chỉ -a tĩnh của edge).");
+
+            int colon = endpoint!.LastIndexOf(':');
+            string host = colon > 0 ? endpoint.Substring(0, colon) : endpoint;
+            int port = 7654;
+            if (colon > 0) int.TryParse(endpoint.Substring(colon + 1), out port);
+
+            (IPAddress overlayAddr, int prefix) = ParseCidr(overlay!);
+
+            byte[]? mac = macStr is not null ? ParseMac(macStr) : null;
+            N2nTransformKind transformKind = transform == "aes" ? N2nTransformKind.Aes : N2nTransformKind.Null;
+            byte[]? aesKey = transformKind == N2nTransformKind.Aes && !string.IsNullOrEmpty(aesKeyHex) ? ParseHex(aesKeyHex!) : null;
+
+            var config = new N2nConfig
+            {
+                Community = community!,
+                OverlayAddress = overlayAddr,
+                PrefixLength = prefix,
+                EdgeMac = mac,
+                Transform = transformKind,
+                AesKey = aesKey,
+                DnsServers = dnsServers,
+            };
+            return (config, host, port);
+        }
+
+        // Parse "aa:bb:cc:dd:ee:ff" (or '-' separated) into a 6-byte MAC.
+        static byte[] ParseMac(string text)
+        {
+            string[] parts = text.Split(':', '-');
+            if (parts.Length != 6) throw new InvalidOperationException("mac= cần 6 octet, vd aa:bb:cc:dd:ee:ff.");
+            byte[] mac = new byte[6];
+            for (int i = 0; i < 6; i++) mac[i] = Convert.ToByte(parts[i], 16);
+            return mac;
+        }
+
+        // Parse a hex string ("aabbcc..." or with spaces) into bytes.
+        static byte[] ParseHex(string text)
+        {
+            string clean = text.Replace(" ", "").Replace(":", "");
+            if (clean.Length % 2 != 0) throw new InvalidOperationException("aeskey= cần số ký tự hex chẵn.");
+            byte[] bytes = new byte[clean.Length / 2];
+            for (int i = 0; i < bytes.Length; i++) bytes[i] = Convert.ToByte(clean.Substring(i * 2, 2), 16);
+            return bytes;
         }
 
         // Parse một file .tinc tối giản (ini key=value): name=<tên node ta>, key=<đường dẫn file seed Ed25519 base64 32B>,

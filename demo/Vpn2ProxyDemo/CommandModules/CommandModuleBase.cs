@@ -267,6 +267,8 @@ namespace Vpn2ProxyDemo.CommandModules
                 VpnProtocol.Nebula => VpnTunnel.ConnectNebulaAsync(target.ConfigPath!, ct),
                 // tinc (V.7.2): seed Ed25519 ta + host file peer + endpoint + overlay đọc từ file .tinc; TCP meta + UDP data SPTPS.
                 VpnProtocol.Tinc => VpnTunnel.ConnectTincAsync(target.ConfigPath!, ct),
+                // n2n (V.7.4): community + supernode endpoint + static overlay + transform đọc từ file .n2n; UDP REGISTER_SUPER + PACKET L2.
+                VpnProtocol.N2n => VpnTunnel.ConnectN2nAsync(target.ConfigPath!, ct),
                 _ => throw new ArgumentOutOfRangeException(nameof(target), target.Protocol, "Giao thức VPN không hỗ trợ."),
             };
 

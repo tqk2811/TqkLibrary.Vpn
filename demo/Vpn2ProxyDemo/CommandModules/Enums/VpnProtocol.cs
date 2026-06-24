@@ -38,5 +38,8 @@ namespace Vpn2ProxyDemo.CommandModules.Enums
 
         /// <summary>tinc 1.1 (SPTPS: Curve25519/Ed25519/ChaCha-Poly1305) cấu hình từ một file <c>.tinc</c> (ini trỏ tới seed Ed25519 của ta + host file của peer + endpoint + overlay); TCP meta-connection + UDP data plane (<c>--vpn</c> trỏ thẳng tới file) (V.7.2).</summary>
         Tinc,
+
+        /// <summary>n2n v3 (ntop) L2 mesh (UDP, REGISTER_SUPER tới supernode + PACKET Ethernet-frame NULL/AES-CBC) cấu hình từ một file <c>.n2n</c> (ini trỏ tới community + supernode endpoint + static overlay + transform); supernode-relay (<c>--vpn</c> trỏ thẳng tới file) (V.7.4).</summary>
+        N2n,
     }
 }

@@ -55,7 +55,16 @@ namespace TqkLibrary.VpnClient.Tinc.Meta
             string[] parts = trimmed.Split(' ');
             if (parts.Length == 0 || !int.TryParse(parts[0], out int code))
                 throw new FormatException($"Malformed tinc request line: '{line}'.");
-            string[] args = parts.Length > 1 ? parts[1..] : Array.Empty<string>();
+            string[] args;
+            if (parts.Length > 1)
+            {
+                args = new string[parts.Length - 1];
+                Array.Copy(parts, 1, args, 0, args.Length);
+            }
+            else
+            {
+                args = Array.Empty<string>();
+            }
             return new TincMetaRequest(code, args);
         }
     }

@@ -78,7 +78,7 @@ TqkLibrary.VpnClient.Drivers.OpenVpn/
 | Data channel AEAD | P_DATA_V1/V2 + AES-256/128-GCM + CHACHA20-POLY1305 | NCP `data-ciphers` đàm phán qua `IV_CIPHERS`/PUSH `cipher` |
 | Data channel non-AEAD | P_DATA_V1/V2 + AES-128/192/256-CBC + HMAC (`--auth`) | server NCP-less (vd OpenVPN function của SoftEther); HMAC full-digest SHA1/256/384/512/MD5 |
 | Transport UDP/TCP | OpenVPN `proto udp`/`proto tcp` | UDP 1 datagram = 1 gói; TCP 16-bit length framing (seam F.2) |
-| TLS PRF key derivation | TLS 1.0 PRF | `tls-ekm` (RFC 5705) chờ **F.5** |
+| Data key derivation | key-method-2 (TLS 1.0 PRF) **/ `tls-ekm` (RFC 5705 EKM)** | tls-ekm opt-in qua `key-derivation tls-ekm` ⇒ control TLS BouncyCastle + exporter `EXPORTER-OpenVPN-datakeys` (F.5, VALIDATE LIVE) — mặc định key-method-2 |
 
 ## Trạng thái & ghi chú
 
@@ -93,7 +93,7 @@ TqkLibrary.VpnClient.Drivers.OpenVpn/
   - **validate live tap IPv6** — IPv6 trong tunnel đã wire + test offline (xem mục V.2-ipv6 trên); còn chạy thật trên OpenVPN `server-bridge` tap có **IPv6 pool** (RA/DHCPv6 sau bridge thật, **Q.1**).
   - **validate live tap pure-DHCP & multi-host** với server thật — lab này dùng `server-bridge` managed-pool ifconfig (nhánh 1-host); nhánh DHCP-lease / multi-host station chưa chạy live (**Q.1**).
   - **soft-reset make-before-break** (rekey không gián đoạn) — hiện rekey bằng re-establish; cần control-channel khởi tạo SOFT_RESET.
-  - `tls-ekm` (chờ **F.5**/net9+).
+  - `tls-ekm` + **CBC (non-AEAD)** chưa kiểm live (tls-ekm đã VALIDATE LIVE với AEAD AES-256-GCM — F.5, xem [`10`](../../.docs/10-codebase-architecture-and-flow.md) §9).
   - **OCC options string strict** (`--opt-verify`, hiếm bật) — interop hiện không strict-match.
 - **Tham chiếu**: doc protocol OpenVPN (openvpn.net + source GPL **chỉ đọc spec/behavior, không copy code**); thiết kế [`06`](../../.docs/06-openvpn.md) + roadmap [`11`](../../.docs/11-todo-roadmap.md) §V.2.
 

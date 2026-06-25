@@ -38,6 +38,7 @@ namespace TqkLibrary.VpnClient.Transport.Tls
         readonly TcpByteStream _tcp;
         readonly string _host;
         readonly RemoteCertificateValidationCallback? _certificateValidationCallback;
+        readonly List<KeyingMaterialRequest> _pendingExports = new();
 
         TlsClientProtocol? _protocol;
         Stream? _appData; // protocol.Stream — the decrypted application-data pipe
@@ -74,13 +75,28 @@ namespace TqkLibrary.VpnClient.Transport.Tls
         /// <inheritdoc/>
         public X509Certificate2? RemoteCertificate { get; private set; }
 
+        /// <summary>
+        /// Registers an RFC 5705 keying-material export to be computed <b>during</b> the handshake (before
+        /// <see cref="ConnectAsync"/>). BouncyCastle clears the TLS master secret as soon as the handshake completes, so
+        /// any export must be captured while it is still alive; this queues the request and <see cref="ConnectAsync"/>
+        /// fulfils it at handshake-complete, caching the bytes for <see cref="ExportKeyingMaterial"/> to return. The
+        /// OpenConnect DTLS-PSK path registers its single export (label <c>"EXPORTER-openconnect-psk"</c>, empty context,
+        /// 32 bytes) up front.
+        /// </summary>
+        public void RequestKeyingMaterialExport(string label, ReadOnlySpan<byte> context, int length)
+        {
+            if (_protocol is not null) throw new InvalidOperationException("Keying-material exports must be requested before connecting.");
+            _pendingExports.Add(new KeyingMaterialRequest(label, context.ToArray(), length));
+        }
+
         /// <inheritdoc/>
         public async ValueTask ConnectAsync(CancellationToken cancellationToken = default)
         {
             await _tcp.ConnectAsync(cancellationToken).ConfigureAwait(false);
 
             var crypto = new BcTlsCrypto(new SecureRandom());
-            var client = new ExporterTlsClient(crypto, _host, _certificateValidationCallback, cert => RemoteCertificate = cert);
+            var client = new ExporterTlsClient(crypto, _host, _certificateValidationCallback,
+                cert => RemoteCertificate = cert, _pendingExports);
             var protocol = new TlsClientProtocol(_tcp.Stream);
 
             try
@@ -134,7 +150,30 @@ namespace TqkLibrary.VpnClient.Transport.Tls
         public byte[] ExportKeyingMaterial(string label, ReadOnlySpan<byte> context, int length)
         {
             ExporterTlsClient client = _client ?? throw new InvalidOperationException("The TLS stream is not connected.");
-            return client.Export(label, context.ToArray(), length);
+            // The master secret is gone after the handshake, so the value must have been pre-registered via
+            // RequestKeyingMaterialExport and captured at handshake-complete; return that cached result.
+            if (client.TryGetCachedExport(label, context, length, out byte[] result)) return result;
+            throw new InvalidOperationException(
+                $"No keying-material export was registered for label '{label}'; call {nameof(RequestKeyingMaterialExport)} before {nameof(ConnectAsync)}.");
+        }
+
+        /// <summary>A queued/cached RFC 5705 export: the label, context and length, plus the captured output once computed.</summary>
+        sealed class KeyingMaterialRequest
+        {
+            public KeyingMaterialRequest(string label, byte[] context, int length)
+            {
+                Label = label;
+                Context = context;
+                Length = length;
+            }
+
+            public string Label { get; }
+            public byte[] Context { get; }
+            public int Length { get; }
+            public byte[]? Output { get; set; }
+
+            public bool Matches(string label, ReadOnlySpan<byte> context, int length)
+                => Length == length && Label == label && context.SequenceEqual(Context);
         }
 
         /// <inheritdoc/>
@@ -162,24 +201,70 @@ namespace TqkLibrary.VpnClient.Transport.Tls
             readonly string _host;
             readonly RemoteCertificateValidationCallback? _validation;
             readonly Action<X509Certificate2?> _onCertificate;
+            readonly List<KeyingMaterialRequest> _exports;
 
             public ExporterTlsClient(TlsCrypto crypto, string host,
-                RemoteCertificateValidationCallback? validation, Action<X509Certificate2?> onCertificate)
+                RemoteCertificateValidationCallback? validation, Action<X509Certificate2?> onCertificate,
+                List<KeyingMaterialRequest> exports)
                 : base(crypto)
             {
                 _host = host;
                 _validation = validation;
                 _onCertificate = onCertificate;
+                _exports = exports;
             }
 
             // TLS 1.2 only — matches the DTLS client's version pinning and keeps interop with ocserv simple.
             protected override ProtocolVersion[] GetSupportedVersions() => ProtocolVersion.TLSv12.Only();
 
-            // Runs the exporter on the captured context (m_context is set by Init before the handshake; valid after it).
-            public byte[] Export(string label, byte[] context, int length)
+            // Compute every registered RFC 5705 export here, while the master secret is still alive — BouncyCastle clears
+            // it as soon as the handshake completes. We do NOT use TlsContext.ExportKeyingMaterial: it refuses a
+            // non-extended-master-secret TLS 1.2 session, but ocserv (gnutls) negotiates the OpenConnect CSTP session
+            // WITHOUT EMS yet still derives the PSK from it (gnutls's plain TLS 1.2 PRF over the master secret, not the
+            // EMS-gated path). So compute the exporter directly — PRF(master_secret, label, client_random + server_random
+            // [+ uint16 len + ctx]) — matching gnutls and sidestepping the EMS guard. This is the legacy RFC 5705
+            // exporter behaviour AnyConnect interop requires.
+            public override void NotifyHandshakeComplete()
             {
+                base.NotifyHandshakeComplete();
+                if (_exports.Count == 0) return;
                 TlsClientContext ctx = m_context ?? throw new InvalidOperationException("TLS context not initialised.");
-                return ctx.ExportKeyingMaterial(label, context, length);
+                SecurityParameters sp = ctx.SecurityParameters;
+                TlsSecret? masterSecret = sp.MasterSecret;
+                if (masterSecret is null || !masterSecret.IsAlive()) return; // leaves outputs null ⇒ export throws later
+
+                byte[] clientRandom = sp.ClientRandom;
+                byte[] serverRandom = sp.ServerRandom;
+                int prf = sp.PrfAlgorithm;
+                foreach (KeyingMaterialRequest req in _exports)
+                {
+                    bool hasContext = req.Context.Length > 0;
+                    int seedLen = clientRandom.Length + serverRandom.Length + (hasContext ? 2 + req.Context.Length : 0);
+                    byte[] seed = new byte[seedLen];
+                    int p = 0;
+                    Buffer.BlockCopy(clientRandom, 0, seed, p, clientRandom.Length); p += clientRandom.Length;
+                    Buffer.BlockCopy(serverRandom, 0, seed, p, serverRandom.Length); p += serverRandom.Length;
+                    if (hasContext)
+                    {
+                        seed[p++] = (byte)(req.Context.Length >> 8);
+                        seed[p++] = (byte)req.Context.Length;
+                        Buffer.BlockCopy(req.Context, 0, seed, p, req.Context.Length);
+                    }
+                    req.Output = masterSecret.DeriveUsingPrf(prf, req.Label, seed, req.Length).Extract();
+                }
+            }
+
+            // Returns a cached export captured at handshake-complete (the master secret is gone by now).
+            public bool TryGetCachedExport(string label, ReadOnlySpan<byte> context, int length, out byte[] output)
+            {
+                foreach (KeyingMaterialRequest req in _exports)
+                    if (req.Output is not null && req.Matches(label, context, length))
+                    {
+                        output = req.Output;
+                        return true;
+                    }
+                output = Array.Empty<byte>();
+                return false;
             }
 
             public override TlsAuthentication GetAuthentication()

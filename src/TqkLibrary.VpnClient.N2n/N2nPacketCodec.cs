@@ -275,6 +275,51 @@ namespace TqkLibrary.VpnClient.N2n
             }
         }
 
+        // ---- header encryption (-H) -------------------------------------------------------------------------
+
+        /// <summary>
+        /// The length of a PACKET's n2n header (everything before the transform-protected payload): the common header
+        /// plus src/dst MAC, the optional socket, and the compression + transform bytes. This is the
+        /// <c>header_len</c> n2n header-encrypts on a data PACKET (the payload stays under the transform).
+        /// </summary>
+        public static int PacketHeaderLength(bool hasSocket, int socketEncodedSize)
+            => N2nConstants.CommonHeaderSize + 6 + 6 + (hasSocket ? socketEncodedSize : 0) + 2;
+
+        /// <summary>
+        /// Encrypts the n2n header of <paramref name="datagram"/> in place with header encryption (<c>-H</c>). For a
+        /// control message pass <paramref name="headerLen"/> = the whole datagram length; for a data PACKET pass the n2n
+        /// header length (see <see cref="PacketHeaderLength"/>) so the transform-protected payload is left intact.
+        /// Returns the same array (mutated) for chaining. No-op when <paramref name="headerEnc"/> is null.
+        /// </summary>
+        public static byte[] EncryptHeader(byte[] datagram, int headerLen, N2nHeaderEncryption? headerEnc, ulong stamp)
+        {
+            if (headerEnc is null) return datagram;
+            Span<byte> random = stackalloc byte[4];
+#if NET6_0_OR_GREATER
+            System.Security.Cryptography.RandomNumberGenerator.Fill(random);
+#else
+            using (var rng = System.Security.Cryptography.RandomNumberGenerator.Create())
+            {
+                byte[] tmp = new byte[4]; rng.GetBytes(tmp); tmp.CopyTo(random);
+            }
+#endif
+            headerEnc.Encrypt(datagram, headerLen, datagram.Length, stamp, random);
+            return datagram;
+        }
+
+        /// <summary>
+        /// Tries to decrypt the n2n header of <paramref name="datagram"/> in place (header encryption, <c>-H</c>). On
+        /// success the cleartext header is restored so the normal Try* decoders can run; returns false if the magic /
+        /// checksum does not match (wrong community, not header-encrypted, or tampered). A null
+        /// <paramref name="headerEnc"/> is treated as "no header encryption" and returns true unchanged.
+        /// </summary>
+        public static bool TryDecryptHeader(Span<byte> datagram, N2nHeaderEncryption? headerEnc, out ulong stamp)
+        {
+            stamp = 0;
+            if (headerEnc is null) return true;
+            return headerEnc.Decrypt(datagram, datagram.Length, out stamp);
+        }
+
         // ---- peek -------------------------------------------------------------------------------------------
 
         /// <summary>Reads only the common header so a dispatcher can branch on <see cref="N2nCommonHeader.PacketType"/>.</summary>

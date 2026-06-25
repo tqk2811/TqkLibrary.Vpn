@@ -46,6 +46,7 @@ namespace TqkLibrary.VpnClient.Drivers.N2n
 
         readonly N2nPacketCodec _codec = new();
         readonly IN2nTransform _transform;
+        readonly N2nHeaderEncryption? _headerEnc;
         readonly MacAddress _mac;
         readonly TimeSpan _handshakeTimeout;
         // The supernode pins the auth token from the first REGISTER_SUPER and rejects (REGISTER_SUPER_NAK,
@@ -90,6 +91,7 @@ namespace TqkLibrary.VpnClient.Drivers.N2n
             _handshakeTimeout = handshakeTimeout ?? TimeSpan.FromSeconds(10);
             _tunnelConfig = config.ToTunnelConfig();
             _transform = BuildTransform(config);
+            _headerEnc = config.HeaderEncryption ? new N2nHeaderEncryption(config.Community) : null;
             _mac = ResolveMac(config);
         }
 
@@ -139,7 +141,7 @@ namespace TqkLibrary.VpnClient.Drivers.N2n
 
             // --- L2 data plane: the data session as an Ethernet channel, bridged to L3 via ARP + VirtualHost ---
             var channel = new N2nEthernetChannel(_codec, _config.Community, _mac.ToArray(), _transform,
-                (wire, ct) => SendAsync(wire, ct), _config.Mtu);
+                (wire, ct) => SendAsync(wire, ct), _config.Mtu, _headerEnc, NextStamp);
             _channel = channel;
 
             var arp = new ArpResolver(_mac, _config.OverlayAddress, channel);
@@ -182,7 +184,7 @@ namespace TqkLibrary.VpnClient.Drivers.N2n
                 Auth = _auth,
                 KeyTime = 0,
             };
-            byte[] datagram = _codec.EncodeRegisterSuper(_config.Community, body);
+            byte[] datagram = EncryptControl(_codec.EncodeRegisterSuper(_config.Community, body));
             await SendAsync(datagram, cancellationToken).ConfigureAwait(false);
 
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -217,7 +219,15 @@ namespace TqkLibrary.VpnClient.Drivers.N2n
 
         void OnInboundDatagram(ReadOnlyMemory<byte> datagram)
         {
-            ReadOnlySpan<byte> span = datagram.Span;
+            // With header encryption (-H) the common header is SPECK-encrypted; decrypt it in place (restoring the
+            // cleartext header) before the codec can peek the type. A datagram that does not decrypt is not ours.
+            byte[] buffer = datagram.ToArray();
+            if (_headerEnc is not null && !N2nPacketCodec.TryDecryptHeader(buffer, _headerEnc, out _))
+            {
+                Logger.LogPacketDropped(DriverName, VpnDropReason.DecryptFailed, "header decrypt failed (community/-H mismatch)");
+                return;
+            }
+            ReadOnlySpan<byte> span = buffer;
             if (!_codec.TryPeekHeader(span, out N2nCommonHeader header)) return;
 
             switch (header.PacketType)
@@ -257,7 +267,7 @@ namespace TqkLibrary.VpnClient.Drivers.N2n
             // peer stops retrying, but keep carrying data through the supernode.
             if (!_codec.TryDecodeRegister(span, out _, out N2nRegister reg)) return;
             var ackBody = new N2nRegisterAck { Cookie = reg.Cookie, SrcMac = _mac.ToArray(), DstMac = reg.SrcMac, Sock = reg.Sock };
-            byte[] datagram = _codec.EncodeRegisterAck(_config.Community, ackBody);
+            byte[] datagram = EncryptControl(_codec.EncodeRegisterAck(_config.Community, ackBody));
             _ = SendAsync(datagram);
         }
 
@@ -315,9 +325,18 @@ namespace TqkLibrary.VpnClient.Drivers.N2n
                 Auth = _auth,
                 KeyTime = 0,
             };
-            byte[] datagram = _codec.EncodeRegisterSuper(_config.Community, body);
+            byte[] datagram = EncryptControl(_codec.EncodeRegisterSuper(_config.Community, body));
             return SendAsync(datagram).AsTask();
         }
+
+        // Control messages (REGISTER_SUPER / REGISTER_ACK / …) header-encrypt the WHOLE datagram (header_len = length),
+        // matching n2n's edge (packet_header_encrypt(buf, idx, idx, …)). No-op when -H is off.
+        byte[] EncryptControl(byte[] datagram)
+            => N2nPacketCodec.EncryptHeader(datagram, datagram.Length, _headerEnc, NextStamp());
+
+        // n2n header timestamp: microseconds since the Unix epoch (time_stamp()).
+        static readonly DateTime UnixEpoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        static ulong NextStamp() => (ulong)(DateTime.UtcNow - UnixEpoch).Ticks / 10UL;
 
         // ---- teardown ----
 

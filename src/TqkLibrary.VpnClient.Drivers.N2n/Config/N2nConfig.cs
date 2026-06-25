@@ -32,6 +32,13 @@ namespace TqkLibrary.VpnClient.Drivers.N2n.Config
         public N2nTransformKind Transform { get; init; } = N2nTransformKind.Null;
 
         /// <summary>
+        /// When true, n2n header encryption (<c>-H</c>) is enabled: every datagram's common header is SPECK-encrypted and
+        /// checksummed with a key derived from <see cref="Community"/> (no separate password — n2n's normal <c>-H</c>
+        /// mode). The supernode and every edge must run with <c>-H</c> too. Defaults to false (cleartext header).
+        /// </summary>
+        public bool HeaderEncryption { get; init; }
+
+        /// <summary>
         /// The AES key (16/24/32 bytes) when <see cref="Transform"/> is <see cref="N2nTransformKind.Aes"/>; ignored for
         /// the NULL transform. This is the raw cipher key — n2n's Pearson-hash key derivation from the community password
         /// is out of scope (supply the key directly).

@@ -75,6 +75,7 @@ namespace TqkLibrary.VpnClient.Drivers.N2n.Tests
         readonly string _community;
         readonly N2nPacketCodec _codec = new();
         readonly IN2nTransform _transform;
+        readonly N2nHeaderEncryption? _headerEnc;     // non-null mirrors a supernode/edge running with -H
         readonly MacAddress _gatewayMac;
         readonly IPAddress _gateway;
         readonly object _sync = new();
@@ -86,23 +87,28 @@ namespace TqkLibrary.VpnClient.Drivers.N2n.Tests
         public byte[]? SnMac { get; }
 
         public SimulatedN2nSupernode(LoopbackUdpLink.Endpoint transport, string community, IPAddress gateway,
-            IN2nTransform? transform = null)
+            IN2nTransform? transform = null, bool headerEncryption = false)
         {
             _transport = transport;
             _community = community;
             _gateway = gateway;
             _transform = transform ?? new N2nNullTransform();
+            _headerEnc = headerEncryption ? new N2nHeaderEncryption(community) : null;
             _gatewayMac = MacAddress.Parse("5e:00:00:00:7e:01");
             SnMac = MacAddress.Parse("5e:00:00:00:7e:00").ToArray();
             _transport.SetReceiver(OnInbound);
         }
+
+        static ulong Stamp() => (ulong)(DateTime.UtcNow - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).Ticks / 10UL;
 
         /// <summary>The gateway MAC the supernode answers ARP with (the next-hop the client resolves before echoing).</summary>
         public MacAddress GatewayMac => _gatewayMac;
 
         void OnInbound(ReadOnlyMemory<byte> datagram)
         {
-            ReadOnlySpan<byte> span = datagram.Span;
+            byte[] buffer = datagram.ToArray();
+            if (_headerEnc is not null && !N2nPacketCodec.TryDecryptHeader(buffer, _headerEnc, out _)) return;
+            ReadOnlySpan<byte> span = buffer;
             if (!_codec.TryPeekHeader(span, out N2nCommonHeader header)) return;
 
             switch (header.PacketType)
@@ -135,6 +141,8 @@ namespace TqkLibrary.VpnClient.Drivers.N2n.Tests
                 KeyTime = 0,
             };
             byte[] datagram = _codec.EncodeRegisterSuperAck(_community, ack);
+            // A supernode running -H header-encrypts the whole ACK (control message: header_len = length).
+            N2nPacketCodec.EncryptHeader(datagram, datagram.Length, _headerEnc, Stamp());
             _ = _transport.SendAsync(datagram);
         }
 
@@ -162,6 +170,12 @@ namespace TqkLibrary.VpnClient.Drivers.N2n.Tests
                 Payload = ethernetFrame,
             };
             byte[] datagram = _codec.EncodePacket(_community, body, _transform);
+            // A gateway-edge running -H header-encrypts the PACKET header only (payload stays under the transform).
+            if (_headerEnc is not null)
+            {
+                int headerLen = N2nPacketCodec.PacketHeaderLength(body.Sock is not null, body.Sock?.EncodedSize ?? 0);
+                N2nPacketCodec.EncryptHeader(datagram, headerLen, _headerEnc, Stamp());
+            }
             _ = _transport.SendAsync(datagram);
         }
 

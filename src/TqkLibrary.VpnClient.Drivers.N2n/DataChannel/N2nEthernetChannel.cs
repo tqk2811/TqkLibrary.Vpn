@@ -30,15 +30,20 @@ namespace TqkLibrary.VpnClient.Drivers.N2n.DataChannel
         readonly string _community;
         readonly byte[] _srcMac;
         readonly IN2nTransform _transform;
+        readonly N2nHeaderEncryption? _headerEnc;
+        readonly Func<ulong> _stamp;
         readonly Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> _sink;
 
         /// <summary>
         /// Wires the channel. <paramref name="community"/> + <paramref name="srcMac"/> stamp every outbound PACKET (this
-        /// edge's identity); <paramref name="transform"/> protects the payload; <paramref name="sink"/> writes the
-        /// encoded datagram to the transport. <paramref name="mtu"/> is the tunnel MTU.
+        /// edge's identity); <paramref name="transform"/> protects the payload; <paramref name="headerEnc"/> (when
+        /// non-null) SPECK-encrypts the PACKET's n2n header (<c>-H</c>), leaving the transform-protected payload intact;
+        /// <paramref name="stamp"/> supplies the per-datagram header timestamp; <paramref name="sink"/> writes the encoded
+        /// datagram to the transport. <paramref name="mtu"/> is the tunnel MTU.
         /// </summary>
         public N2nEthernetChannel(N2nPacketCodec codec, string community, ReadOnlyMemory<byte> srcMac,
-            IN2nTransform transform, Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> sink, int mtu = 1290)
+            IN2nTransform transform, Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask> sink, int mtu = 1290,
+            N2nHeaderEncryption? headerEnc = null, Func<ulong>? stamp = null)
         {
             if (srcMac.Length != MacAddressLength) throw new ArgumentException("MAC address must be 6 bytes.", nameof(srcMac));
             if (mtu < 1) throw new ArgumentOutOfRangeException(nameof(mtu));
@@ -46,6 +51,8 @@ namespace TqkLibrary.VpnClient.Drivers.N2n.DataChannel
             _community = community ?? throw new ArgumentNullException(nameof(community));
             _srcMac = srcMac.ToArray();
             _transform = transform ?? throw new ArgumentNullException(nameof(transform));
+            _headerEnc = headerEnc;
+            _stamp = stamp ?? (() => 0UL);
             _sink = sink ?? throw new ArgumentNullException(nameof(sink));
             Mtu = mtu;
         }
@@ -84,6 +91,13 @@ namespace TqkLibrary.VpnClient.Drivers.N2n.DataChannel
                 Payload = ethernetFrame.ToArray(),
             };
             byte[] datagram = _codec.EncodePacket(_community, body, _transform);
+            // With -H, encrypt only the PACKET's n2n header (header_len excludes the transform-protected payload), exactly
+            // like n2n's edge (packet_header_encrypt(buf, headerIdx, idx, …)).
+            if (_headerEnc is not null)
+            {
+                int headerLen = N2nPacketCodec.PacketHeaderLength(body.Sock is not null, body.Sock?.EncodedSize ?? 0);
+                N2nPacketCodec.EncryptHeader(datagram, headerLen, _headerEnc, _stamp());
+            }
             return _sink(datagram, cancellationToken);
         }
 

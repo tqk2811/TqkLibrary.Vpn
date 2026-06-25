@@ -33,13 +33,15 @@ namespace TqkLibrary.VpnClient.Drivers.N2n.Tests
             return packet;
         }
 
-        static N2nConfig BuildConfig(N2nTransformKind transform = N2nTransformKind.Null, byte[]? aesKey = null) => new N2nConfig
+        static N2nConfig BuildConfig(N2nTransformKind transform = N2nTransformKind.Null, byte[]? aesKey = null,
+            bool headerEncryption = false) => new N2nConfig
         {
             Community = Community,
             OverlayAddress = OverlayAddress,
             PrefixLength = 24,
             Transform = transform,
             AesKey = aesKey,
+            HeaderEncryption = headerEncryption,
             Mtu = N2nDriverConstants.DefaultMtu,
         };
 
@@ -114,6 +116,41 @@ namespace TqkLibrary.VpnClient.Drivers.N2n.Tests
             Assert.True(echoed.Length >= packet.Length);
             Assert.Equal(packet, echoed.AsSpan(0, packet.Length).ToArray());     // the real packet is the unpadded prefix
             for (int i = packet.Length; i < echoed.Length; i++) Assert.Equal(0, echoed[i]);   // the rest is zero pad
+        }
+
+        [Fact]
+        public async Task Connect_RegistersWithSupernode_WithHeaderEncryption()
+        {
+            var link = new LoopbackUdpLink();
+            using var supernode = new SimulatedN2nSupernode(link.Server, Community, Gateway, headerEncryption: true);
+            await using var connection = BuildConnection(link, BuildConfig(headerEncryption: true));
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await connection.ConnectAsync(cts.Token);
+
+            Assert.Equal(N2nConnectionState.Connected, connection.State);
+            Assert.True(supernode.RegisterSuperCount >= 1, "the -H REGISTER_SUPER must decrypt + register on the supernode");
+        }
+
+        [Fact]
+        public async Task Connect_RoundTripsIp_OverL2Fabric_WithHeaderEncryption()
+        {
+            var link = new LoopbackUdpLink();
+            using var supernode = new SimulatedN2nSupernode(link.Server, Community, Gateway, headerEncryption: true);
+            await using var connection = BuildConnection(link, BuildConfig(headerEncryption: true));
+
+            var inbound = Channel.CreateUnbounded<byte[]>();
+            connection.PacketChannel.InboundIpPacket += m => inbound.Writer.TryWrite(m.ToArray());
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await connection.ConnectAsync(cts.Token);
+
+            // The whole control path AND the data PACKET header are SPECK-encrypted (-H); the IP packet still round-trips.
+            byte[] packet = BuildIpv4Packet(OverlayAddress, Gateway, 0xEF);
+            await connection.PacketChannel.WriteIpPacketAsync(packet, cts.Token);
+            byte[] echoed = await inbound.Reader.ReadAsync(cts.Token);
+            Assert.Equal(packet, echoed);
+            Assert.True(supernode.PacketCount >= 2, "the supernode must have decrypted + relayed the ARP request and the IP packet");
         }
 
         [Fact]

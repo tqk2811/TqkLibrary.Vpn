@@ -1000,10 +1000,12 @@ namespace Vpn2ProxyDemo
 
         // Parse một file .n2n tối giản (ini key=value): community=<tên community>, endpoint=host:port (supernode),
         // overlay=ip/prefix (static -a address của edge), mac=aa:bb:.. (tùy chọn, mặc định sinh ngẫu nhiên),
-        // transform=null|aes (mặc định null), aeskey=<hex> (khi transform=aes), dns=ip[,ip]. Pure helper.
+        // transform=null|aes (mặc định null), aeskey=<hex> (khi transform=aes), headerencryption=true|1 (n2n -H, key suy
+        // từ community), dns=ip[,ip]. Pure helper.
         static (N2nConfig config, string host, int port) ParseN2nConf(string text)
         {
             string? community = null, endpoint = null, overlay = null, macStr = null, transform = null, aesKeyHex = null;
+            bool headerEncryption = false;
             var dnsServers = new List<IPAddress>();
 
             foreach (string rawLine in text.Split('\n'))
@@ -1022,6 +1024,11 @@ namespace Vpn2ProxyDemo
                     case "mac": macStr = val; break;
                     case "transform": transform = val.ToLowerInvariant(); break;
                     case "aeskey": aesKeyHex = val; break;
+                    case "headerencryption":
+                    case "headerenc":
+                    case "h":
+                        headerEncryption = val.Equals("true", StringComparison.OrdinalIgnoreCase) || val == "1" || val.Equals("yes", StringComparison.OrdinalIgnoreCase);
+                        break;
                     case "dns":
                         foreach (string d in val.Split(','))
                             if (IPAddress.TryParse(d.Trim(), out IPAddress? ip)) dnsServers.Add(ip);
@@ -1055,6 +1062,7 @@ namespace Vpn2ProxyDemo
                 EdgeMac = mac,
                 Transform = transformKind,
                 AesKey = aesKey,
+                HeaderEncryption = headerEncryption,
                 DnsServers = dnsServers,
             };
             return (config, host, port);

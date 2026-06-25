@@ -5,9 +5,10 @@ challenge-response (MD5 + Blowfish-ECB) → data plane length-prefix → **ICMP 
 
 ## Thành phần
 - [`Dockerfile`](Dockerfile) — image `lab-vtun` = Ubuntu 24.04 + `apt install vtun` (vtund 3.0.4-2ubuntu3) + tcpdump/iproute2.
-- [`vtund.conf`](vtund.conf) — 2 host:
+- [`vtund.conf`](vtund.conf) — 3 host:
   - `test`: `passwd pass`, `type tun`, `proto tcp`, `encrypt no`, `compress no`, tunnel `10.11.0.1` ↔ `10.11.0.2`.
   - `enc`: như trên nhưng `encrypt blowfish128ecb` (cipher mặc định, gửi cho client = flag `E1`), tunnel `10.12.0.1` ↔ `10.12.0.2`.
+  - `tapsrv`: `type ether` (tap/L2), `proto tcp`, server gán `10.13.0.1/24` lên `tapNN`; client (static `10.13.0.2` trên VtunEthernetChannel+VirtualHost) ARP-resolve rồi ping qua segment L2.
 - [`openssl-legacy.cnf`](openssl-legacy.cnf) — bật **legacy provider** của OpenSSL 3.0. **BẮT BUỘC cho host `enc`** trên
   Ubuntu 24.04: Blowfish dời sang legacy provider ở OpenSSL 3.0 và KHÔNG nạp mặc định → vtund 3.0.4 gọi `EVP_bf_ecb()`
   fail → session đóng ngay. Chạy vtund với `OPENSSL_CONF=/tmp/openssl-legacy.cnf` để host `enc` lên được.
@@ -37,6 +38,9 @@ docker exec vtun-client sh -c 'cp -r /app /tmp/app && chmod +x /tmp/app/harness 
 docker exec vtun-server sh -c 'cp /lab/openssl-legacy.cnf /tmp/ && \
   OPENSSL_CONF=/tmp/openssl-legacy.cnf vtund -s -n -f /etc/vtund.conf -P 5002 2>/tmp/vtund-leg.err &'
 docker exec vtun-client sh -c '/tmp/app/harness vtun-server 5002 enc pass 10.12.0.2/24 10.12.0.1'
+
+# 3c) tap host 'tapsrv' (type ether / L2) — harness dùng cùng facade (VirtualHost L3), overlay 10.13.0.2
+docker exec vtun-client sh -c '/tmp/app/harness vtun-server 5000 tapsrv pass 10.13.0.2/24 10.13.0.1'
 
 # 4) dọn
 docker compose down -v
@@ -85,6 +89,19 @@ plaintext trên dây. Padding khớp codec: 60 → pad 4 → 64.
 **1 blocker môi trường (không phải bug client)**: OpenSSL 3.0.13 (Ubuntu 24.04) ẩn Blowfish trong legacy provider không nạp
 mặc định → vtund 3.0.4 gọi `EVP_bf_ecb()` fail → session `enc` đóng ngay (không có dòng `tun tun0`/`encryption
 initialized`). Fix = `OPENSSL_CONF=openssl-legacy.cnf` (bật legacy). Sau đó ICMP 2 chiều ngay.
+
+## Kết quả VALIDATE LIVE — TAP (type ether / L2) ✓ (2026-06-25)
+Host `tapsrv` (`type ether`), client dựng `VtunEthernetChannel` + `ArpResolver` + `VirtualHost` (tái dùng Ethernet fabric):
+```
+[vtun] handshake: authenticated; server flags = Tcp, KeepAlive, Ether
+[+] tunnel up. server flags = Tcp, KeepAlive, Ether, tunnel IP = 10.13.0.2/24, peer = 10.13.0.1, mtu = 1436
+[ping 1] reply 42ms ; [ping 2..4] ~0.7ms
+[✓✓] FULL-TUNNEL LIVE OK — 4/4 ICMP echo replies (2-way ICMP confirmed)
+```
+Server log: `tapsrv ether tap0` (tap device bound). **MTU 1436 = 1450 − 14** (VirtualHost trừ header Ethernet → stack
+clamp MSS). **Wire (tcpdump tcp/5000)**: data frame `length 76` = 2-byte header + **74-byte Ethernet frame** (14 header +
+60 ICMP/IP) — so với tun `length 62` (không header Ethernet) thì +14 đúng; **2 frame ARP (ethertype 0806)** trong stream →
+client ARP-resolve MAC của `10.13.0.1` qua segment L2 (bridge hoạt động đúng). **0 bug.**
 
 ## Ghi chú bảo mật
 ⚠️ vtun auth/data crypto **legacy yếu** (Blowfish-ECB/MD5-challenge; `encrypt no` ⇒ data plane cleartext; `encrypt yes` ⇒

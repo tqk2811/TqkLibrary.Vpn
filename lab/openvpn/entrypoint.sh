@@ -10,6 +10,7 @@
 #   CIPHER  = AES-256-GCM | ...    (mặc định AES-256-GCM) — data-ciphers NCP
 #   PORT    = 1194                 (mặc định 1194)
 #   TUNMTU  = (rỗng)               (nếu đặt -> tun-mtu trên cả server + .ovpn)
+#   KEYDERIV= (rỗng) | tls-ekm     (tls-ekm -> 'key-derivation tls-ekm' cả 2 đầu — F.5 RFC 5705)
 set -e
 
 PROTO="${PROTO:-udp}"
@@ -17,13 +18,18 @@ DEV="${DEV:-tun}"
 CIPHER="${CIPHER:-AES-256-GCM}"
 PORT="${PORT:-1194}"
 TUNMTU="${TUNMTU:-}"
+KEYDERIV="${KEYDERIV:-}"
 SHARED=/shared                 # volume chia sẻ với client container (.ovpn để demo đọc)
 SERVER_NAME="ovpn-server"      # tên SERVICE trên bridge labnet (client resolve được qua DNS Docker)
 NET=10.60.0.0
 MASK=255.255.255.0
 GW=10.60.0.1                   # gateway tunnel (server) — HTTP test server bind ở đây
 
-echo "[entrypoint] lab/openvpn — PROTO=$PROTO DEV=$DEV CIPHER=$CIPHER PORT=$PORT TUNMTU=${TUNMTU:-default}"
+echo "[entrypoint] lab/openvpn — PROTO=$PROTO DEV=$DEV CIPHER=$CIPHER PORT=$PORT TUNMTU=${TUNMTU:-default} KEYDERIV=${KEYDERIV:-tls1-prf}"
+
+# key-derivation tls-ekm (OpenVPN 2.6, RFC 5705) — chỉ thêm dòng khi KEYDERIV=tls-ekm.
+KEYDERIV_LINE=""
+if [ "$KEYDERIV" = "tls-ekm" ]; then KEYDERIV_LINE="key-derivation tls-ekm"; fi
 openvpn --version 2>/dev/null | head -1 || true
 
 mkdir -p "$SHARED" /etc/openvpn/pki
@@ -105,6 +111,7 @@ tls-auth /etc/openvpn/pki/ta.key 0
 data-ciphers $CIPHER
 data-ciphers-fallback $CIPHER
 auth SHA256
+$KEYDERIV_LINE
 
 # Push route/DNS để client thấy server cấu hình tunnel (PUSH_REPLY).
 push "redirect-gateway def1 bypass-dhcp"
@@ -146,6 +153,7 @@ if [ -n "$TUNMTU" ]; then CLIENT_MTU_LINE="tun-mtu $TUNMTU"; fi
     echo "data-ciphers-fallback $CIPHER"
     echo "cipher $CIPHER"
     echo "auth SHA256"
+    if [ -n "$KEYDERIV_LINE" ]; then echo "$KEYDERIV_LINE"; fi
     echo "key-direction 1"
     echo "verb 3"
     echo "<ca>"

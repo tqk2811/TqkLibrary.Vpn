@@ -35,6 +35,7 @@ services:
       CIPHER: "${CIPHER:-AES-256-GCM}"
       PORT: "${PORT:-1194}"
       TUNMTU: "${TUNMTU:-}"           # rỗng = mặc định; đặt số để ép tun-mtu
+      KEYDERIV: "${KEYDERIV:-}"       # rỗng = tls1-prf (key-method-2); "tls-ekm" = RFC 5705 EKM (F.5)
     volumes:
       - ovpn-shared:/shared  # client.ovpn sinh runtime cho demo .NET
     networks:

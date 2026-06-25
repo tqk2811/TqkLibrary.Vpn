@@ -2,5 +2,7 @@
 harness/publish/
 harness/bin/
 harness/obj/
+# Published .NET client edge (self-contained linux-x64) copied into the live lab — rebuilt on demand, do not commit.
+client-bin/
 *.tar.gz
 *.pcap

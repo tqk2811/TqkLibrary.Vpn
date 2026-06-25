@@ -1,0 +1,8 @@
+# V.7.4 n2n .NET client edge config WITH header encryption (-H). community "labnet", supernode at supernode:7654,
+# static overlay 10.7.0.2/24 (gateway edge2 is 10.7.0.1), NULL transform, header encryption ON (SPECK + Pearson
+# key derived from the community, matching the supernode/edge running -H).
+community=labnet
+endpoint=supernode:7654
+overlay=10.7.0.2/24
+transform=null
+headerencryption=true

@@ -112,8 +112,11 @@ namespace TqkLibrary.VpnClient.Drivers.Tailscale
             // answer the handshake on the socket we bound. The in-process transport factory (tests) ignores it.
             IWireGuardTransportFactory wgFactory = _wireGuardTransportFactory
                 ?? new WireGuardSocketTransportFactory(localPort: _config.WireGuardLocalPort);
+            // Tailscale is a peer-to-peer mesh: every node is both initiator and responder. acceptInbound lets two .NET
+            // nodes hand-shake each other (a deterministic tie-break by static public key picks one initiator per pair),
+            // so the WireGuard tunnel comes up without a server — the data plane behind the ts2021 control plane.
             var wg = new WireGuardConnection(host, port, wgConfig, wgFactory,
-                loggerFactory: _loggerFactory);
+                loggerFactory: _loggerFactory, acceptInbound: true);
             _wireGuard = wg;
             MarkRunning();
             await wg.ConnectAsync(cancellationToken).ConfigureAwait(false);

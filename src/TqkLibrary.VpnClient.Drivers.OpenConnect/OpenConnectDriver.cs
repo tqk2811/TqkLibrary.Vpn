@@ -87,8 +87,13 @@ namespace TqkLibrary.VpnClient.Drivers.OpenConnect
             if (endpoint is null) throw new ArgumentNullException(nameof(endpoint));
             if (credentials is null) throw new ArgumentNullException(nameof(credentials));
 
+            // When DTLS is enabled and no factory is overridden, run the CSTP control channel over BouncyCastle TLS so it
+            // can export the RFC 5705 keying material the modern DTLS 1.2 PSK path derives its pre-shared key from; the
+            // SslStream factory remains the default for TLS-only (no exporter needed) and for any explicit override.
             IOpenConnectTransportFactory factory = _transportFactory
-                ?? new OpenConnectSocketTransportFactory(_serverCertificateValidation);
+                ?? (_enableDtls
+                    ? new OpenConnectBouncyCastleTransportFactory(_serverCertificateValidation)
+                    : new OpenConnectSocketTransportFactory(_serverCertificateValidation));
 
             // DTLS path is opt-in: enabled by default with a real UDP socket factory; a test injects an in-process one.
             IOpenConnectDatagramTransportFactory? datagramFactory = _enableDtls

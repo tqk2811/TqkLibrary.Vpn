@@ -24,13 +24,23 @@ namespace TqkLibrary.VpnClient.OpenConnect
         /// <summary>
         /// Builds the <c>CONNECT /CSCOSSLC/tunnel</c> request line plus headers (terminated by a blank line). The
         /// session <paramref name="cookie"/> is sent as <c>Cookie: webvpn=…</c>; the requested MTU (when given) goes in
-        /// <c>X-CSTP-Base-MTU</c>. When <paramref name="requestDtls"/> is true the client advertises the DTLS data path:
-        /// it sends <c>X-DTLS-Master-Secret</c> (a 48-byte hex secret it generates) and the DTLS cipher suites it
-        /// supports, prompting the gateway to answer with the <c>X-DTLS-*</c> headers (session id / port / cipher). The
-        /// returned text is ASCII-ready for the TLS stream.
+        /// <c>X-CSTP-Base-MTU</c>.
+        /// <para>
+        /// The DTLS data path is advertised in one of two modes:
+        /// <list type="bullet">
+        /// <item><paramref name="requestDtlsPsk"/> — the modern <b>DTLS 1.2 PSK</b> path: the client sends
+        /// <c>X-DTLS-CipherSuite: PSK-NEGOTIATE</c> and <b>no</b> master secret (the PSK is derived from the CSTP TLS
+        /// session via an RFC 5705 exporter). The gateway echoes <c>PSK-NEGOTIATE</c> plus <c>X-DTLS-App-ID</c>/Port/MTU.</item>
+        /// <item><paramref name="requestDtls"/> — the <b>legacy</b> AnyConnect path: the client sends
+        /// <c>X-DTLS-Master-Secret</c> (a 48-byte hex secret) and an OpenSSL cipher list; the gateway echoes
+        /// <c>X-DTLS-Session-ID</c>/Port/CipherSuite.</item>
+        /// </list>
+        /// When both are requested, PSK is offered (it is the preferred path; legacy stays as the codec's fallback).
+        /// The returned text is ASCII-ready for the TLS stream.
+        /// </para>
         /// </summary>
         public static string BuildConnectRequest(string host, string cookie, int? requestedMtu = null,
-            bool requestDtls = false, string? dtlsMasterSecretHex = null)
+            bool requestDtls = false, string? dtlsMasterSecretHex = null, bool requestDtlsPsk = false)
         {
             if (string.IsNullOrEmpty(host)) throw new ArgumentException("Host required.", nameof(host));
             if (string.IsNullOrEmpty(cookie)) throw new ArgumentException("Session cookie required.", nameof(cookie));
@@ -47,9 +57,15 @@ namespace TqkLibrary.VpnClient.OpenConnect
             sb.Append("X-CSTP-Address-Type: IPv6,IPv4").Append(Crlf);
             if (requestedMtu.HasValue)
                 sb.Append("X-CSTP-Base-MTU: ").Append(requestedMtu.Value.ToString(CultureInfo.InvariantCulture)).Append(Crlf);
-            if (requestDtls)
+            if (requestDtlsPsk)
             {
-                // Advertise the DTLS data path: the master secret (legacy AnyConnect key transport) and the cipher list.
+                // Modern DTLS 1.2 PSK (ocserv >= 0.11.5): no master secret on the wire — the PSK is the RFC 5705
+                // exporter output of the CSTP TLS session. The gateway answers PSK-NEGOTIATE + X-DTLS-App-ID/Port/MTU.
+                sb.Append("X-DTLS-CipherSuite: PSK-NEGOTIATE").Append(Crlf);
+            }
+            else if (requestDtls)
+            {
+                // Legacy AnyConnect DTLS: the master secret (in-band key transport) and the OpenSSL cipher list.
                 // ocserv echoes X-DTLS-Session-ID/Port/CipherSuite when it accepts the offer.
                 sb.Append("X-DTLS-Master-Secret: ").Append(dtlsMasterSecretHex ?? string.Empty).Append(Crlf);
                 sb.Append("X-DTLS-CipherSuite: AES256-GCM-SHA384:AES128-GCM-SHA256:AES256-SHA:AES128-SHA").Append(Crlf);
@@ -127,11 +143,17 @@ namespace TqkLibrary.VpnClient.OpenConnect
                 case "x-dtls-session-id":
                     info.DtlsSessionId = value;
                     break;
+                case "x-dtls-app-id":
+                    info.DtlsAppId = value;
+                    break;
                 case "x-dtls-ciphersuite":
                     info.DtlsCipherSuite = value;
                     break;
                 case "x-dtls-port":
                     if (int.TryParse(value, out int dtlsPort)) info.DtlsPort = dtlsPort;
+                    break;
+                case "x-dtls-mtu":
+                    if (int.TryParse(value, out int dtlsMtu)) info.DtlsMtu = dtlsMtu;
                     break;
                 case "x-dtls-keepalive":
                     if (int.TryParse(value, out int dtlsKa)) info.DtlsKeepalive = dtlsKa;

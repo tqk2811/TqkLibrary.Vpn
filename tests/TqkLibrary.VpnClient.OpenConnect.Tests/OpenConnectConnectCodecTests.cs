@@ -173,5 +173,49 @@ namespace TqkLibrary.VpnClient.OpenConnect.Tests
                 "HTTP/1.1 200 OK\r\nX-CSTP-Address: 10.0.0.2\r\nX-DTLS-Session-ID: abc\r\n\r\n");
             Assert.False(noPort.HasDtls);
         }
+
+        [Fact]
+        public void BuildConnectRequest_AdvertisesPskNegotiate_WithoutMasterSecret()
+        {
+            // PSK mode: PSK-NEGOTIATE and no master secret (the PSK is the CSTP RFC 5705 exporter output).
+            string req = OpenConnectConnectCodec.BuildConnectRequest("h", "c", 1400, requestDtls: true, requestDtlsPsk: true);
+            Assert.Contains("X-DTLS-CipherSuite: PSK-NEGOTIATE\r\n", req);
+            Assert.DoesNotContain("X-DTLS-Master-Secret", req);
+        }
+
+        [Fact]
+        public void ParseConnectResponse_ParsesPskDtlsHeaders()
+        {
+            const string resp =
+                "HTTP/1.1 200 CONNECTED\r\n" +
+                "X-CSTP-Address: 10.10.10.5\r\n" +
+                "X-DTLS-CipherSuite: PSK-NEGOTIATE\r\n" +
+                "X-DTLS-App-ID: 0123456789abcdef0123456789abcdef\r\n" +
+                "X-DTLS-Port: 4443\r\n" +
+                "X-DTLS-MTU: 1390\r\n" +
+                "\r\n";
+
+            OpenConnectTunnelInfo info = OpenConnectConnectCodec.ParseConnectResponse(resp);
+            Assert.Equal("PSK-NEGOTIATE", info.DtlsCipherSuite);
+            Assert.Equal("0123456789abcdef0123456789abcdef", info.DtlsAppId);
+            Assert.Equal(4443, info.DtlsPort);
+            Assert.Equal(1390, info.DtlsMtu);
+            Assert.True(info.HasDtlsPsk);
+            Assert.False(info.HasDtls); // legacy predicate needs a session id, which the PSK path omits
+        }
+
+        [Fact]
+        public void HasDtlsPsk_FalseWithoutAppIdOrPort()
+        {
+            // PSK-NEGOTIATE echoed but no App-ID ⇒ not a usable PSK path.
+            OpenConnectTunnelInfo noAppId = OpenConnectConnectCodec.ParseConnectResponse(
+                "HTTP/1.1 200 OK\r\nX-CSTP-Address: 10.0.0.2\r\nX-DTLS-CipherSuite: PSK-NEGOTIATE\r\nX-DTLS-Port: 4443\r\n\r\n");
+            Assert.False(noAppId.HasDtlsPsk);
+
+            // An App-ID but a non-PSK cipher ⇒ legacy, not PSK.
+            OpenConnectTunnelInfo legacy = OpenConnectConnectCodec.ParseConnectResponse(
+                "HTTP/1.1 200 OK\r\nX-CSTP-Address: 10.0.0.2\r\nX-DTLS-CipherSuite: AES256-SHA\r\nX-DTLS-App-ID: abcd\r\nX-DTLS-Port: 4443\r\n\r\n");
+            Assert.False(legacy.HasDtlsPsk);
+        }
     }
 }

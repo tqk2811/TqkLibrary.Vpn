@@ -70,11 +70,20 @@ namespace TqkLibrary.VpnClient.OpenConnect.Models
 
         // ---- DTLS data path (X-DTLS-*) — the parallel UDP/DTLS tunnel the client may open alongside CSTP-over-TLS ----
 
-        /// <summary>The DTLS session id (<c>X-DTLS-Session-ID</c>), used as the cookie that ties the UDP/DTLS session to this CSTP session; null when the gateway offers no DTLS.</summary>
+        /// <summary>The DTLS session id (<c>X-DTLS-Session-ID</c>), used as the cookie that ties the UDP/DTLS session to this CSTP session (legacy path); null when the gateway offers no DTLS.</summary>
         public string? DtlsSessionId { get; set; }
 
-        /// <summary>The DTLS cipher suite the gateway selected (<c>X-DTLS-CipherSuite</c>, e.g. <c>AES256-GCM-SHA384</c>); null when unset.</summary>
+        /// <summary>
+        /// The DTLS application id (<c>X-DTLS-App-ID</c>, hex, 16–32 bytes) the <b>PSK</b> path copies, hex-decoded, into
+        /// the DTLS <c>ClientHello.session_id</c> to correlate the UDP session with the CSTP one; null on the legacy path.
+        /// </summary>
+        public string? DtlsAppId { get; set; }
+
+        /// <summary>The DTLS cipher suite the gateway selected (<c>X-DTLS-CipherSuite</c>): <c>PSK-NEGOTIATE</c> for the modern PSK path, an OpenSSL name (e.g. <c>AES256-SHA</c>) for legacy; null when unset.</summary>
         public string? DtlsCipherSuite { get; set; }
+
+        /// <summary>The DTLS MTU the gateway advertised (<c>X-DTLS-MTU</c>); falls back to the CSTP MTU when unset.</summary>
+        public int? DtlsMtu { get; set; }
 
         /// <summary>The UDP port the DTLS data path connects to (<c>X-DTLS-Port</c>); null = DTLS not offered.</summary>
         public int? DtlsPort { get; set; }
@@ -85,8 +94,16 @@ namespace TqkLibrary.VpnClient.OpenConnect.Models
         /// <summary>The DTLS dead-peer-detection interval in seconds (<c>X-DTLS-DPD</c>); falls back to <see cref="Dpd"/> when unset.</summary>
         public int? DtlsDpd { get; set; }
 
-        /// <summary>True when the gateway advertised a usable DTLS data path (a session id and a port).</summary>
+        /// <summary>True when the gateway advertised a usable <b>legacy</b> DTLS data path (a session id and a port).</summary>
         public bool HasDtls => !string.IsNullOrEmpty(DtlsSessionId) && DtlsPort.HasValue && DtlsPort.Value > 0;
+
+        /// <summary>
+        /// True when the gateway accepted the modern <b>DTLS 1.2 PSK</b> path: it echoed <c>X-DTLS-CipherSuite:
+        /// PSK-NEGOTIATE</c> and supplied an App-ID and a port. The PSK path is preferred over <see cref="HasDtls"/>.
+        /// </summary>
+        public bool HasDtlsPsk =>
+            string.Equals(DtlsCipherSuite?.Trim(), "PSK-NEGOTIATE", StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrEmpty(DtlsAppId) && DtlsPort.HasValue && DtlsPort.Value > 0;
 
         /// <summary>Maps the parsed headers onto a <see cref="TunnelConfig"/> for the userspace stack.</summary>
         public TunnelConfig ToTunnelConfig()

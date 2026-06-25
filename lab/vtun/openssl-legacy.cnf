@@ -1,0 +1,18 @@
+# Activates BOTH the default and the legacy OpenSSL providers. Required on Ubuntu 24.04 (OpenSSL 3.0+) so vtund 3.0.4's
+# Blowfish ciphers (EVP_bf_ecb, the `encrypt yes` default) resolve — Blowfish moved to the legacy provider in OpenSSL 3.0
+# and is NOT loaded by default, so without this vtund's encrypt module fails to init and the session closes immediately.
+# Point vtund at it with OPENSSL_CONF=/path/openssl-legacy.cnf (see README §"encrypt").
+openssl_conf = openssl_init
+
+[openssl_init]
+providers = provider_sect
+
+[provider_sect]
+default = default_sect
+legacy = legacy_sect
+
+[default_sect]
+activate = 1
+
+[legacy_sect]
+activate = 1

@@ -4,6 +4,13 @@
     <Description>TLS-over-TCP byte-stream transport: a concrete ITlsByteStream that wraps a Transport.Tcp TcpByteStream in an SslStream and runs the client TLS handshake. It is the single shared TLS transport the SSTP, SoftEther and OpenConnect drivers ride (roadmap F.1). The server certificate is captured (SSTP's crypto binding needs it); validation accepts any certificate by default — these protocols bind identity through their own auth/crypto binding, not PKI — unless a RemoteCertificateValidationCallback is supplied (roadmap P0.6). Cancellation is honoured on both target frameworks.</Description>
   </PropertyGroup>
 
+  <!-- BouncyCastle backs BouncyCastleTlsByteStream only (the SslStream-based TlsByteStream needs no BC): it is the one
+       TLS engine that exposes an RFC 5705 keying-material exporter on netstandard2.0/net8.0, which the OpenConnect
+       DTLS-PSK data path derives its pre-shared key from. Same version as Transport.Dtls. -->
+  <ItemGroup>
+    <PackageReference Include="BouncyCastle.Cryptography" Version="2.4.0" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\TqkLibrary.VpnClient.Abstractions\TqkLibrary.VpnClient.Abstractions.csproj" />
     <ProjectReference Include="..\TqkLibrary.VpnClient.Transport.Tcp\TqkLibrary.VpnClient.Transport.Tcp.csproj" />

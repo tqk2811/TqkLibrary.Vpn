@@ -13,7 +13,7 @@ Nhóm encapsulation đơn giản nhất: bọc một gói IP trong một gói IP
 - **Tầng:** PROTOCOL (data-plane encapsulation) — phơi `IPacketChannel`, nằm dưới tầng DRIVER ([`Drivers.IpEncap`](../TqkLibrary.VpnClient.Drivers.IpEncap) — đã có, phase b).
 - **Target frameworks:** `netstandard2.0; net8.0` (kế thừa [src/Directory.Build.props](../Directory.Build.props)).
 - **Phụ thuộc (ProjectReference) — CHỈ Abstractions** (`IDatagramTransport`, `IPacketChannel`, `LinkMedium`; `ILogger`/`NullLogger` lấy qua transitive `Microsoft.Extensions.Logging.Abstractions` của Abstractions). **Không** ref Transport.RawIp.
-- **Được dùng bởi:** [`TqkLibrary.VpnClient.Drivers.IpEncap`](../TqkLibrary.VpnClient.Drivers.IpEncap) (V.8 phase b — ráp các kênh này trên raw-IP transport theo proto-number) và [IpEncap.Tests](../../tests/TqkLibrary.VpnClient.IpEncap.Tests) (test offline).
+- **Được dùng bởi:** [`TqkLibrary.VpnClient.Drivers.IpEncap`](../TqkLibrary.VpnClient.Drivers.IpEncap) (V.8 phase b — ráp các kênh này trên raw-IP transport theo proto-number), [`TqkLibrary.VpnClient.Drivers.GreInUdp`](../TqkLibrary.VpnClient.Drivers.GreInUdp) (V.8d — tái dùng `GreTunnelChannel`/`GreCodec` qua transport **UDP/4754** thay raw-IP, GRE-in-UDP RFC 8086, KHÔNG elevate) và [IpEncap.Tests](../../tests/TqkLibrary.VpnClient.IpEncap.Tests) (test offline).
 
 ## Cấu trúc thư mục
 

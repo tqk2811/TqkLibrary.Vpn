@@ -49,6 +49,7 @@ TqkLibrary.VpnClient.Ipsec/
 │  └─ EspConstants.cs           Hằng số/helper header ESP (SPI 4B + Sequence 4B)
 │  (cửa sổ chống replay `AntiReplayWindow` nay ở project Crypto, dùng chung ESP + OpenVPN AEAD)
 └─ Ike/                         Internet Key Exchange — control plane
+   ├─ IkeRandom.cs               Helper RNG dùng chung (SPI/nonce/cookie non-zero) — gom boilerplate RandomNumberGenerator của IkeV1Client/IkeClient/IkeSaInitiator
    ├─ V1/                       ISAKMP/IKEv1 — ĐANG CHẠY THỰC TẾ (L2TP/IPsec)
    │  ├─ IkeV1Client.cs         Client initiator: MM1–MM6, **AG1–AG3 (Aggressive)**, **XAUTH + Mode-Config (Transaction)**, QM1–QM3 (transport/tunnel), rekey (Phase 1+2), DPD, Delete (điểm vào chính)
    │  ├─ IkeV1KeyMaterial.cs    SKEYID / SKEYID_d/a/e + khóa Phase 1 + IV đầu (RFC 2409 §5)

@@ -78,7 +78,7 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.V2
             _responderSelectors = responderSelectors;
             _initiator = new IkeSaInitiator(initiatorSpi);
             _currentInitiatorSpi = _initiator.InitiatorSpi;
-            ChildInboundSpi = RandomSpi();
+            ChildInboundSpi = IkeRandom.NextBytes(4);
         }
 
         /// <summary>The certificate the responder presented in IKE_AUTH (digital-signature auth), or null for PSK.</summary>
@@ -470,8 +470,8 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.V2
         /// </summary>
         public byte[] BuildRekeyChildSaRequest()
         {
-            byte[] newInboundSpi = RandomSpi();
-            byte[] newNonce = RandomNonce();
+            byte[] newInboundSpi = IkeRandom.NextBytes(4);
+            byte[] newNonce = IkeRandom.NextBytes(32);
             _rekeyInboundSpi = newInboundSpi;
             _rekeyNonce = newNonce;
 
@@ -555,8 +555,8 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.V2
         {
             if (_cipher is null) throw new InvalidOperationException("IKE SA not established.");
 
-            byte[] newSpi = RandomNonZeroSpi();
-            byte[] newNonce = RandomNonce();
+            byte[] newSpi = IkeRandom.NextNonZeroBytes(8);
+            byte[] newNonce = IkeRandom.NextBytes(32);
             _ikeRekeyPrivateKey = _ikeRekeyDh.GeneratePrivateKey();
             byte[] publicValue = _ikeRekeyDh.DerivePublicValue(_ikeRekeyPrivateKey);
             _ikeRekeyInitiatorSpi = newSpi;
@@ -660,31 +660,5 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.V2
             return fallback;
         }
 
-        static byte[] RandomSpi()
-        {
-            byte[] spi = new byte[4];
-            using var rng = RandomNumberGenerator.Create();
-            rng.GetBytes(spi);
-            return spi;
-        }
-
-        static byte[] RandomNonZeroSpi()
-        {
-            byte[] spi = new byte[8]; // IKE SPIs are 8 bytes and MUST be non-zero (RFC 7296 §3.1)
-            using var rng = RandomNumberGenerator.Create();
-            rng.GetBytes(spi);
-            bool allZero = true;
-            foreach (byte b in spi) if (b != 0) { allZero = false; break; }
-            if (allZero) spi[0] = 1;
-            return spi;
-        }
-
-        static byte[] RandomNonce()
-        {
-            byte[] nonce = new byte[32];
-            using var rng = RandomNumberGenerator.Create();
-            rng.GetBytes(nonce);
-            return nonce;
-        }
     }
 }

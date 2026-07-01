@@ -76,10 +76,10 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.V1
             _localIdentity = localIdentity;
             _remoteIdentity = remoteIdentity;
             _logger = logger ?? NullLogger.Instance;
-            InitiatorCookie = initiatorCookie ?? RandomNonZero(8);
-            _nonceInitiator = RandomBytes(16);
-            _quickModeNonce = RandomBytes(16);
-            ChildInboundSpi = RandomBytes(4);
+            InitiatorCookie = initiatorCookie ?? IkeRandom.NextNonZeroBytes(8);
+            _nonceInitiator = IkeRandom.NextBytes(16);
+            _quickModeNonce = IkeRandom.NextBytes(16);
+            ChildInboundSpi = IkeRandom.NextBytes(4);
         }
 
         /// <summary>Our 8-byte initiator cookie (Phase 1 SPI).</summary>
@@ -374,7 +374,7 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.V1
         /// <summary>QM1: encrypted HASH(1) + ESP SA + Ni + IDci + IDcr.</summary>
         public byte[] BuildQuickMode1()
         {
-            _quickModeId = RandomNonZeroUInt32();
+            _quickModeId = IkeRandom.NextNonZeroUInt32();
             var afterHash = new List<IsakmpPayload>
             {
                 PreferTunnelMode ? IkeV1Proposals.Phase2Tunnel(ChildInboundSpi) : IkeV1Proposals.Phase2(ChildInboundSpi, PreferNativeTransport),
@@ -466,9 +466,9 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.V1
         /// <summary>Rekey QM1: a brand-new Quick Mode (fresh nonce, SPI, message id) negotiating a replacement ESP SA.</summary>
         public byte[] BuildRekeyQuickMode1()
         {
-            _rekeyMessageId = RandomNonZeroUInt32();
-            _rekeyNonceInitiator = RandomBytes(16);
-            _rekeyChildInboundSpi = RandomBytes(4);
+            _rekeyMessageId = IkeRandom.NextNonZeroUInt32();
+            _rekeyNonceInitiator = IkeRandom.NextBytes(16);
+            _rekeyChildInboundSpi = IkeRandom.NextBytes(4);
             _rekeyCipher = NewDerivedIvCipher(_rekeyMessageId);
 
             var afterHash = new List<IsakmpPayload>
@@ -641,7 +641,7 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.V1
         /// </summary>
         public byte[] BuildModeConfigRequest()
         {
-            var request = new IsakmpConfigPayload { CfgType = IsakmpCfgType.Request, Identifier = (ushort)RandomNonZeroUInt32() };
+            var request = new IsakmpConfigPayload { CfgType = IsakmpCfgType.Request, Identifier = (ushort)IkeRandom.NextNonZeroUInt32() };
             request.Attributes.Add(IsakmpAttribute.Tlv(IkeV1Constants.ConfigAttribute.InternalIp4Address, Array.Empty<byte>()));
             request.Attributes.Add(IsakmpAttribute.Tlv(IkeV1Constants.ConfigAttribute.InternalIp4Netmask, Array.Empty<byte>()));
             request.Attributes.Add(IsakmpAttribute.Tlv(IkeV1Constants.ConfigAttribute.InternalIp4Dns, Array.Empty<byte>()));
@@ -704,7 +704,7 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.V1
         // (Mode-Config CFG_REQUEST); a reply/ack to a server-initiated Transaction must echo the server's Message ID
         // (RFC 2408 §4.6 / §5.5 — a Transaction is a single exchange whose request and response share one M-ID), so use
         // the <see cref="BuildTransaction(IsakmpConfigPayload, uint)"/> overload there.
-        byte[] BuildTransaction(IsakmpConfigPayload config) => BuildTransaction(config, RandomNonZeroUInt32());
+        byte[] BuildTransaction(IsakmpConfigPayload config) => BuildTransaction(config, IkeRandom.NextNonZeroUInt32());
 
         // Builds a HASH(1)-prefixed Transaction exchange under the given Message ID. The XAUTH CFG_REPLY/ACK and the
         // Mode-Config CFG_ACK MUST reuse the Message ID of the server-initiated request/set they answer — otherwise the
@@ -874,7 +874,7 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.V1
         /// <summary>Wraps <paramref name="afterHash"/> in a HASH(1)-prefixed Informational message under a fresh message id.</summary>
         byte[] BuildInformational(List<IsakmpPayload> afterHash)
         {
-            uint messageId = RandomNonZeroUInt32();
+            uint messageId = IkeRandom.NextNonZeroUInt32();
 
             var afterHashBytes = new List<byte>();
             IsakmpMessage.EncodePayloadChain(afterHashBytes, afterHash);
@@ -1065,28 +1065,5 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.V1
             return true;
         }
 
-        static byte[] RandomBytes(int length)
-        {
-            byte[] buffer = new byte[length];
-            using var rng = RandomNumberGenerator.Create();
-            rng.GetBytes(buffer);
-            return buffer;
-        }
-
-        static byte[] RandomNonZero(int length)
-        {
-            byte[] buffer = RandomBytes(length);
-            bool allZero = true;
-            foreach (byte b in buffer) if (b != 0) { allZero = false; break; }
-            if (allZero) buffer[0] = 1;
-            return buffer;
-        }
-
-        static uint RandomNonZeroUInt32()
-        {
-            byte[] b = RandomBytes(4);
-            uint value = (uint)((b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]);
-            return value == 0 ? 1u : value;
-        }
     }
 }

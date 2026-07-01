@@ -22,10 +22,10 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.V2
         /// <summary>Creates an initiator, optionally with a caller-supplied 8-byte initiator SPI (else random non-zero).</summary>
         public IkeSaInitiator(byte[]? initiatorSpi = null)
         {
-            InitiatorSpi = initiatorSpi ?? RandomNonZeroSpi();
+            InitiatorSpi = initiatorSpi ?? IkeRandom.NextNonZeroBytes(8);
             _privateKey = _dhGroup.GeneratePrivateKey();
             PublicKey = _dhGroup.DerivePublicValue(_privateKey);
-            Nonce = RandomBytes(NonceSize);
+            Nonce = IkeRandom.NextBytes(NonceSize);
         }
 
         /// <summary>Our 8-byte initiator SPI.</summary>
@@ -111,21 +111,5 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.V2
             return Keys;
         }
 
-        static byte[] RandomBytes(int length)
-        {
-            byte[] buffer = new byte[length];
-            using var rng = RandomNumberGenerator.Create();
-            rng.GetBytes(buffer);
-            return buffer;
-        }
-
-        static byte[] RandomNonZeroSpi()
-        {
-            byte[] spi = RandomBytes(8);
-            bool allZero = true;
-            foreach (byte b in spi) if (b != 0) { allZero = false; break; }
-            if (allZero) spi[0] = 1;
-            return spi;
-        }
     }
 }

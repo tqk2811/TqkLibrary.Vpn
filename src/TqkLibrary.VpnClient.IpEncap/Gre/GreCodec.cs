@@ -1,5 +1,6 @@
 using System;
 using System.Buffers.Binary;
+using TqkLibrary.VpnClient.Abstractions.Net;
 
 namespace TqkLibrary.VpnClient.IpEncap.Gre
 {
@@ -83,7 +84,7 @@ namespace TqkLibrary.VpnClient.IpEncap.Gre
             {
                 // RFC 2784: checksum is the IP (one's-complement) checksum of the GRE header + payload, with the
                 // Checksum field itself taken as zero (it already is).
-                ushort sum = OnesComplementChecksum(buffer);
+                ushort sum = InternetChecksum.Compute(buffer);
                 BinaryPrimitives.WriteUInt16BigEndian(buffer.AsSpan(checksumOffset), sum);
             }
             return buffer;
@@ -118,7 +119,7 @@ namespace TqkLibrary.VpnClient.IpEncap.Gre
                 if (datagram.Length < offset + 4) return false;
                 checksum = BinaryPrimitives.ReadUInt16BigEndian(datagram.Slice(offset));
                 // RFC 2784: the one's-complement sum over the whole datagram (incl. the checksum field) must be zero.
-                if (OnesComplementChecksum(datagram) != 0) return false;
+                if (InternetChecksum.Compute(datagram) != 0) return false;
                 offset += 4; // Checksum(2) + Reserved1(2)
             }
 
@@ -152,20 +153,6 @@ namespace TqkLibrary.VpnClient.IpEncap.Gre
                 Payload = payload,
             };
             return true;
-        }
-
-        /// <summary>The standard Internet one's-complement 16-bit checksum (RFC 1071) over <paramref name="data"/>.</summary>
-        static ushort OnesComplementChecksum(ReadOnlySpan<byte> data)
-        {
-            uint sum = 0;
-            int i = 0;
-            for (; i + 1 < data.Length; i += 2)
-                sum += (uint)((data[i] << 8) | data[i + 1]);
-            if (i < data.Length)
-                sum += (uint)(data[i] << 8); // odd trailing byte padded with zero
-            while ((sum >> 16) != 0)
-                sum = (sum & 0xFFFF) + (sum >> 16);
-            return (ushort)~sum;
         }
     }
 }

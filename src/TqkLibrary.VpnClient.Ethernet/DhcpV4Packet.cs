@@ -1,5 +1,6 @@
 using System;
 using System.Net;
+using TqkLibrary.VpnClient.Abstractions.Net;
 
 namespace TqkLibrary.VpnClient.Ethernet
 {
@@ -128,7 +129,7 @@ namespace TqkLibrary.VpnClient.Ethernet
             // header checksum (10..12) computed below
             source.GetAddressBytes().CopyTo(packet, 12);
             destination.GetAddressBytes().CopyTo(packet, 16);
-            ushort ipChecksum = Checksum(packet.AsSpan(0, Ipv4HeaderLength));
+            ushort ipChecksum = InternetChecksum.Compute(packet.AsSpan(0, Ipv4HeaderLength));
             packet[10] = (byte)(ipChecksum >> 8);
             packet[11] = (byte)ipChecksum;
 
@@ -185,35 +186,10 @@ namespace TqkLibrary.VpnClient.Ethernet
         static ushort UdpChecksum(IPAddress source, IPAddress destination, ReadOnlySpan<byte> udpDatagram)
         {
             // IPv4 UDP pseudo-header (RFC 768): src(4) + dst(4) + zero(1) + protocol(1) + UDP length(2), then the datagram.
-            uint sum = 0;
-            byte[] s = source.GetAddressBytes();
-            byte[] d = destination.GetAddressBytes();
-            sum += (uint)((s[0] << 8) | s[1]);
-            sum += (uint)((s[2] << 8) | s[3]);
-            sum += (uint)((d[0] << 8) | d[1]);
-            sum += (uint)((d[2] << 8) | d[3]);
-            sum += 17;                                          // protocol
-            sum += (uint)udpDatagram.Length;                   // UDP length
-            sum += SumWords(udpDatagram);
-            ushort folded = Fold(sum);
+            uint sum = InternetChecksum.PseudoHeaderSum(source, destination, 17 /* UDP */, udpDatagram.Length);
+            sum = InternetChecksum.AddData(sum, udpDatagram);
+            ushort folded = InternetChecksum.Finish(sum);
             return folded == 0 ? (ushort)0xFFFF : folded;       // RFC 768: a computed 0 is transmitted as all-ones
-        }
-
-        static ushort Checksum(ReadOnlySpan<byte> header) => Fold(SumWords(header));
-
-        static uint SumWords(ReadOnlySpan<byte> data)
-        {
-            uint sum = 0;
-            int i = 0;
-            for (; i + 1 < data.Length; i += 2) sum += (uint)((data[i] << 8) | data[i + 1]);
-            if (i < data.Length) sum += (uint)(data[i] << 8);
-            return sum;
-        }
-
-        static ushort Fold(uint sum)
-        {
-            while ((sum >> 16) != 0) sum = (sum & 0xFFFF) + (sum >> 16);
-            return (ushort)~sum;
         }
 
         static uint ReadUInt32(ReadOnlySpan<byte> b, int offset)

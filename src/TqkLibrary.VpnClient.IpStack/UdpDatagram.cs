@@ -1,4 +1,5 @@
 using System.Net;
+using TqkLibrary.VpnClient.Abstractions.Net;
 
 namespace TqkLibrary.VpnClient.IpStack
 {
@@ -42,10 +43,7 @@ namespace TqkLibrary.VpnClient.IpStack
         {
             // Pseudo-header drives the address-family difference (4-byte IPv4 vs 16-byte IPv6 addresses); the rest is identical.
             uint sum = InternetChecksum.PseudoHeaderSum(sourceIp, destinationIp, 17 /* UDP */, datagram.Length);
-            for (int i = 0; i + 1 < datagram.Length; i += 2)
-                sum += (uint)((datagram[i] << 8) | datagram[i + 1]);
-            if ((datagram.Length & 1) != 0)
-                sum += (uint)(datagram[datagram.Length - 1] << 8);
+            sum = InternetChecksum.AddData(sum, datagram);
             return InternetChecksum.Finish(sum);
         }
     }

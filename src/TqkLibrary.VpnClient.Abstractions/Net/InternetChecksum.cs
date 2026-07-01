@@ -1,6 +1,6 @@
 using System.Net;
 
-namespace TqkLibrary.VpnClient.IpStack
+namespace TqkLibrary.VpnClient.Abstractions.Net
 {
     /// <summary>The one's-complement Internet checksum (RFC 1071) used by IPv4, TCP, UDP and ICMP.</summary>
     public static class InternetChecksum
@@ -25,19 +25,19 @@ namespace TqkLibrary.VpnClient.IpStack
             return sum;
         }
 
-        /// <summary>Computes the 16-bit Internet checksum over <paramref name="data"/>.</summary>
-        public static ushort Compute(ReadOnlySpan<byte> data)
+        /// <summary>Adds <paramref name="data"/>'s 16-bit big-endian words into an existing running sum (odd tail byte high-padded).</summary>
+        public static uint AddData(uint sum, ReadOnlySpan<byte> data)
         {
-            uint sum = 0;
             int i = 0;
             for (; i + 1 < data.Length; i += 2)
                 sum += (uint)((data[i] << 8) | data[i + 1]);
             if (i < data.Length)
                 sum += (uint)(data[i] << 8);
-            while ((sum >> 16) != 0)
-                sum = (sum & 0xFFFF) + (sum >> 16);
-            return (ushort)~sum;
+            return sum;
         }
+
+        /// <summary>Computes the 16-bit Internet checksum over <paramref name="data"/>.</summary>
+        public static ushort Compute(ReadOnlySpan<byte> data) => Finish(AddData(0, data));
 
         /// <summary>Folds an already-accumulated 32-bit sum into the final 16-bit checksum.</summary>
         public static ushort Finish(uint sum)

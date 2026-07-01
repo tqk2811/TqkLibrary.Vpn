@@ -1,6 +1,7 @@
 using System;
 using System.Net;
 using System.Net.Sockets;
+using TqkLibrary.VpnClient.Abstractions.Net;
 
 namespace TqkLibrary.VpnClient.Ethernet
 {
@@ -311,7 +312,7 @@ namespace TqkLibrary.VpnClient.Ethernet
 
         /// <summary>True if the pseudo-header checksum over <paramref name="message"/> verifies (folds to 0).</summary>
         public static bool VerifyChecksum(ReadOnlySpan<byte> message, IPAddress source, IPAddress destination)
-            => FinishChecksum(PseudoHeaderSum(source, destination, message.Length) + ChecksumBody(message)) == 0;
+            => InternetChecksum.Finish(InternetChecksum.AddData(InternetChecksum.PseudoHeaderSum(source, destination, ProtocolNumber, message.Length), message)) == 0;
 
         // ---- Internals ----
 
@@ -340,40 +341,9 @@ namespace TqkLibrary.VpnClient.Ethernet
         {
             // The checksum field (bytes 2..4) must be zero while summing.
             message[2] = 0; message[3] = 0;
-            ushort checksum = FinishChecksum(PseudoHeaderSum(source, destination, message.Length) + ChecksumBody(message));
+            ushort checksum = InternetChecksum.Finish(InternetChecksum.AddData(InternetChecksum.PseudoHeaderSum(source, destination, ProtocolNumber, message.Length), message));
             message[2] = (byte)(checksum >> 8);
             message[3] = (byte)checksum;
-        }
-
-        // IPv6 pseudo-header for the upper-layer checksum (RFC 8200 §8.1): 16-byte src + 16-byte dst + 32-bit
-        // upper-layer length + 24 zero bits + next-header. Computed here instead of referencing the IpStack project
-        // to keep the L2 codec free of a horizontal dependency.
-        static uint PseudoHeaderSum(IPAddress source, IPAddress destination, int upperLayerLength)
-        {
-            uint sum = 0;
-            byte[] s = source.GetAddressBytes();
-            byte[] d = destination.GetAddressBytes();
-            for (int i = 0; i + 1 < s.Length; i += 2) sum += (uint)((s[i] << 8) | s[i + 1]);
-            for (int i = 0; i + 1 < d.Length; i += 2) sum += (uint)((d[i] << 8) | d[i + 1]);
-            sum += (uint)((upperLayerLength >> 16) & 0xFFFF);
-            sum += (uint)(upperLayerLength & 0xFFFF);
-            sum += ProtocolNumber;
-            return sum;
-        }
-
-        static uint ChecksumBody(ReadOnlySpan<byte> message)
-        {
-            uint sum = 0;
-            int i = 0;
-            for (; i + 1 < message.Length; i += 2) sum += (uint)((message[i] << 8) | message[i + 1]);
-            if (i < message.Length) sum += (uint)(message[i] << 8);
-            return sum;
-        }
-
-        static ushort FinishChecksum(uint sum)
-        {
-            while ((sum >> 16) != 0) sum = (sum & 0xFFFF) + (sum >> 16);
-            return (ushort)~sum;
         }
 
         static uint ReadUInt32(ReadOnlySpan<byte> b, int offset)

@@ -1,4 +1,5 @@
 using System.Net;
+using TqkLibrary.VpnClient.Abstractions.Net;
 
 namespace TqkLibrary.VpnClient.IpStack
 {
@@ -111,16 +112,14 @@ namespace TqkLibrary.VpnClient.IpStack
         public static bool VerifyChecksum(ReadOnlySpan<byte> msg, IPAddress source, IPAddress destination)
         {
             uint sum = InternetChecksum.PseudoHeaderSum(source, destination, ProtocolNumber, msg.Length);
-            for (int i = 0; i + 1 < msg.Length; i += 2) sum += (uint)((msg[i] << 8) | msg[i + 1]);
-            if ((msg.Length & 1) != 0) sum += (uint)(msg[msg.Length - 1] << 8);
+            sum = InternetChecksum.AddData(sum, msg);
             return InternetChecksum.Finish(sum) == 0;
         }
 
         static void WriteChecksum(byte[] msg, IPAddress source, IPAddress destination)
         {
             uint sum = InternetChecksum.PseudoHeaderSum(source, destination, ProtocolNumber, msg.Length);
-            for (int i = 0; i + 1 < msg.Length; i += 2) sum += (uint)((msg[i] << 8) | msg[i + 1]);
-            if ((msg.Length & 1) != 0) sum += (uint)(msg[msg.Length - 1] << 8);
+            sum = InternetChecksum.AddData(sum, msg);
             ushort checksum = InternetChecksum.Finish(sum);
             msg[2] = (byte)(checksum >> 8);
             msg[3] = (byte)checksum;

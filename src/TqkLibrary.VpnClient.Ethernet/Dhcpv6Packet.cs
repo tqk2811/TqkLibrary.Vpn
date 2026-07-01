@@ -1,5 +1,6 @@
 using System;
 using System.Net;
+using TqkLibrary.VpnClient.Abstractions.Net;
 
 namespace TqkLibrary.VpnClient.Ethernet
 {
@@ -134,32 +135,10 @@ namespace TqkLibrary.VpnClient.Ethernet
         static ushort UdpChecksum(IPAddress source, IPAddress destination, ReadOnlySpan<byte> udpDatagram)
         {
             // IPv6 pseudo-header (RFC 8200 §8.1): src(16) + dst(16) + upper-layer length(4) + zero(3) + next-header(1).
-            uint sum = 0;
-            byte[] s = source.GetAddressBytes();
-            byte[] d = destination.GetAddressBytes();
-            for (int i = 0; i + 1 < s.Length; i += 2) sum += (uint)((s[i] << 8) | s[i + 1]);
-            for (int i = 0; i + 1 < d.Length; i += 2) sum += (uint)((d[i] << 8) | d[i + 1]);
-            sum += (uint)((udpDatagram.Length >> 16) & 0xFFFF);
-            sum += (uint)(udpDatagram.Length & 0xFFFF);
-            sum += UdpProtocol;
-            sum += SumWords(udpDatagram);
-            ushort folded = Fold(sum);
+            uint sum = InternetChecksum.PseudoHeaderSum(source, destination, UdpProtocol, udpDatagram.Length);
+            sum = InternetChecksum.AddData(sum, udpDatagram);
+            ushort folded = InternetChecksum.Finish(sum);
             return folded == 0 ? (ushort)0xFFFF : folded;   // RFC 8200: a computed 0 is transmitted as all-ones
-        }
-
-        static uint SumWords(ReadOnlySpan<byte> data)
-        {
-            uint sum = 0;
-            int i = 0;
-            for (; i + 1 < data.Length; i += 2) sum += (uint)((data[i] << 8) | data[i + 1]);
-            if (i < data.Length) sum += (uint)(data[i] << 8);
-            return sum;
-        }
-
-        static ushort Fold(uint sum)
-        {
-            while ((sum >> 16) != 0) sum = (sum & 0xFFFF) + (sum >> 16);
-            return (ushort)~sum;
         }
     }
 }

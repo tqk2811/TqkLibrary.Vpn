@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Net;
+using TqkLibrary.VpnClient.Abstractions.Net;
 using TqkLibrary.VpnClient.IpStack;
 using TqkLibrary.VpnClient.IpStack.Tcp;
 using TqkLibrary.VpnClient.IpStack.Tcp.Enums;

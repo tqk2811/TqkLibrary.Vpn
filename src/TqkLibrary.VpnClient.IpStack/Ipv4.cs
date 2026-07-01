@@ -1,4 +1,5 @@
 using System.Net;
+using TqkLibrary.VpnClient.Abstractions.Net;
 
 namespace TqkLibrary.VpnClient.IpStack
 {

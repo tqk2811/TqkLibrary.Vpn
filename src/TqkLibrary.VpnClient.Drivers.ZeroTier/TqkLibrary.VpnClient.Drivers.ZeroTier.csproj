@@ -6,7 +6,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\TqkLibrary.VpnClient.Abstractions\TqkLibrary.VpnClient.Abstractions.csproj" />
-    <ProjectReference Include="..\TqkLibrary.VpnClient.Crypto\TqkLibrary.VpnClient.Crypto.csproj" />
     <ProjectReference Include="..\TqkLibrary.VpnClient.Drivers.Core\TqkLibrary.VpnClient.Drivers.Core.csproj" />
     <ProjectReference Include="..\TqkLibrary.VpnClient.Ethernet\TqkLibrary.VpnClient.Ethernet.csproj" />
     <ProjectReference Include="..\TqkLibrary.VpnClient.ZeroTier\TqkLibrary.VpnClient.ZeroTier.csproj" />

@@ -53,6 +53,7 @@ TqkLibrary.VpnClient.Tailscale/
 │  ├─ ITailscaleControlClient.cs   # interface (driver phụ thuộc; fake netmap được offline)
 │  ├─ TailscaleControlClient.cs    # orchestrator (net5+): /key -> noise -> register -> map
 │  ├─ Ts2021Connector.cs           # HTTP upgrade /ts2021 + Noise IK -> Ts2021NoiseStream
+│  ├─ StreamReadExtensions.cs      # Stream.ReadExactlyAsync dùng chung (gom 2 bản ReadExact của Control/)
 │  └─ TailscaleControlException.cs
 ├─ Netmap/
 │  └─ NetmapToWireGuardConfig.cs   # MapResponse -> WireGuardConfig đa-peer

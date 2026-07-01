@@ -150,11 +150,11 @@ namespace TqkLibrary.VpnClient.Tailscale.Control
         static async Task<byte[]> ReadResponseFrameAsync(Stream stream, CancellationToken cancellationToken)
         {
             byte[] header = new byte[Ts2021FrameCodec.HeaderLength];
-            await ReadExactAsync(stream, header, cancellationToken).ConfigureAwait(false);
+            await stream.ReadExactlyAsync(header, cancellationToken).ConfigureAwait(false);
             if (!Ts2021FrameCodec.TryDecodeHeader(header, out Ts2021FrameType type, out int length))
                 throw new IOException("Malformed ts2021 response header.");
             byte[] body = new byte[length];
-            await ReadExactAsync(stream, body, cancellationToken).ConfigureAwait(false);
+            await stream.ReadExactlyAsync(body, cancellationToken).ConfigureAwait(false);
             if (type == Ts2021FrameType.Error)
                 throw new IOException("ts2021 handshake error: " + Encoding.ASCII.GetString(body));
             if (type != Ts2021FrameType.Response)
@@ -162,15 +162,5 @@ namespace TqkLibrary.VpnClient.Tailscale.Control
             return body;
         }
 
-        static async Task ReadExactAsync(Stream stream, byte[] destination, CancellationToken cancellationToken)
-        {
-            int read = 0;
-            while (read < destination.Length)
-            {
-                int n = await stream.ReadAsync(destination, read, destination.Length - read, cancellationToken).ConfigureAwait(false);
-                if (n == 0) throw new EndOfStreamException("Truncated ts2021 handshake frame.");
-                read += n;
-            }
-        }
     }
 }

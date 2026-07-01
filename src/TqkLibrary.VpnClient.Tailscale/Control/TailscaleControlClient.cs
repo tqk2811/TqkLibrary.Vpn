@@ -217,23 +217,12 @@ namespace TqkLibrary.VpnClient.Tailscale.Control
         static async Task<byte[]> ReadFramedBlockAsync(Stream stream, CancellationToken cancellationToken)
         {
             byte[] header = new byte[4];
-            await ReadExactAsync(stream, header, cancellationToken).ConfigureAwait(false);
+            await stream.ReadExactlyAsync(header, cancellationToken).ConfigureAwait(false);
             int length = (int)BinaryPrimitives.ReadUInt32LittleEndian(header);
             if (length < 0 || length > 64 * 1024 * 1024) throw new TailscaleControlException($"Implausible map block length {length}.");
             byte[] payload = new byte[length];
-            if (length > 0) await ReadExactAsync(stream, payload, cancellationToken).ConfigureAwait(false);
+            if (length > 0) await stream.ReadExactlyAsync(payload, cancellationToken).ConfigureAwait(false);
             return payload;
-        }
-
-        static async Task ReadExactAsync(Stream stream, byte[] destination, CancellationToken cancellationToken)
-        {
-            int read = 0;
-            while (read < destination.Length)
-            {
-                int n = await stream.ReadAsync(destination.AsMemory(read, destination.Length - read), cancellationToken).ConfigureAwait(false);
-                if (n == 0) throw new EndOfStreamException("Map response stream closed mid-block.");
-                read += n;
-            }
         }
 
         async Task<byte[]> PostAsync(string path, byte[] body, bool stream, CancellationToken cancellationToken)

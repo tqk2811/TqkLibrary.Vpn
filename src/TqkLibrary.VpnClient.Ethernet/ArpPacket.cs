@@ -18,7 +18,7 @@ namespace TqkLibrary.VpnClient.Ethernet
         public const ushort HardwareTypeEthernet = 1;
 
         /// <summary>Protocol type for IPv4 (same value as the IPv4 EtherType).</summary>
-        public const ushort ProtocolTypeIpv4 = 0x0800;
+        public const ushort ProtocolTypeIpv4 = EthernetFrame.EtherTypeIpv4;
 
         /// <summary>Hardware address length for Ethernet (6 octets).</summary>
         public const byte HardwareAddressLength = 6;

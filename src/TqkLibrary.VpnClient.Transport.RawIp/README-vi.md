@@ -23,7 +23,7 @@ TqkLibrary.VpnClient.Transport.RawIp/
 ├── NativeRawSocket.cs                      Mở raw socket cho protocol tùy ý: Unix qua libc socket() (P/Invoke) vì .NET managed Socket từ chối proto lạ; Windows/ns2.0 fallback managed ctor
 ├── RawIpTransportFactory.cs               IRawIpTransportFactory production: probe quyền thật + mở raw socket (qua NativeRawSocket), ném RawIpNotPermittedException khi thiếu
 ├── RawIpPrivilegeChecker.cs               IPrivilegeChecker mặc định: Windows Admin / Linux geteuid (chỉ để soạn message lỗi)
-├── RawIpProtocols.cs                      hằng IANA: Esp=50, Gre=47, IpIp=4, Sit=41
+├── RawIpProtocols.cs                      hằng IANA: Esp=50, Gre=47, IpIp=4, Sit=41 (nay forward về IpProtocol ở Abstractions — nguồn duy nhất)
 ├── Helpers/
 │   └── RawIpv4.cs                         codec thuần: PayloadOffset (IHL, validate) / IsFragment / Protocol / SourceAddress
 ├── Interfaces/
@@ -44,7 +44,7 @@ TqkLibrary.VpnClient.Transport.RawIp/
 | `RawIpv4` | codec thuần (pure): `PayloadOffset` (IHL×4, validate `ihl≥20` & `len≥ihl`), `IsFragment` (MF flag/offset≠0), `Protocol` (byte 9), `SourceAddress` (byte 12-15) | [Helpers/RawIpv4.cs:11](Helpers/RawIpv4.cs#L11) |
 | `RawIpPrivilegeChecker` | `IPrivilegeChecker` mặc định: Windows `WindowsPrincipal.IsInRole(Administrator)` (net5+), Linux/macOS `geteuid()==0` qua một P/Invoke libc (không Mono.Posix) — **chỉ best-effort cho message**, không phải cổng quyết định | [RawIpPrivilegeChecker.cs:14](RawIpPrivilegeChecker.cs#L14) |
 | `RawIpNotPermittedException` | ném khi raw socket không mở được; message nêu cần elevate + cảnh báo Windows có thể nuốt proto-50 | [Exceptions/RawIpNotPermittedException.cs:9](Exceptions/RawIpNotPermittedException.cs#L9) |
-| `RawIpProtocols` | hằng IANA: `Esp=50`, `Gre=47`, `IpIp=4` (RFC 2003), `Sit=41` (6in4, RFC 4213) | [RawIpProtocols.cs:4](RawIpProtocols.cs#L4) |
+| `RawIpProtocols` | hằng IANA: `Esp=50`, `Gre=47`, `IpIp=4` (RFC 2003), `Sit=41` (6in4, RFC 4213) — nay **forward** về [`IpProtocol`](../TqkLibrary.VpnClient.Abstractions/Net/IpProtocol.cs) ở Abstractions (`Esp=IpProtocol.Esp`, `Gre=IpProtocol.Gre`, `IpIp=IpProtocol.IpInIp`, `Sit=IpProtocol.Ipv6`) — **nguồn duy nhất**, giữ tên + `const int` | [RawIpProtocols.cs:4](RawIpProtocols.cs#L4) |
 
 ## Chuẩn / RFC tuân thủ
 

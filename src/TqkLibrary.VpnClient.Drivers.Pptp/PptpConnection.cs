@@ -35,7 +35,6 @@ namespace TqkLibrary.VpnClient.Drivers.Pptp
     public sealed class PptpConnection : ReconnectingVpnConnection, IDisposable, IAsyncDisposable
     {
         const string DriverNameConst = "pptp";
-        const int GreIpProtocol = 47; // IANA IP protocol number for GRE (native, no UDP encapsulation)
         const ushort DefaultLocalCallId = 0x4000; // our GRE Call-ID; the PAC echoes it back as its PeerCallId
 
         readonly string _host;
@@ -134,7 +133,7 @@ namespace TqkLibrary.VpnClient.Drivers.Pptp
             IPAddress serverIp = await _hostResolver.ResolveAsync(_host, _addressFamilyPreference, cancellationToken).ConfigureAwait(false);
             IPAddress localIp = GetLocalAddress(serverIp);
             Logger.LogHandshake(DriverName, $"PPTP GRE data plane (raw IP proto-47, localCallId={control.LocalCallId}, peerCallId={control.PeerCallId})");
-            IDatagramTransport greTransport = _rawIpFactory.Create(serverIp, GreIpProtocol, localBind: localIp);
+            IDatagramTransport greTransport = _rawIpFactory.Create(serverIp, IpProtocol.Gre, localBind: localIp);
             var gre = new PptpGreChannel(greTransport, control.LocalCallId, control.PeerCallId, Logger);
             _gre = gre;
 

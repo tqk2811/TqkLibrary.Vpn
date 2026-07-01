@@ -34,13 +34,6 @@ namespace TqkLibrary.VpnClient.Drivers.IpEncap
     {
         const string DriverNameConst = "ipencap";
 
-        // IANA IP protocol numbers carried natively over a raw-IP socket (mirror RawIpProtocols; const here so the
-        // driver depends only on the IRawIpTransportFactory abstraction, not on the Transport.RawIp project — same
-        // pattern as PPTP's GreIpProtocol const).
-        const int GreIpProtocol = 47;  // RFC 2784/2890
-        const int IpIpProtocol = 4;    // RFC 2003
-        const int SitProtocol = 41;    // RFC 4213
-
         readonly string _host;
         readonly IRawIpTransportFactory _rawIpFactory;
         readonly IpEncapOptions _options;
@@ -81,9 +74,9 @@ namespace TqkLibrary.VpnClient.Drivers.IpEncap
         // The IANA protocol number for the configured kind.
         int ProtocolNumber => _options.Kind switch
         {
-            IpEncapKind.Gre => GreIpProtocol,
-            IpEncapKind.IpIp => IpIpProtocol,
-            IpEncapKind.Sit => SitProtocol,
+            IpEncapKind.Gre => IpProtocol.Gre,
+            IpEncapKind.IpIp => IpProtocol.IpInIp,
+            IpEncapKind.Sit => IpProtocol.Ipv6,
             _ => throw new ArgumentOutOfRangeException(nameof(IpEncapOptions.Kind), _options.Kind, "Unknown IP-encapsulation kind."),
         };
 

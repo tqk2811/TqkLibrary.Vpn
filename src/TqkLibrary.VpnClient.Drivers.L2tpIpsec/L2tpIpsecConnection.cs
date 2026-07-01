@@ -51,7 +51,6 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
         static readonly TimeSpan Phase1RekeyRetry = TimeSpan.FromMinutes(2);
         static readonly TimeSpan RekeyGrace = TimeSpan.FromSeconds(10);
         const string DriverNameConst = "l2tp-ipsec";
-        const int EspIpProtocol = 50; // IANA IP protocol number for IPsec ESP (native, no UDP encapsulation)
 
         readonly string _host;
         readonly byte[] _preSharedKey;
@@ -375,7 +374,7 @@ namespace TqkLibrary.VpnClient.Drivers.L2tpIpsec
                     // IP proto-50 from the same source address IKE authenticated on. Offer plain Transport first in
                     // Quick Mode so the gateway installs a native SA (not espinudp) — otherwise it drops our proto-50.
                     ike.PreferNativeTransport = true;
-                    IDatagramTransport nativeEsp = _rawIpFactory!.Create(serverIp, EspIpProtocol, localBind: localIp);
+                    IDatagramTransport nativeEsp = _rawIpFactory!.Create(serverIp, IpProtocol.Esp, localBind: localIp);
                     _nativeEsp = nativeEsp; // publish for cleanup before any later step can fail
                     Logger.LogHandshake(DriverName, "No NAT detected — carrying ESP natively over IP proto-50 (raw socket)");
                     return (natt, ike, nativeEsp);

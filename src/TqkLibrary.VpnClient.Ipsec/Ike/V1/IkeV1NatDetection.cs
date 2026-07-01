@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Net;
 using System.Security.Cryptography;
+using TqkLibrary.VpnClient.Abstractions.Net;
 
 namespace TqkLibrary.VpnClient.Ipsec.Ike.V1
 {
@@ -13,19 +14,19 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.V1
     public static class IkeV1NatDetection
     {
         /// <summary>Vendor ID for RFC 3947 NAT-T (MD5 of "RFC 3947").</summary>
-        public static byte[] VendorIdRfc3947 { get; } = FromHex("4a131c81070358455c5728f20e95452f");
+        public static byte[] VendorIdRfc3947 { get; } = HexCodec.Decode("4a131c81070358455c5728f20e95452f");
 
         /// <summary>Vendor ID for draft-ietf-ipsec-nat-t-ike-02.</summary>
-        public static byte[] VendorIdDraft02 { get; } = FromHex("90cb80913ebb696e086381b5ec427b1f");
+        public static byte[] VendorIdDraft02 { get; } = HexCodec.Decode("90cb80913ebb696e086381b5ec427b1f");
 
         /// <summary>Vendor ID for draft-ietf-ipsec-nat-t-ike-03.</summary>
-        public static byte[] VendorIdDraft03 { get; } = FromHex("7d9419a65310ca6f2c179d9215529d56");
+        public static byte[] VendorIdDraft03 { get; } = HexCodec.Decode("7d9419a65310ca6f2c179d9215529d56");
 
         /// <summary>
         /// Vendor ID advertising XAUTH support (draft-ietf-ipsec-isakmp-xauth-06) — the well-known 8-byte
         /// <c>09002689dfd6b712</c> Cisco/strongSwan use to signal that the peer speaks Extended Authentication.
         /// </summary>
-        public static byte[] VendorIdXAuth { get; } = FromHex("09002689dfd6b712");
+        public static byte[] VendorIdXAuth { get; } = HexCodec.Decode("09002689dfd6b712");
 
         /// <summary>Computes a NAT-D hash over the cookies and an IP endpoint using the negotiated Phase 1 hash.</summary>
         public static byte[] ComputeHash(HashAlgorithmName hash, byte[] cookieInitiator, byte[] cookieResponder, IPAddress ip, ushort port)
@@ -60,14 +61,6 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.V1
             for (int i = 0; i < a.Length; i++)
                 if (a[i] != b[i]) return false;
             return true;
-        }
-
-        static byte[] FromHex(string hex)
-        {
-            byte[] bytes = new byte[hex.Length / 2];
-            for (int i = 0; i < bytes.Length; i++)
-                bytes[i] = byte.Parse(hex.Substring(i * 2, 2), NumberStyles.HexNumber, CultureInfo.InvariantCulture);
-            return bytes;
         }
     }
 }

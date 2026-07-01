@@ -1,3 +1,4 @@
+using TqkLibrary.VpnClient.Abstractions.Net;
 using TqkLibrary.VpnClient.OpenVpn.Enums;
 
 namespace TqkLibrary.VpnClient.OpenVpn
@@ -48,7 +49,7 @@ namespace TqkLibrary.VpnClient.OpenVpn
                     if (!char.IsWhiteSpace(c)) hex.Append(c);
             }
 
-            byte[] material = FromHex(hex.ToString());
+            byte[] material = HexCodec.Decode(hex.ToString());
             if (material.Length != KeyLength)
                 throw new FormatException($"OpenVPN static key must be {KeyLength} bytes (got {material.Length}).");
             return new OpenVpnStaticKey(material);
@@ -83,22 +84,5 @@ namespace TqkLibrary.VpnClient.OpenVpn
             Array.Copy(_material, offset, result, 0, length);
             return result;
         }
-
-        static byte[] FromHex(string hex)
-        {
-            if ((hex.Length & 1) != 0) throw new FormatException("OpenVPN static key hex has an odd digit count.");
-            byte[] result = new byte[hex.Length / 2];
-            for (int i = 0; i < result.Length; i++)
-                result[i] = (byte)((HexNibble(hex[i * 2]) << 4) | HexNibble(hex[i * 2 + 1]));
-            return result;
-        }
-
-        static int HexNibble(char c) => c switch
-        {
-            >= '0' and <= '9' => c - '0',
-            >= 'a' and <= 'f' => c - 'a' + 10,
-            >= 'A' and <= 'F' => c - 'A' + 10,
-            _ => throw new FormatException($"Invalid hex character '{c}' in OpenVPN static key."),
-        };
     }
 }

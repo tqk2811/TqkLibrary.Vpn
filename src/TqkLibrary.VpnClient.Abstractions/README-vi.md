@@ -32,7 +32,7 @@ TqkLibrary.VpnClient.Abstractions/
 │   └── SwappablePacketChannel.cs  # facade IPacketChannel hot-swap được (reconnect không rebind stack)
 ├── Transport/Interfaces/     # Ống truyền bên dưới: byte (TCP/TLS) + datagram (UDP) + TLS-aware + raw-IP
 │   #   IByteStreamTransport, IDatagramTransport, ITlsByteStream (lộ cert), ITlsKeyingMaterialExporter (RFC 5705), IRawIpTransportFactory (raw socket, cần elevation)
-├── Net/                      # Resolve outer host → IPAddress theo họ IP (AddressFamilyPreference, IHostResolver, DnsHostResolver) + InternetChecksum (one's-complement RFC 1071, dual-family, dùng chung IpStack/Ethernet/IpEncap) + IpProtocol (hằng IANA IP protocol numbers, nguồn duy nhất cho raw-IP driver + RawIpProtocols)
+├── Net/                      # Resolve outer host → IPAddress theo họ IP (AddressFamilyPreference, IHostResolver, DnsHostResolver) + InternetChecksum (one's-complement RFC 1071, dual-family, dùng chung IpStack/Ethernet/IpEncap) + IpProtocol (hằng IANA IP protocol numbers, nguồn duy nhất cho raw-IP driver + RawIpProtocols) + HexCodec (hex ↔ byte[] Decode/TryDecode/Encode, dùng chung IKE/OpenVPN)
 ├── Diagnostics/              # Seam log/diagnostics dùng chung (Q.2): VpnEventIds + Enums/VpnDropReason + Extensions/VpnLogExtensions
 └── Drivers/                  # Hợp đồng plugin driver + model cấu hình + enum năng lực
     ├── Enums/                #   VpnLinkLayer/Transport/Security/Auth + Address/MultiHost
@@ -78,6 +78,7 @@ TqkLibrary.VpnClient.Abstractions/
 | `DnsHostResolver` | Impl mặc định: literal-passthrough + `Dns.GetHostAddresses` + `Select` (pure static — ưu tiên 1 họ, fallback họ kia; testable không DNS). Consumer thật: `Transport.Tls.TlsByteStream`, L2TP `L2tpIpsecConnection` | [DnsHostResolver.cs:12](Net/DnsHostResolver.cs#L12) |
 | `InternetChecksum` | One's-complement Internet checksum **RFC 1071** dual-family v4/v6 (`static`): `PseudoHeaderSum(src,dst,proto,len)` (pseudo-header 4-byte v4 / 16-byte v6 + length 32-bit, RFC 8200 §8.1) · `AddData(sum, data)` (cộng dồn 16-bit BE words vào partial sum) · `Compute(data)` (= `Finish(AddData(0,data))`) · `Finish(sum)` (gập tổng 32-bit → 16-bit). **Dùng chung** cho IpStack (IPv4/TCP/UDP/ICMP), Ethernet (NDISC/DHCP) và IpEncap (GRE) — gỡ trùng lặp mà không tạo phụ thuộc ngang IpStack (mọi consumer đã ref Abstractions) | [InternetChecksum.cs:6](Net/InternetChecksum.cs#L6) |
 | `IpProtocol` | Hằng IANA IP protocol numbers dùng chung (`Icmp=1`, `IpInIp=4`, `Tcp=6`, `Udp=17`, `Ipv6=41`, `Fragment=44`, `Gre=47`, `Esp=50`, `Icmpv6=58`, `NoNextHeader=59`) — **nguồn duy nhất** cho raw-IP driver (IpEncap `Gre/IpInIp/Ipv6`, PPTP `Gre`, L2TP/IPsec `Esp`) + `RawIpProtocols` (Transport.RawIp nay forward về đây). Đặt tại Abstractions để driver dùng chung mà **không** phụ thuộc project Transport.RawIp | [IpProtocol.cs](Net/IpProtocol.cs) |
+| `HexCodec` | Codec hex ↔ byte[] dùng chung: `Decode(hex)` (ném `FormatException` khi lẻ độ dài / ký tự không hex) · `TryDecode(hex, out byte[]?)` (false khi lỗi) · `Encode(bytes)` (lowercase). Gom các bản `FromHex` tự cài ở IKEv1 NAT-D vendor-id, EAP-MSCHAPv2, OpenVPN static-key | [HexCodec.cs](Net/HexCodec.cs) |
 
 ### Diagnostics — seam log/diagnostics dùng chung (Q.2)
 

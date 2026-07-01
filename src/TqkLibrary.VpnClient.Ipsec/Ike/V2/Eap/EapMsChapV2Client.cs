@@ -1,6 +1,7 @@
 using System;
 using System.Security.Cryptography;
 using System.Text;
+using TqkLibrary.VpnClient.Abstractions.Net;
 using TqkLibrary.VpnClient.Crypto;
 
 namespace TqkLibrary.VpnClient.Ipsec.Ike.V2.Eap
@@ -155,27 +156,7 @@ namespace TqkLibrary.VpnClient.Ipsec.Ike.V2.Eap
         {
             int idx = message.IndexOf("S=", StringComparison.Ordinal);
             if (idx < 0 || message.Length < idx + 2 + 40) return null;
-            return FromHex(message.Substring(idx + 2, 40));
+            return HexCodec.TryDecode(message.Substring(idx + 2, 40), out byte[]? bytes) ? bytes : null;
         }
-
-        static byte[]? FromHex(string hex)
-        {
-            if (hex.Length % 2 != 0) return null;
-            byte[] result = new byte[hex.Length / 2];
-            for (int i = 0; i < result.Length; i++)
-            {
-                int hi = HexValue(hex[i * 2]);
-                int lo = HexValue(hex[i * 2 + 1]);
-                if (hi < 0 || lo < 0) return null;
-                result[i] = (byte)((hi << 4) | lo);
-            }
-            return result;
-        }
-
-        static int HexValue(char c)
-            => c >= '0' && c <= '9' ? c - '0'
-             : c >= 'A' && c <= 'F' ? c - 'A' + 10
-             : c >= 'a' && c <= 'f' ? c - 'a' + 10
-             : -1;
     }
 }

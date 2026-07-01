@@ -3,6 +3,7 @@ using System.Security.Cryptography.X509Certificates;
 using TqkLibrary.VpnClient.Abstractions.Drivers.Interfaces;
 using TqkLibrary.VpnClient.Abstractions.Transport.Interfaces;
 using TqkLibrary.VpnClient.Drivers.CiscoIpsec;
+using TqkLibrary.VpnClient.Drivers.GreInUdp;
 using TqkLibrary.VpnClient.Drivers.Ikev2;
 using TqkLibrary.VpnClient.Drivers.IpEncap;
 using TqkLibrary.VpnClient.Drivers.L2tpIpsec;
@@ -105,6 +106,19 @@ namespace TqkLibrary.VpnClient
         public VpnClientBuilder UseIpEncap(IRawIpTransportFactory rawIpFactory, IpEncapOptions? options = null,
             IpEncapReconnectOptions? reconnectOptions = null)
             => AddDriver(new IpEncapDriver(rawIpFactory, options, reconnectOptions));
+
+        /// <summary>
+        /// Registers the GRE-in-UDP tunnel driver (RFC 8086): carries a standard GRE header (RFC 2784/2890) inside a UDP
+        /// payload on dst port 4754 instead of raw-IP proto-47, then binds the reused GRE data-plane channel behind a
+        /// stable L3 packet channel. Because the carrier is an ordinary connected UDP socket, it needs <b>no elevation
+        /// and no raw IP socket</b> and traverses NAT/firewalls that pass UDP. <paramref name="options"/> selects the
+        /// UDP port / MTU / GRE options (default port 4754); <paramref name="reconnectOptions"/> tunes (or disables)
+        /// auto-reconnect. The remote gateway is the <c>VpnEndpoint.Host</c> passed to <c>ConnectAsync</c>.
+        /// <para>There is no control plane (no handshake, no auth, no keepalive) — the tunnel address must be arranged
+        /// out of band. <b>GRE-in-UDP is UNENCRYPTED</b> — use only on a trusted path or under IPsec ESP.</para>
+        /// </summary>
+        public VpnClientBuilder UseGreInUdp(GreInUdpOptions? options = null, GreInUdpReconnectOptions? reconnectOptions = null)
+            => AddDriver(new GreInUdpDriver(options, reconnectOptions));
 
         /// <summary>Registers the IKEv2-native driver (RFC 7296 PSK + NAT-T, CP virtual IP, ESP tunnel mode) with auto-reconnect enabled by default.</summary>
         public VpnClientBuilder UseIkev2() => AddDriver(new Ikev2Driver());

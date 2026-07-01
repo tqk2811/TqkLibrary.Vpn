@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>GRE-in-UDP tunnel driver runtime (RFC 8086): carries a standard GRE header (RFC 2784/2890) inside a UDP payload on dst port 4754 instead of a raw-IP proto-47 socket, so no elevation / no raw IP socket is required. Wires a connected UDP IDatagramTransport to the IpEncap GreTunnelChannel behind a stable L3 packet channel, with teardown via ReconnectingVpnConnection. Connectionless encap — no control plane, so no handshake/keepalive/auto-reconnect. GRE-in-UDP is UNENCRYPTED — use only on a trusted path or under IPsec ESP.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Abstractions\TqkLibrary.VpnClient.Abstractions.csproj" />
+    <ProjectReference Include="..\TqkLibrary.VpnClient.Drivers.Core\TqkLibrary.VpnClient.Drivers.Core.csproj" />
+    <ProjectReference Include="..\TqkLibrary.VpnClient.IpEncap\TqkLibrary.VpnClient.IpEncap.csproj" />
+  </ItemGroup>
+
+</Project>
